@@ -380,20 +380,100 @@ def device_logs(request: Request, device_type: str, index: int):
 
 @app.get("/edit/{device_type}/{index}", response_class=HTMLResponse)
 def edit_router(request: Request, device_type: str, index: int):
-    """Просмотр/редактирование параметров устройства"""
+    """Страница редактирования параметров устройства"""
     plugin = plugin_manager._plugins.get(device_type)
     if not plugin or index >= len(plugin.get("routers", [])):
         return HTMLResponse("<h3>Устройство не найдено</h3>", status_code=404)
 
     router = copy.deepcopy(plugin["routers"][index])
-    router["host"] = router.get("host") or router.get("ip") or "—"
-    router["name"] = router.get("name") or router["host"]
+
+    # Расшифровываем пароли для отображения в форме
+    if "ssh_pass" in router and router["ssh_pass"]:
+        router["ssh_pass_decrypted"] = storage.decrypt(router["ssh_pass"])
+    else:
+        router["ssh_pass_decrypted"] = ""
+
+    if "ftp" in router and isinstance(router["ftp"], dict):
+        if "pass" in router["ftp"] and router["ftp"]["pass"]:
+            router["ftp"]["pass_decrypted"] = storage.decrypt(router["ftp"]["pass"])
+        else:
+            router["ftp"]["pass_decrypted"] = ""
 
     return templates.TemplateResponse(request, "edit.html", {
         "device_type": device_type,
         "index": index,
         "router": router
     })
+
+
+@app.post("/update-router/{device_type}/{index}")
+async def update_router(
+    device_type: str,
+    index: int,
+    ip: str = Form(...),
+    version: str = Form("7"),
+    port: int = Form(22),
+    username: str = Form("admin"),
+    ssh_pass: str = Form(""),
+    private_key: str = Form(""),
+    backup_path: str = Form(...),
+    max_backups: int = Form(5),
+    ftp_host: str = Form(""),
+    ftp_port: int = Form(21),
+    ftp_dir: str = Form(""),
+    ftp_user: str = Form(""),
+    ftp_pass: str = Form("")
+):
+    """Сохранение отредактированных параметров устройства"""
+    if not plugin_manager or device_type not in plugin_manager._plugins:
+        raise HTTPException(status_code=400, detail="Плагин не найден")
+
+    routers_list = plugin_manager._plugins[device_type].get("routers", [])
+    if index < 0 or index >= len(routers_list):
+        raise HTTPException(status_code=404, detail="Устройство не найдено")
+
+    # Формируем обновленный объект устройства
+    updated_router = {
+        ("ip" if device_type.lower() == "mikrotik" else "host"): ip,
+        "username": username,
+        "ssh_pass": storage.encrypt(ssh_pass) if ssh_pass else "",
+        "backup_path": backup_path,
+        "max_backups": int(max_backups)
+    }
+
+    if device_type.lower() == "mikrotik":
+        updated_router["version"] = version
+        updated_router["private_key"] = private_key if private_key else "id_rsa.key"
+        if port != 22:
+            updated_router["port"] = port
+    else:
+        updated_router["ssh_key"] = private_key if private_key else "id_rsa.key"
+        updated_router["port"] = port
+
+    # Настройки FTP
+    if ftp_host:
+        updated_router["ftp"] = {
+            "host": ftp_host,
+            "port": int(ftp_port),
+            "remote_dir": ftp_dir,
+            "user": ftp_user,
+            "pass": storage.encrypt(ftp_pass) if ftp_pass else ""
+        }
+
+    # Обновляем в памяти
+    routers_list[index] = updated_router
+
+    # Перезаписываем в json-файл плагина
+    target_dir = BASE_DIR / "plugins"
+    for p_folder in target_dir.iterdir():
+        if p_folder.is_dir() and p_folder.name.lower() == device_type.lower():
+            json_file = p_folder / "routers.json"
+            with open(json_file, "w", encoding="utf-8") as f:
+                json.dump(routers_list, f, ensure_ascii=False, indent=4)
+            break
+
+    logging.info(f"⚙ Обновлены настройки устройства [{device_type}] #{index}: {ip}")
+    return RedirectResponse(url="/", status_code=303)
 
 
 @app.post("/run-now")

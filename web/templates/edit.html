@@ -2,45 +2,119 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Редактирование устройства</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="bg-gray-100 p-6">
-    <div class="max-w-2xl mx-auto bg-white rounded-xl shadow p-6">
-        <div class="flex items-center justify-between mb-6">
-            <h1 class="text-2xl font-bold">
-                ⚙ Редактирование устройства
-            </h1>
-
-            <a href="/" class="text-blue-600 hover:underline">
-                ← Назад
-            </a>
-        </div>
-
-        <div class="space-y-4">
-            <div>
-                <label class="block text-sm font-medium text-gray-700">Тип</label>
-                <div class="mt-1 p-2 bg-gray-50 rounded border">{{ device_type }}</div>
+<body class="bg-gray-100 min-h-screen text-gray-800 py-10">
+    <div class="container mx-auto px-4 max-w-2xl">
+        <div class="bg-white rounded-xl shadow p-8">
+            <div class="flex items-center justify-between mb-6">
+                <h1 class="text-2xl font-bold text-gray-900">⚙ Редактирование устройства</h1>
+                <span class="bg-blue-100 text-blue-800 text-xs font-semibold px-2.5 py-1 rounded border border-blue-200">
+                    {{ device_type }}
+                </span>
             </div>
+            
+            <form action="/update-router/{{ device_type }}/{{ index }}" method="POST" class="space-y-6">
+                
+                <!-- 1. Подключение -->
+                <div class="p-5 bg-gray-50 rounded-xl border border-gray-200 space-y-4">
+                    <h3 class="text-md font-semibold text-gray-700 flex items-center gap-2">
+                        🔌 1. Параметры подключения к устройству
+                    </h3>
 
-            <div>
-                <label class="block text-sm font-medium text-gray-700">Имя</label>
-                <div class="mt-1 p-2 bg-gray-50 rounded border">{{ router.name }}</div>
-            </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">IP-адрес / Хост:</label>
+                            <input type="text" name="ip" value="{{ router.ip or router.host }}" required class="w-full border border-gray-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-blue-500 outline-none font-mono text-sm">
+                        </div>
+                        {% if device_type.lower() == 'mikrotik' %}
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Версия RouterOS:</label>
+                            <input type="text" name="version" value="{{ router.version or '7' }}" required class="w-full border border-gray-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-blue-500 outline-none">
+                        </div>
+                        {% else %}
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Порт SSH:</label>
+                            <input type="number" name="port" value="{{ router.port or 22 }}" required class="w-full border border-gray-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-blue-500 outline-none">
+                        </div>
+                        {% endif %}
+                    </div>
 
-            <div>
-                <label class="block text-sm font-medium text-gray-700">Хост</label>
-                <div class="mt-1 p-2 bg-gray-50 rounded border">{{ router.host }}</div>
-            </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Пользователь SSH:</label>
+                            <input type="text" name="username" value="{{ router.username }}" required class="w-full border border-gray-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-blue-500 outline-none">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Пароль SSH:</label>
+                            <input type="password" name="ssh_pass" value="{{ router.ssh_pass_decrypted }}" placeholder="••••••••" class="w-full border border-gray-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-blue-500 outline-none">
+                        </div>
+                    </div>
 
-            <div>
-                <label class="block text-sm font-medium text-gray-700">Путь бэкапов</label>
-                <div class="mt-1 p-2 bg-gray-50 rounded border">{{ router.backup_path }}</div>
-            </div>
-        </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Путь к SSH-ключу:</label>
+                        <input type="text" name="private_key" value="{{ router.private_key or router.ssh_key or 'id_rsa.key' }}" class="w-full border border-gray-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-blue-500 outline-none text-sm font-mono">
+                    </div>
+                </div>
 
-        <div class="mt-6 text-sm text-gray-500">
-            Пока это страница просмотра. Сохранение настроек добавим на следующем этапе.
+                <!-- 2. Локальное хранилище -->
+                <div class="p-5 bg-gray-50 rounded-xl border border-gray-200 space-y-4">
+                    <h3 class="text-md font-semibold text-gray-700 flex items-center gap-2">
+                        📁 2. Локальное хранилище бэкапов
+                    </h3>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Директория хранения:</label>
+                            <input type="text" name="backup_path" value="{{ router.backup_path }}" required class="w-full border border-gray-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-blue-500 outline-none font-mono text-sm">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Лимит ротации (папок):</label>
+                            <input type="number" name="max_backups" value="{{ router.max_backups or 20 }}" min="1" required class="w-full border border-gray-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-blue-500 outline-none">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 3. FTP сервер -->
+                <div class="p-5 bg-gray-50 rounded-xl border border-gray-200 space-y-4">
+                    <h3 class="text-md font-semibold text-gray-700 flex items-center gap-2">
+                        ☁️ 3. Внешний FTP-сервер (опционально)
+                    </h3>
+
+                    <div class="grid grid-cols-3 gap-3">
+                        <div class="col-span-2">
+                            <label class="block text-sm font-medium text-gray-700 mb-1">FTP Хост:</label>
+                            <input type="text" name="ftp_host" value="{{ router.ftp.host if router.ftp else '' }}" placeholder="ftp.example.com" class="w-full border border-gray-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-blue-500 outline-none">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">FTP Порт:</label>
+                            <input type="number" name="ftp_port" value="{{ router.ftp.port if router.ftp else 21 }}" class="w-full border border-gray-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-blue-500 outline-none">
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">FTP Директория:</label>
+                        <input type="text" name="ftp_dir" value="{{ router.ftp.remote_dir if router.ftp else '' }}" placeholder="/remote_backups" class="w-full border border-gray-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-blue-500 outline-none font-mono text-sm">
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">FTP Пользователь:</label>
+                            <input type="text" name="ftp_user" value="{{ router.ftp.user if router.ftp else '' }}" class="w-full border border-gray-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-blue-500 outline-none">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">FTP Пароль:</label>
+                            <input type="password" name="ftp_pass" value="{{ router.ftp.pass_decrypted if router.ftp else '' }}" placeholder="••••••••" class="w-full border border-gray-300 rounded-lg px-3 py-2 bg-white focus:ring-2 focus:ring-blue-500 outline-none">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="flex justify-end space-x-3 pt-2">
+                    <a href="/" class="bg-gray-200 hover:bg-gray-300 text-gray-700 font-medium px-4 py-2 rounded-lg transition">Отмена</a>
+                    <button type="submit" class="bg-indigo-600 hover:bg-indigo-700 text-white font-medium px-6 py-2 rounded-lg transition shadow">Сохранить изменения</button>
+                </div>
+            </form>
         </div>
     </div>
 </body>
