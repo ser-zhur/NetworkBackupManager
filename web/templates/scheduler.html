@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Настройки планировщика</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen text-gray-800 py-10">
+    <div class="container mx-auto px-4 max-w-xl">
+        <div class="bg-white rounded-xl shadow p-8">
+            <div class="flex items-center justify-between mb-6">
+                <h1 class="text-2xl font-bold text-gray-900 flex items-center gap-2">
+                    ⏰ Настройка автобэкапа
+                </h1>
+                <a href="/" class="text-blue-600 hover:underline text-sm font-medium">← Назад</a>
+            </div>
+
+            <form action="/scheduler/save" method="POST" class="space-y-6">
+                
+                <!-- Включение/Отключение -->
+                <div class="p-4 bg-gray-50 rounded-xl border border-gray-200 flex items-center justify-between">
+                    <div>
+                        <label class="font-semibold text-gray-800 block">Автоматический бэкап всех роутеров</label>
+                        <span class="text-xs text-gray-500">Запуск по расписанию в фоновом режиме</span>
+                    </div>
+                    <input type="checkbox" name="enabled" value="true" {% if config.enabled %}checked{% endif %} class="w-5 h-5 text-blue-600 rounded focus:ring-blue-500">
+                </div>
+
+                <!-- Режим запуска -->
+                <div class="space-y-4 p-5 bg-gray-50 rounded-xl border border-gray-200">
+                    <h3 class="text-sm font-semibold text-gray-700">Режим расписания:</h3>
+
+                    <div class="space-y-3">
+                        <label class="flex items-center gap-3 p-3 bg-white rounded-lg border border-gray-200 cursor-pointer hover:border-blue-300 transition">
+                            <input type="radio" name="mode" value="daily" {% if config.mode == 'daily' %}checked{% endif %} onchange="toggleMode()" class="text-blue-600">
+                            <div>
+                                <span class="font-medium text-sm text-gray-900 block">1. Ежедневно в фиксированное время</span>
+                                <span class="text-xs text-gray-500">Бэкап выполняется 1 раз в сутки</span>
+                            </div>
+                        </label>
+
+                        <label class="flex items-center gap-3 p-3 bg-white rounded-lg border border-gray-200 cursor-pointer hover:border-blue-300 transition">
+                            <input type="radio" name="mode" value="interval" {% if config.mode == 'interval' %}checked{% endif %} onchange="toggleMode()" class="text-blue-600">
+                            <div>
+                                <span class="font-medium text-sm text-gray-900 block">2. Интервальный запуск</span>
+                                <span class="text-xs text-gray-500">Запуск каждые N часов</span>
+                            </div>
+                        </label>
+                    </div>
+
+                    <!-- Поле Ежедневного режима -->
+                    <div id="daily-field" class="pt-2">
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Время запуска (ЧЧ:ММ):</label>
+                        <input type="time" name="daily_time" value="{{ config.daily_time or '03:00' }}" class="border border-gray-300 rounded-lg px-3 py-2 bg-white outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm">
+                    </div>
+
+                    <!-- Поле Интервального режима -->
+                    <div id="interval-field" class="pt-2 hidden">
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Интервал (в часах):</label>
+                        <input type="number" name="interval_hours" min="1" max="168" value="{{ config.interval_hours or 24 }}" class="w-full border border-gray-300 rounded-lg px-3 py-2 bg-white outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm">
+                    </div>
+                </div>
+
+                <!-- Статус -->
+                <div class="text-xs text-gray-500 font-mono bg-blue-50 p-3 rounded-lg border border-blue-200">
+                    📌 Последний автоматический запуск: <span class="font-bold text-gray-700">{{ config.last_run or 'Ещё не производился' }}</span>
+                </div>
+
+                <div class="flex justify-end space-x-3 pt-2">
+                    <a href="/" class="bg-gray-200 hover:bg-gray-300 text-gray-700 font-medium px-4 py-2 rounded-lg transition text-sm">Отмена</a>
+                    <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-medium px-6 py-2 rounded-lg transition shadow text-sm">Сохранить расписание</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        function toggleMode() {
+            const isDaily = document.querySelector('input[name="mode"][value="daily"]').checked;
+            document.getElementById('daily-field').classList.toggle('hidden', !isDaily);
+            document.getElementById('interval-field').classList.toggle('hidden', isDaily);
+        }
+        toggleMode();
+    </script>
+</body>
+</html>
