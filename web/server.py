@@ -4,8 +4,10 @@ import copy
 import traceback
 import logging
 import re
+from datetime import datetime
 from collections import defaultdict
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from datetime import datetime
 
@@ -23,6 +25,23 @@ DATE_DIR_REGEX = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # Инициализация шифрования
 storage = SecureStorage()
+
+# --- Настройка логирования с авто-ротацией (максимум 2 МБ на файл) ---
+LOG_DIR = BASE_DIR / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+
+file_handler = RotatingFileHandler(
+    LOG_DIR / "app.log",
+    maxBytes=2 * 1024 * 1024,  # 2 МБ
+    backupCount=3,
+    encoding="utf-8"
+)
+file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[file_handler, logging.StreamHandler()]
+)
 
 # Инициализация FastAPI и шаблонов
 app = FastAPI(title="Network Backup Manager")
@@ -56,38 +75,60 @@ except Exception as e:
 
 # --- Вспомогательные функции ---
 
+# --- Функция чтения хвоста лог-файла ---
+def read_log_tail(file_path: Path, limit: str = "100"):
+    """Читает с диска только указанное количество последних строк файла"""
+    if not file_path.exists():
+        return "Лог-файл пока отсутствует...", 0, False
+
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()
+
+        total_lines = len(lines)
+
+        if limit == "all":
+            return "".join(lines), total_lines, False
+
+        max_l = int(limit) if limit.isdigit() else 100
+        if total_lines > max_l:
+            tail = lines[-max_l:]
+            return "".join(tail), len(tail), True
+
+        return "".join(lines), total_lines, False
+
+    except Exception as e:
+        return f"Ошибка чтения файла логов: {e}", 0, False
+
+DATE_DIR_REGEX = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
 def get_device_backup_info(backup_path_str: str):
     """
-    Считает количество НЕ ПУСТЫХ каталогов вида YYYY-MM-DD
-    и определяет дату последнего успешного бэкапа.
+    Считает количество не пустых папок YYYY-MM-DD,
+    дату последнего бэкапа и возраст бэкапа в днях.
     """
     if not backup_path_str:
-        return 0, "Нет данных"
+        return 0, "Нет данных", None
 
     path = Path(backup_path_str)
     if not path.is_absolute():
         path = BASE_DIR / path
 
     if not path.exists() or not path.is_dir():
-        return 0, "Нет данных"
+        return 0, "Нет данных", None
 
     valid_backup_dirs = []
-
-    # Ищем все поддиректории, имя которых соответствует YYYY-MM-DD
     for item in path.rglob("*"):
         if item.is_dir() and DATE_DIR_REGEX.match(item.name):
-            # Проверяем, что каталог НЕ пустой (содержит хотя бы один файл)
             has_files = any(f.is_file() for f in item.rglob("*"))
             if has_files:
                 valid_backup_dirs.append(item)
 
     if not valid_backup_dirs:
-        return 0, "Нет данных"
+        return 0, "Нет данных", None
 
-    # Количество валидных не пустых папок-бэкапов
     count = len(valid_backup_dirs)
 
-    # Поиск самого свежего файла среди всех не пустых папок бэкапов
     newest_mtime = 0
     for d in valid_backup_dirs:
         for f in d.rglob("*"):
@@ -97,13 +138,63 @@ def get_device_backup_info(backup_path_str: str):
                     newest_mtime = mtime
 
     if newest_mtime > 0:
-        last_date = datetime.fromtimestamp(newest_mtime).strftime("%Y-%m-%d %H:%M")
+        dt_last = datetime.fromtimestamp(newest_mtime)
+        last_date = dt_last.strftime("%Y-%m-%d %H:%M")
+        age_days = (datetime.now() - dt_last).days
     else:
-        # Если mtime считать не удалось, берем имя последней папки по дате
         latest_dir = max(valid_backup_dirs, key=lambda d: d.name)
         last_date = latest_dir.name
+        try:
+            dt_last = datetime.strptime(latest_dir.name, "%Y-%m-%d")
+            age_days = (datetime.now() - dt_last).days
+        except Exception:
+            age_days = 0
 
-    return count, last_date
+    return count, last_date, age_days
+
+
+@app.get("/", response_class=HTMLResponse)
+def read_root(request: Request):
+    if not templates:
+        return HTMLResponse("<h2>⚠️ Папка web/templates не найдена</h2>", status_code=500)
+
+    devices = []
+    if plugin_manager and hasattr(plugin_manager, "_plugins"):
+        for device_type, plugin_data in plugin_manager._plugins.items():
+            routers = plugin_data.get("routers", [])
+            for index, router in enumerate(routers):
+                ip_addr = router.get("host") or router.get("ip") or router.get("address", "Не указан")
+                b_path = router.get("backup_path", "backups/")
+                
+                count, last_date, age_days = get_device_backup_info(b_path)
+
+                # --- Определение цвета строки ---
+                if count == 0 or age_days is None:
+                    # Нет бэкапа — белый фон
+                    row_class = "bg-white hover:bg-gray-50"
+                elif age_days < 15:
+                    # Менее 15 дней — бледно-зеленый
+                    row_class = "bg-emerald-50/80 hover:bg-emerald-100/80"
+                elif 15 <= age_days <= 30:
+                    # От 15 до 30 дней — желтый
+                    row_class = "bg-amber-100/70 hover:bg-amber-200/70"
+                else:
+                    # Более 30 дней — красный
+                    row_class = "bg-rose-100/80 hover:bg-rose-200/80"
+
+                devices.append({
+                    "type": device_type,
+                    "ip": ip_addr,
+                    "backup_path": b_path,
+                    "backup_count": count,
+                    "last_backup_date": last_date,
+                    "row_class": row_class,
+                    "index": index
+                })
+
+    return templates.TemplateResponse(request, "index.html", {
+        "devices": devices
+    })
 
 
 # --- Маршруты страниц (Routes) ---
@@ -342,41 +433,57 @@ def download_backup(device_type: str, index: int, filepath: str):
         media_type="application/octet-stream"
     )
 
+
 @app.get("/logs/main", response_class=HTMLResponse)
-def logs_main_endpoint(request: Request):
-    """Основной лог системы (network_backup.log)"""
+def logs_main_endpoint(request: Request, limit: str = "100"):
     log_file = BASE_DIR / "network_backup.log"
     if not log_file.exists():
         log_file = LOG_DIR / "app.log"
 
-    content = log_file.read_text(encoding="utf-8", errors="ignore") if log_file.exists() else "Лог пуст..."
+    content, lines_shown, has_more = read_log_tail(log_file, limit)
     return templates.TemplateResponse(request, "logs.html", {
         "log_type": "Main Service Log",
-        "content": content
+        "content": content,
+        "lines_shown": lines_shown,
+        "has_more": has_more,
+        "limit": limit
     })
 
-
 @app.get("/logs/global", response_class=HTMLResponse)
-def logs_global_endpoint(request: Request):
-    """Лог веб-сервера (app.log)"""
+def logs_global_endpoint(request: Request, limit: str = "100"):
     log_file = LOG_DIR / "app.log"
-    content = log_file.read_text(encoding="utf-8", errors="ignore") if log_file.exists() else "Лог пуст..."
+    content, lines_shown, has_more = read_log_tail(log_file, limit)
     return templates.TemplateResponse(request, "logs.html", {
         "log_type": "Web Server Log",
-        "content": content
+        "content": content,
+        "lines_shown": lines_shown,
+        "has_more": has_more,
+        "limit": limit
     })
 
 
 @app.get("/logs/device/{device_type}/{index}", response_class=HTMLResponse)
-def device_logs(request: Request, device_type: str, index: int):
-    """Лог конкретного устройства"""
-    log_file = LOG_DIR / "app.log"
-    content = log_file.read_text(encoding="utf-8", errors="ignore") if log_file.exists() else "Лог пуст..."
-    return templates.TemplateResponse(request, "logs.html", {
-        "log_type": f"Device {device_type} [{index}]",
-        "content": content
-    })
+def device_logs(request: Request, device_type: str, index: int, limit: str = "100"):
+    """Лог конкретного устройства с выводом его IP/хоста"""
+    device_name = f"{device_type} #{index}"
+    
+    # Поиск IP-адреса устройства в загруженных плагинах
+    if plugin_manager and device_type in plugin_manager._plugins:
+        routers = plugin_manager._plugins[device_type].get("routers", [])
+        if 0 <= index < len(routers):
+            router = routers[index]
+            device_name = router.get("host") or router.get("ip") or router.get("address") or device_name
 
+    log_file = LOG_DIR / "app.log"
+    content, lines_shown, has_more = read_log_tail(log_file, limit)
+
+    return templates.TemplateResponse(request, "logs.html", {
+        "log_type": f"Устройство {device_name}",
+        "content": content,
+        "lines_shown": int(lines_shown),
+        "has_more": has_more,
+        "limit": limit
+    })
 
 @app.get("/edit/{device_type}/{index}", response_class=HTMLResponse)
 def edit_router(request: Request, device_type: str, index: int):

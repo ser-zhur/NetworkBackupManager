@@ -2,22 +2,73 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Логи</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Логи: {{ log_type }}</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="bg-gray-100 p-6">
-    <div class="max-w-6xl mx-auto">
-        <div class="flex items-center justify-between mb-4">
-            <h1 class="text-2xl font-bold">
-                📄 Логи: {{ log_type }}
-            </h1>
-
-            <a href="/" class="text-blue-600 hover:underline">
-                ← Назад
-            </a>
-        </div>
-
-        <pre class="bg-black text-green-400 p-4 rounded-lg overflow-auto text-sm whitespace-pre-wrap">{{ content }}</pre>
+<body class="bg-gray-900 text-gray-100 h-screen flex flex-col overflow-hidden p-4 md:p-6">
+    
+   <!-- Фиксированная шапка страницы -->
+<div class="flex flex-wrap items-center justify-between pb-4 border-b border-gray-800 gap-3 shrink-0">
+    <div>
+        <h1 class="text-xl font-bold font-mono text-green-400 flex items-center gap-2">
+            📄 {{ log_type }}
+        </h1>
+        <p class="text-xs text-gray-400 mt-1 font-mono">
+            Показано последние <span class="text-yellow-400 font-bold">{{ lines_shown if lines_shown is not none else 0 }}</span> строк
+            {% if has_more %}
+                <span class="text-gray-500">(в файле есть более ранние записи)</span>
+            {% endif %}
+        </p>
     </div>
+
+    <!-- Управление и кнопки -->
+    <div class="flex items-center gap-2">
+        {% if limit != 'all' %}
+            <a href="?limit=all" class="bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs px-3 py-2 rounded-lg border border-gray-700 transition flex items-center gap-1 font-medium">
+                📖 Показать весь лог
+            </a>
+        {% else %}
+            <a href="?limit=100" class="bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs px-3 py-2 rounded-lg border border-gray-700 transition flex items-center gap-1 font-medium">
+                ⚡ Показать 100 строк
+            </a>
+        {% endif %}
+
+        <button onclick="scrollToBottom()" class="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3.5 py-2 rounded-lg transition shadow flex items-center gap-1.5 font-medium">
+            ⬇ В самый низ
+        </button>
+
+        <a href="/" class="bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs px-4 py-2 rounded-lg transition border border-gray-700 font-medium">
+            ← Назад
+        </a>
+    </div>
+</div>
+
+    <!-- Консоль логов (Занимает всё свободное место, только она имеет скроллбар) -->
+    <div class="flex-1 relative mt-4 overflow-hidden rounded-xl border border-gray-800 bg-black shadow-2xl">
+        <pre id="log-container" class="h-full w-full p-4 overflow-y-auto font-mono text-xs text-green-400 whitespace-pre-wrap break-all leading-relaxed select-text">{{ content }}</pre>
+
+        <!-- Плавающая кнопка подскролла в самый низ -->
+        <button onclick="scrollToBottom()" 
+                id="floating-btn"
+                class="absolute bottom-5 right-5 bg-blue-600/80 hover:bg-blue-600 text-white p-3 rounded-full shadow-lg transition duration-200 backdrop-blur-sm flex items-center justify-center text-base font-bold border border-blue-400/30">
+            ⬇
+        </button>
+    </div>
+
+    <script>
+        const container = document.getElementById('log-container');
+
+        function scrollToBottom() {
+            if (container) {
+                container.scrollTop = container.scrollHeight;
+            }
+        }
+
+        // Автоматическая прокрутка в самый низ при загрузке страницы
+        window.addEventListener('DOMContentLoaded', () => {
+            scrollToBottom();
+        });
+    </script>
 </body>
 </html>

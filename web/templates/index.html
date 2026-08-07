@@ -44,7 +44,8 @@
                     <tbody class="divide-y divide-gray-200">
                         {% if devices %}
                             {% for dev in devices %}
-                            <tr class="transition hover:bg-gray-50">
+                            <!-- Переменная dev.row_class задает цвет фона строки в зависимости от возраста бэкапа -->
+                            <tr class="{{ dev.row_class }} transition">
                                 <td class="py-3 px-4 font-medium text-gray-900">{{ dev.type }}</td>
                                 <td class="py-3 px-4 text-gray-900 font-mono font-medium">{{ dev.ip }}</td>
                                 <td class="py-3 px-4 text-gray-500 text-sm font-mono">{{ dev.backup_path }}</td>
