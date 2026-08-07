@@ -4,6 +4,7 @@ import copy
 import traceback
 import logging
 import re
+import threading
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
@@ -21,7 +22,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
-# Настройка логирования с авто-ротацией (максимум 2 МБ)
 file_handler = RotatingFileHandler(
     LOG_DIR / "app.log",
     maxBytes=2 * 1024 * 1024,
@@ -35,13 +35,31 @@ logging.basicConfig(
     handlers=[file_handler, logging.StreamHandler()]
 )
 
-# --- 2. Инициализация компонентов ядра ---
-DATE_DIR_REGEX = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# --- 2. Учет состояния выполняющихся бэкапов ---
+backup_lock = threading.Lock()
+active_backups_count = 0
 
-# Инициализация шифрования
+def is_backup_running() -> bool:
+    """Проверка: выполняется ли сейчас хотя бы один бэкап"""
+    with backup_lock:
+        return active_backups_count > 0
+
+def backup_started():
+    global active_backups_count
+    with backup_lock:
+        active_backups_count += 1
+
+def backup_finished():
+    global active_backups_count
+    with backup_lock:
+        if active_backups_count > 0:
+            active_backups_count -= 1
+
+
+# --- 3. Инициализация компонентов ядра ---
+DATE_DIR_REGEX = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 storage = SecureStorage(str(BASE_DIR))
 
-# Инициализация менеджера плагинов
 try:
     from core.plugin_manager import PluginManager
     plugin_manager = PluginManager(plugins_dir=str(BASE_DIR / "plugins"))
@@ -50,11 +68,9 @@ except Exception as e:
     logging.error(f"Ошибка загрузки PluginManager: {e}")
     plugin_manager = None
 
-# Инициализация и запуск планировщика (ПОСЛЕ создания plugin_manager!)
 scheduler = BackupScheduler(plugin_manager)
 scheduler.start()
 
-# Инициализация FastAPI и шаблонов
 app = FastAPI(title="Network Backup Manager")
 
 templates = None
@@ -62,10 +78,9 @@ if (BASE_DIR / "web" / "templates").exists():
     templates = Jinja2Templates(directory=str(BASE_DIR / "web" / "templates"))
 
 
-# --- 3. Вспомогательные функции ---
+# --- 4. Вспомогательные функции ---
 
 def read_log_tail(file_path: Path, limit: str = "100"):
-    """Читает с диска только указанное количество последних строк файла"""
     if not file_path.exists():
         return "Лог-файл пока отсутствует...", 0, False
 
@@ -90,7 +105,6 @@ def read_log_tail(file_path: Path, limit: str = "100"):
 
 
 def get_device_backup_info(backup_path_str: str):
-    """Считает количество папок YYYY-MM-DD, дату последнего бэкапа и возраст в днях"""
     if not backup_path_str:
         return 0, "Нет данных", None
 
@@ -138,32 +152,47 @@ def get_device_backup_info(backup_path_str: str):
 
 
 def execute_device_backup_task(device_type: str, index: int, secure_router: dict):
-    """Выполнение бэкапа в фоновом потоке со сбором логов"""
-    plugin = plugin_manager._plugins.get(device_type) if plugin_manager else None
-    if not plugin:
-        return
-
-    backup_func = plugin.get("func")
-    if not backup_func:
-        return
-
-    ip_disp = secure_router.get("host") or secure_router.get("ip")
-    logging.info(f"🚀 [Фон] Запуск бэкапа: {device_type} / {ip_disp}")
-
+    """Выполнение одиночного бэкапа с учетом состояния активности"""
+    backup_started()
     try:
+        plugin = plugin_manager._plugins.get(device_type) if plugin_manager else None
+        if not plugin:
+            return
+
+        backup_func = plugin.get("func")
+        if not backup_func:
+            return
+
+        ip_disp = secure_router.get("host") or secure_router.get("ip")
+        logging.info(f"🚀 [Фон] Запуск бэкапа: {device_type} / {ip_disp}")
+
         created_files = backup_func(secure_router)
         if created_files and hasattr(plugin_manager, "_rotate_local"):
             plugin_manager._rotate_local(secure_router.get("backup_path"), secure_router.get("max_backups", 7))
         logging.info(f"✅ [Фон] Бэкап успешно завершен для {ip_disp}")
     except Exception as e:
-        logging.error(f"❌ [Фон] Ошибка при бэкапе {ip_disp}: {e}")
+        logging.error(f"❌ [Фон] Ошибка при бэкапе: {e}")
+    finally:
+        backup_finished()
 
 
-# --- 4. Маршруты страниц (Routes) ---
+def execute_all_backups_task():
+    """Выполнение массового бэкапа всех устройств с учетом состояния активности"""
+    backup_started()
+    try:
+        if plugin_manager:
+            plugin_manager.run_all_backups()
+    except Exception as e:
+        logging.error(f"❌ [Фон] Ошибка при массовом бэкапе: {e}")
+    finally:
+        backup_finished()
+
+
+# --- 5. Маршруты страниц (Routes) ---
 
 @app.get("/", response_class=HTMLResponse)
 def read_root(request: Request):
-    """Главная страница со списком устройств и цветной индикацией свежести бэкапа"""
+    """Главная страница"""
     if not templates:
         return HTMLResponse("<h2>⚠️ Папка web/templates не найдена</h2>", status_code=500)
 
@@ -177,7 +206,6 @@ def read_root(request: Request):
                 
                 count, last_date, age_days = get_device_backup_info(b_path)
 
-                # --- Определение цвета строки ---
                 if count == 0 or age_days is None:
                     row_class = "bg-white hover:bg-gray-50"
                 elif age_days < 15:
@@ -199,7 +227,8 @@ def read_root(request: Request):
 
     return templates.TemplateResponse(request, "index.html", {
         "devices": devices,
-        "scheduler_status": scheduler.get_status_text()
+        "scheduler_status": scheduler.get_status_text(),
+        "is_backup_running": is_backup_running()
     })
 
 
@@ -228,7 +257,6 @@ async def save_router_endpoint(
     ftp_user: str = Form(""),
     ftp_pass: str = Form("")
 ):
-    """Обработка добавления нового роутера"""
     if not plugin_manager or device_type not in plugin_manager._plugins:
         raise HTTPException(status_code=400, detail="Указанный плагин не найден")
 
@@ -275,7 +303,9 @@ async def save_router_endpoint(
 
 @app.get("/run-progress/{device_type}/{index}")
 def run_backup(device_type: str, index: int, background_tasks: BackgroundTasks):
-    """Запуск бэкапа в фоне и мгновенное перенаправление на страницу лога"""
+    if is_backup_running():
+        return RedirectResponse(url=f"/logs/device/{device_type}/{index}", status_code=303)
+
     plugin = plugin_manager._plugins.get(device_type) if plugin_manager else None
     if not plugin or index < 0 or index >= len(plugin.get("routers", [])):
         return HTMLResponse("<h3>Устройство не найдено</h3><a href='/'>Назад</a>", status_code=404)
@@ -290,9 +320,15 @@ def run_backup(device_type: str, index: int, background_tasks: BackgroundTasks):
     return RedirectResponse(url=f"/logs/device/{device_type}/{index}", status_code=303)
 
 
+@app.post("/run-now")
+def run_now_endpoint(background_tasks: BackgroundTasks):
+    if not is_backup_running():
+        background_tasks.add_task(execute_all_backups_task)
+    return RedirectResponse(url="/logs/main", status_code=303)
+
+
 @app.get("/backups/{device_type}/{index}", response_class=HTMLResponse)
 def backups_page(request: Request, device_type: str, index: int):
-    """Просмотр списка архивов с группировкой по датам"""
     plugin = plugin_manager._plugins.get(device_type) if plugin_manager else None
     if not plugin or index >= len(plugin.get("routers", [])):
         return HTMLResponse("<h3>Устройство не найдено</h3>", status_code=404)
@@ -342,7 +378,6 @@ def backups_page(request: Request, device_type: str, index: int):
 
 @app.get("/scheduler", response_class=HTMLResponse)
 def scheduler_page(request: Request):
-    """Страница настройки расписания"""
     return templates.TemplateResponse(request, "scheduler.html", {
         "config": scheduler.config
     })
@@ -355,7 +390,6 @@ async def save_scheduler_config(
     daily_time: str = Form("03:00"),
     interval_hours: int = Form(24)
 ):
-    """Сохранение новых настроек расписания"""
     scheduler.save_config({
         "enabled": enabled,
         "mode": mode,
@@ -368,7 +402,6 @@ async def save_scheduler_config(
 
 @app.get("/download-backup/{device_type}/{index}/{filepath:path}")
 def download_backup(device_type: str, index: int, filepath: str):
-    """Эндпоинт прямого скачивания файла бэкапа"""
     plugin = plugin_manager._plugins.get(device_type) if plugin_manager else None
     if not plugin or index >= len(plugin.get("routers", [])):
         raise HTTPException(status_code=404, detail="Устройство не найдено")
@@ -455,7 +488,6 @@ def device_logs(request: Request, device_type: str, index: int, limit: str = "10
 
 @app.get("/edit/{device_type}/{index}", response_class=HTMLResponse)
 def edit_router(request: Request, device_type: str, index: int):
-    """Страница редактирования параметров устройства"""
     plugin = plugin_manager._plugins.get(device_type) if plugin_manager else None
     if not plugin or index >= len(plugin.get("routers", [])):
         return HTMLResponse("<h3>Устройство не найдено</h3>", status_code=404)
@@ -498,7 +530,6 @@ async def update_router(
     ftp_user: str = Form(""),
     ftp_pass: str = Form("")
 ):
-    """Сохранение отредактированных параметров устройства"""
     if not plugin_manager or device_type not in plugin_manager._plugins:
         raise HTTPException(status_code=400, detail="Плагин не найден")
 
@@ -544,15 +575,6 @@ async def update_router(
 
     logging.info(f"⚙ Обновлены настройки устройства [{device_type}] #{index}: {ip}")
     return RedirectResponse(url="/", status_code=303)
-
-
-@app.post("/run-now")
-def run_now_endpoint(background_tasks: BackgroundTasks):
-    """Запуск бэкапов всех устройств в фоне"""
-    if not plugin_manager:
-        raise HTTPException(status_code=500, detail="Plugin manager не инициализирован")
-    background_tasks.add_task(plugin_manager.run_all_backups)
-    return RedirectResponse(url="/logs/main", status_code=303)
 
 
 if __name__ == "__main__":
