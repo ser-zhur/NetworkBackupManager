@@ -37,7 +37,6 @@
                             <th class="py-3 px-4">Тип плагина</th>
                             <th class="py-3 px-4">IP-адрес / Хост</th>
                             <th class="py-3 px-4">Путь сохранения</th>
-                            <th class="py-3 px-4 text-center">В архиве</th>
                             <th class="py-3 px-4">Последний бэкап</th>
                             <th class="py-3 px-4 text-right">Действия</th>
                         </tr>
@@ -45,15 +44,10 @@
                     <tbody class="divide-y divide-gray-200">
                         {% if devices %}
                             {% for dev in devices %}
-                            <tr class="{{ dev.row_class }} transition">
+                            <tr class="transition hover:bg-gray-50">
                                 <td class="py-3 px-4 font-medium text-gray-900">{{ dev.type }}</td>
                                 <td class="py-3 px-4 text-gray-900 font-mono font-medium">{{ dev.ip }}</td>
                                 <td class="py-3 px-4 text-gray-500 text-sm font-mono">{{ dev.backup_path }}</td>
-                                <td class="py-3 px-4 text-center">
-                                    <span class="bg-white text-gray-800 border border-gray-200 font-semibold text-xs px-2.5 py-1 rounded-full shadow-sm">
-                                        {{ dev.backup_count }}
-                                    </span>
-                                </td>
                                 <td class="py-3 px-4 text-sm text-gray-700 font-mono">{{ dev.last_backup_date }}</td>
                                 <td class="py-3 px-4 text-right space-x-1.5">
                                     <a href="/run-progress/{{ dev.type }}/{{ dev.index }}" title="Сделать копию" class="text-green-700 hover:text-green-900 font-medium text-xs bg-white border border-green-300 px-2 py-1.5 rounded-lg transition inline-block shadow-sm">
@@ -70,7 +64,7 @@
                                     </a>
                                     {% else %}
                                     <span class="text-gray-300 font-medium text-xs bg-white border border-gray-200 px-2 py-1.5 rounded-lg inline-block cursor-not-allowed">
-                                        📁 Архивы
+                                        📁 Архивы (0)
                                     </span>
                                     {% endif %}
 
@@ -82,7 +76,7 @@
                             {% endfor %}
                         {% else %}
                             <tr>
-                                <td colspan="6" class="py-8 text-center text-gray-400">
+                                <td colspan="5" class="py-8 text-center text-gray-400">
                                     Устройства еще не добавлены. Нажмите «Добавить роутер».
                                 </td>
                             </tr>
