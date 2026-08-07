@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Панель резервного копирования</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen text-gray-800">
+    <div class="container mx-auto px-4 py-8 max-w-7xl">
+        
+        <div class="text-center mb-8">
+            <h1 class="text-3xl font-bold text-gray-900 mb-4">🛡️ Бэкапы сетевого оборудования</h1>
+            <div class="flex flex-wrap justify-center items-center gap-3">
+                <a href="/logs/main" class="bg-indigo-700 hover:bg-indigo-800 text-white font-medium px-4 py-2 rounded-lg transition shadow text-sm">
+                    📜 Основной лог (service)
+                </a>
+                <a href="/logs/global" class="bg-gray-800 hover:bg-gray-900 text-white font-medium px-4 py-2 rounded-lg transition shadow text-sm">
+                    📋 Лог веб-панели
+                </a>
+                <a href="/add" class="bg-blue-600 hover:bg-blue-700 text-white font-medium px-4 py-2 rounded-lg transition shadow text-sm">
+                    + Добавить роутер
+                </a>
+                <form action="/run-now" method="POST" class="inline">
+                    <button type="submit" class="bg-green-600 hover:bg-green-700 text-white font-medium px-4 py-2 rounded-lg transition shadow text-sm">
+                        ▶ Запустить все бэкапы
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <div class="bg-white rounded-xl shadow overflow-hidden">
+            <div class="overflow-x-auto">
+                <table class="w-full text-left border-collapse whitespace-nowrap">
+                    <thead>
+                        <tr class="bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                            <th class="py-3 px-4">Тип плагина</th>
+                            <th class="py-3 px-4">IP-адрес / Хост</th>
+                            <th class="py-3 px-4">Путь сохранения</th>
+                            <th class="py-3 px-4 text-center">В архиве</th>
+                            <th class="py-3 px-4">Последний бэкап</th>
+                            <th class="py-3 px-4 text-right">Действия</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-gray-200">
+                        {% if devices %}
+                            {% for dev in devices %}
+                            <tr class="{{ dev.row_class }} transition">
+                                <td class="py-3 px-4 font-medium text-gray-900">{{ dev.type }}</td>
+                                <td class="py-3 px-4 text-gray-900 font-mono font-medium">{{ dev.ip }}</td>
+                                <td class="py-3 px-4 text-gray-500 text-sm font-mono">{{ dev.backup_path }}</td>
+                                <td class="py-3 px-4 text-center">
+                                    <span class="bg-white text-gray-800 border border-gray-200 font-semibold text-xs px-2.5 py-1 rounded-full shadow-sm">
+                                        {{ dev.backup_count }}
+                                    </span>
+                                </td>
+                                <td class="py-3 px-4 text-sm text-gray-700 font-mono">{{ dev.last_backup_date }}</td>
+                                <td class="py-3 px-4 text-right space-x-1.5">
+                                    <a href="/run-progress/{{ dev.type }}/{{ dev.index }}" title="Сделать копию" class="text-green-700 hover:text-green-900 font-medium text-xs bg-white border border-green-300 px-2 py-1.5 rounded-lg transition inline-block shadow-sm">
+                                        🔄 Бэкап
+                                    </a>
+                                    
+                                    <a href="/logs/device/{{ dev.type }}/{{ dev.index }}" title="Логи устройства" class="text-amber-700 hover:text-amber-900 font-medium text-xs bg-white border border-amber-300 px-2 py-1.5 rounded-lg transition inline-block shadow-sm">
+                                        📄 Лог
+                                    </a>
+
+                                    {% if dev.backup_count > 0 %}
+                                    <a href="/backups/{{ dev.type }}/{{ dev.index }}" title="Список бэкапов" class="text-blue-700 hover:text-blue-900 font-medium text-xs bg-white border border-blue-300 px-2 py-1.5 rounded-lg transition inline-block shadow-sm">
+                                        📁 Архивы ({{ dev.backup_count }})
+                                    </a>
+                                    {% else %}
+                                    <span class="text-gray-300 font-medium text-xs bg-white border border-gray-200 px-2 py-1.5 rounded-lg inline-block cursor-not-allowed">
+                                        📁 Архивы
+                                    </span>
+                                    {% endif %}
+
+                                    <a href="/edit/{{ dev.type }}/{{ dev.index }}" class="text-indigo-700 hover:text-indigo-900 font-medium text-xs bg-white border border-indigo-300 px-2 py-1.5 rounded-lg transition inline-block shadow-sm">
+                                        ⚙ Ред.
+                                    </a>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        {% else %}
+                            <tr>
+                                <td colspan="6" class="py-8 text-center text-gray-400">
+                                    Устройства еще не добавлены. Нажмите «Добавить роутер».
+                                </td>
+                            </tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Архивы</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 p-6">
+    <div class="max-w-4xl mx-auto bg-white rounded-xl shadow p-6">
+        <div class="flex items-center justify-between mb-4">
+            <h1 class="text-2xl font-bold">
+                📁 Архивы {{ device_type }}
+            </h1>
+
+            <a href="/" class="text-blue-600 hover:underline">
+                ← Назад
+            </a>
+        </div>
+
+        <p class="text-sm text-gray-500 mb-4 font-mono">
+            {{ backup_path }}
+        </p>
+
+        {% if files %}
+            <ul class="divide-y divide-gray-200">
+                {% for f in files %}
+                    <li class="py-2 font-mono text-sm">
+                        {{ f }}
+                    </li>
+                {% endfor %}
+            </ul>
+        {% else %}
+            <p class="text-gray-400">
+                Файлы бэкапов отсутствуют.
+            </p>
+        {% endif %}
+    </div>
+</body>
+</html>
