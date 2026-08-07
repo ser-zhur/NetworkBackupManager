@@ -6,13 +6,15 @@ import logging
 import re
 from datetime import datetime
 from collections import defaultdict
-from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
+
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from datetime import datetime
 
+from fastapi import FastAPI, HTTPException, Request, Form, BackgroundTasks
 from fastapi import FastAPI, HTTPException, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 
 from core.secure_storage import SecureStorage
@@ -302,57 +304,48 @@ async def save_router_endpoint(
     return RedirectResponse(url="/", status_code=303)
 
 
-@app.get("/run-progress/{device_type}/{index}", response_class=HTMLResponse)
-def run_backup(request: Request, device_type: str, index: int):
-    """Точечный запуск бэкапа с расшифровкой паролей"""
+def execute_device_backup_task(device_type: str, index: int, secure_router: dict):
+    """Выполнение бэкапа в фоновом потоке с записью в лог"""
+    plugin = plugin_manager._plugins.get(device_type)
+    if not plugin:
+        return
+
+    backup_func = plugin.get("func")
+    if not backup_func:
+        return
+
+    ip_disp = secure_router.get("host") or secure_router.get("ip")
+    logging.info(f"🚀 [Фон] Запуск бэкапа: {device_type} / {ip_disp}")
+
     try:
-        plugin = plugin_manager._plugins.get(device_type)
-        if not plugin:
-            return HTMLResponse("<h3>Плагин не найден</h3><a href='/'>Назад</a>", status_code=404)
-
-        routers = plugin.get("routers", [])
-        if index < 0 or index >= len(routers):
-            return HTMLResponse("<h3>Устройство не найдено</h3><a href='/'>Назад</a>", status_code=404)
-
-        router = routers[index]
-        backup_func = plugin.get("func")
-
-        if not backup_func:
-            return HTMLResponse("<h3>Функция backup не найдена у плагина</h3><a href='/'>Назад</a>", status_code=500)
-
-        # Подготовка изолированной конфигурации с расшифрованными секретами
-        secure_router = copy.deepcopy(router)
-        if "ssh_pass" in secure_router and secure_router["ssh_pass"]:
-            secure_router["ssh_pass"] = storage.decrypt(secure_router["ssh_pass"])
-
-        ip_disp = secure_router.get("host") or secure_router.get("ip")
-        logging.info(f"🚀 Запуск бэкапа через веб-панель: {device_type} / {ip_disp}")
-
-        try:
-            created_files = backup_func(secure_router)
-            
-            # Локальная ротация после ручного создания
-            if created_files and hasattr(plugin_manager, "_rotate_local"):
-                plugin_manager._rotate_local(secure_router.get("backup_path"), secure_router.get("max_backups", 7))
-
-            result = {
-                "status": "success",
-                "message": f"Бэкап успешно создан! Получено файлов: {len(created_files) if created_files else 0}",
-                "files": created_files or []
-            }
-        except Exception as e:
-            logging.exception(f"Ошибка ручного бэкапа {device_type} / {ip_disp}")
-            result = {"status": "error", "message": str(e)}
-
-        return templates.TemplateResponse(request, "progress.html", {
-            "device_type": device_type,
-            "router": router,
-            "result": result
-        })
-
+        created_files = backup_func(secure_router)
+        if created_files and hasattr(plugin_manager, "_rotate_local"):
+            plugin_manager._rotate_local(secure_router.get("backup_path"), secure_router.get("max_backups", 7))
+        logging.info(f"✅ [Фон] Бэкап успешно завершен для {ip_disp}")
     except Exception as e:
-        traceback.print_exc()
-        return HTMLResponse(f"<h3>Ошибка запуска бэкапа</h3><pre>{e}</pre><a href='/'>Назад</a>", status_code=500)
+        logging.error(f"❌ [Фон] Ошибка при бэкапе {ip_disp}: {e}")
+
+
+@app.get("/run-progress/{device_type}/{index}")
+def run_backup(device_type: str, index: int, background_tasks: BackgroundTasks):
+    """Запуск бэкапа в фоне и мгновенное перенаправление на страницу лога"""
+    plugin = plugin_manager._plugins.get(device_type)
+    if not plugin or index < 0 or index >= len(plugin.get("routers", [])):
+        return HTMLResponse("<h3>Устройство не найдено</h3><a href='/'>Назад</a>", status_code=404)
+
+    router = plugin["routers"][index]
+
+    # Подготовка изолированной конфигурации с расшифрованными паролями
+    secure_router = copy.deepcopy(router)
+    if "ssh_pass" in secure_router and secure_router["ssh_pass"]:
+        secure_router["ssh_pass"] = storage.decrypt(secure_router["ssh_pass"])
+
+    # Добавляем задачу бэкапа в фоновый поток FastAPI
+    background_tasks.add_task(execute_device_backup_task, device_type, index, secure_router)
+
+    # Мгновенный редирект на лог устройства
+    return RedirectResponse(url=f"/logs/device/{device_type}/{index}", status_code=303)
+
 
 
 @app.get("/backups/{device_type}/{index}", response_class=HTMLResponse)
@@ -463,11 +456,10 @@ def logs_global_endpoint(request: Request, limit: str = "100"):
 
 
 @app.get("/logs/device/{device_type}/{index}", response_class=HTMLResponse)
-def device_logs(request: Request, device_type: str, index: int, limit: str = "100"):
-    """Лог конкретного устройства с выводом его IP/хоста"""
+def device_logs(request: Request, device_type: str, index: int, limit: str = "100", raw: bool = False):
+    """Лог конкретного устройства с поддержкой выдачи чистого текста для автообновления"""
     device_name = f"{device_type} #{index}"
     
-    # Поиск IP-адреса устройства в загруженных плагинах
     if plugin_manager and device_type in plugin_manager._plugins:
         routers = plugin_manager._plugins[device_type].get("routers", [])
         if 0 <= index < len(routers):
@@ -477,6 +469,10 @@ def device_logs(request: Request, device_type: str, index: int, limit: str = "10
     log_file = LOG_DIR / "app.log"
     content, lines_shown, has_more = read_log_tail(log_file, limit)
 
+    # Если клиент запрашивает сырой текст (для живого автообновления JS)
+    if raw:
+        return HTMLResponse(content, media_type="text/plain")
+
     return templates.TemplateResponse(request, "logs.html", {
         "log_type": f"Устройство {device_name}",
         "content": content,
@@ -484,6 +480,8 @@ def device_logs(request: Request, device_type: str, index: int, limit: str = "10
         "has_more": has_more,
         "limit": limit
     })
+
+
 
 @app.get("/edit/{device_type}/{index}", response_class=HTMLResponse)
 def edit_router(request: Request, device_type: str, index: int):
