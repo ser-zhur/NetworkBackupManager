@@ -225,6 +225,8 @@ def backup_router_ros7(router, local_dir):
                 src = "auto-backup.backup" if suffix == ".backup" else "auto-export.rsc"
                 dest = os.path.join(local_dir, f"{ip}_{datetime.now().date()}{suffix}")
                 scp.get(src, dest)
+                # Получаем абсолютный путь для логирования
+                full_path = os.path.abspath(dest)
                 logging.info(f"📥 Получен файл: {dest}")
 
         client.exec_command("/file remove auto-backup.backup")

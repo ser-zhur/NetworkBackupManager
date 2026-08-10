@@ -38,8 +38,12 @@ def backup_pfsense_ssh(router):
         sftp.close()
         ssh.close()
 
-        logging.info(f"✅ Бэкап pfSense сохранён: {local_file}")
-        return [local_file]
+        # Приводим к абсолютному пути
+        full_path = os.path.abspath(local_file)
+
+        logging.info(f"✅ Бэкап pfSense сохранён: {full_path}")
+        return [full_path]
+ 
 
     except (paramiko.SSHException, socket.error) as e:
         logging.error(f"❌ Сбой подключения к pfSense {host}:{port}: {e}")
