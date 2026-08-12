@@ -6,6 +6,7 @@ import logging
 from datetime import datetime
 from ftplib import FTP, error_perm
 from core.secure_storage import SecureStorage
+from pathlib import Path
 
 class PluginManager:
     def __init__(self, plugins_dir="plugins"):
@@ -32,7 +33,16 @@ class PluginManager:
                             if os.path.exists(routers_path):
                                 with open(routers_path, "r", encoding="utf-8") as f:
                                     routers_data = json.load(f)
-                            
+                                    
+                                # Приводим относительные пути бэкапов к каталогу приложения 
+                                base_dir = Path(__file__).resolve().parent.parent
+                                
+                                for router in routers_data:
+                                    backup_path = router.get("backup_path")
+                                    if backup_path:
+                                        p = Path(backup_path)
+                                        if not p.is_absolute():
+                                            router["backup_path"] = str((base_dir / p).resolve())                         
                             self._plugins[device_type] = {
                                 "func": module.run_backup,
                                 "routers": routers_data
