@@ -67,11 +67,11 @@
                 <table class="w-full text-left border-collapse whitespace-nowrap">
                     <thead>
                         <tr class="bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-600 uppercase tracking-wider">
-                            <th class="py-3 px-4">Тип плагина</th>
-                            <th class="py-3 px-4">IP-адрес / Хост</th>
-                            <th class="py-3 px-4">Путь сохранения</th>
-                            <th class="py-3 px-4">Последний бэкап</th>
-                            <th class="py-3 px-4 text-right">Действия</th>
+                            <th class="py-3 px-4 text-left">Тип плагина</th>
+                            <th class="py-3 px-4 text-left">IP-адрес / Хост</th>
+                            <th class="py-3 px-4 text-left">Путь сохранения</th>
+                            <th class="py-3 px-4 text-left">Последний бэкап</th>
+                            <th class="py-3 px-4 text-center">Действия</th>
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-gray-200">
@@ -81,7 +81,7 @@
                             <tr class="{{ dev.row_class }} transition">
                                 <td class="py-3 px-4 font-medium text-gray-900">{{ dev.type }}</td>
                                 <td class="py-3 px-4 text-gray-900 font-mono font-medium">{{ dev.ip }}</td>
-                                <td class="py-3 px-4 text-gray-500 text-sm font-mono">{{ dev.backup_path }}</td>
+                                <td class="py-3 px-4 text-gray-500 text-sm font-mono">{{ dev.backup_dir_name }}</td>
                                 <td class="py-3 px-4 text-sm text-gray-700 font-mono">{{ dev.last_backup_date }}</td>
                                 <td class="py-3 px-4 text-right space-x-1.5">
                                     

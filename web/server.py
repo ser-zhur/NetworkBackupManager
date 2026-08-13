@@ -11,6 +11,7 @@ from collections import defaultdict
 from logging.handlers import RotatingFileHandler
 
 from fastapi import FastAPI, HTTPException, Request, Form, BackgroundTasks
+from contextlib import asynccontextmanager
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 
@@ -62,16 +63,29 @@ storage = SecureStorage(str(BASE_DIR))
 
 try:
     from core.plugin_manager import PluginManager
-    plugin_manager = PluginManager(plugins_dir=str(BASE_DIR / "plugins"))
+    plugin_manager = PluginManager()
     plugin_manager.discover_and_load_plugins()
 except Exception as e:
     logging.error(f"Ошибка загрузки PluginManager: {e}")
     plugin_manager = None
 
 scheduler = BackupScheduler(plugin_manager)
-scheduler.start()
 
-app = FastAPI(title="Network Backup Manager")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logging.info("🚀 Запуск планировщика...")
+    scheduler.start()
+
+    try:
+        yield
+    finally:
+        logging.info("🛑 Остановка планировщика...")
+        scheduler.stop()
+
+app = FastAPI(
+    title="Network Backup Manager",
+    lifespan=lifespan
+)
 
 templates = None
 if (BASE_DIR / "web" / "templates").exists():
@@ -219,6 +233,7 @@ def read_root(request: Request):
                     "type": device_type,
                     "ip": ip_addr,
                     "backup_path": b_path,
+                    "backup_dir_name": Path(b_path).name,
                     "backup_count": count,
                     "last_backup_date": last_date,
                     "row_class": row_class,

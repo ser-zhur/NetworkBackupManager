@@ -7,10 +7,13 @@ from datetime import datetime
 from ftplib import FTP, error_perm
 from core.secure_storage import SecureStorage
 from pathlib import Path
+from core.context import PLUGINS_DIR
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
+
 
 class PluginManager:
-    def __init__(self, plugins_dir="plugins"):
-        self.plugins_dir = plugins_dir
+    def __init__(self):
+        self.plugins_dir = PLUGINS_DIR
         self._plugins = {}
         self.storage = SecureStorage()
 
@@ -35,14 +38,14 @@ class PluginManager:
                                     routers_data = json.load(f)
                                     
                                 # Приводим относительные пути бэкапов к каталогу приложения 
-                                base_dir = Path(__file__).resolve().parent.parent
+                                from core.context import BASE_DIR
                                 
                                 for router in routers_data:
                                     backup_path = router.get("backup_path")
                                     if backup_path:
                                         p = Path(backup_path)
                                         if not p.is_absolute():
-                                            router["backup_path"] = str((base_dir / p).resolve())                         
+                                            router["backup_path"] = str((BASE_DIR / p).resolve())
                             self._plugins[device_type] = {
                                 "func": module.run_backup,
                                 "routers": routers_data
@@ -106,37 +109,104 @@ class PluginManager:
             logging.error(f"❌ Ошибка FTP-загрузки в ядре: {e}")
 
     def run_all_backups(self):
-        """Запуск бэкапов для всех устройств всех подключенных плагинов"""
+        """Параллельный запуск бэкапов для всех устройств"""
+
+        MAX_WORKERS = 5
+        BACKUP_TIMEOUT = 300  # секунд
+
+        tasks = []
+
+        # Подготавливаем список заданий
         for device_type, data in self._plugins.items():
+
             plugin_func = data["func"]
             routers = data["routers"]
 
             for router in routers:
-                ip = router.get("ip", router.get("host", "Unknown"))
-                max_backups = router.get("max_backups", 7)
-                backup_path = router["backup_path"]
-                ftp_config = router.get("ftp")
 
-                # Создаем изолированную копию конфигурации роутера для расшифровки секретов в памяти
-                secure_router = copy.deepcopy(router)
-                
-                # Если в конфиге есть зашифрованный ssh_pass, расшифровываем его для плагина
-                if "ssh_pass" in secure_router:
-                    secure_router["ssh_pass"] = self.storage.decrypt(secure_router["ssh_pass"])
+                tasks.append({
+                    "device_type": device_type,
+                    "plugin_func": plugin_func,
+                    "router": router,
+                })
 
-                logging.info("-" * 40)
-                logging.info(f"🔄 [Плагин: {device_type}] Старт бэкапа для: {ip}")
+        total = len(tasks)
+
+        if total == 0:
+            logging.warning("⚠ Нет устройств для бэкапа")
+            return
+
+        logging.info(
+            f"🚀 Запуск бэкапа {total} устройств (параллельно: {MAX_WORKERS})"
+        )
+
+        success = 0
+        failed = 0
+
+        def worker(task):
+
+            device_type = task["device_type"]
+            plugin_func = task["plugin_func"]
+            router = task["router"]
+
+            ip = router.get("ip", router.get("host", "Unknown"))
+            max_backups = router.get("max_backups", 7)
+            backup_path = router["backup_path"]
+            ftp_config = router.get("ftp")
+
+            secure_router = copy.deepcopy(router)
+
+            if "ssh_pass" in secure_router:
+                secure_router["ssh_pass"] = self.storage.decrypt(
+                    secure_router["ssh_pass"]
+                )
+
+            logging.info(f"🔄 [{device_type}] Старт бэкапа: {ip}")
+
+            created_files = plugin_func(secure_router)
+
+            if created_files:
+
+                self._rotate_local(backup_path, max_backups)
+
+                if ftp_config:
+                    self._upload_to_ftp(ftp_config, created_files)
+
+                logging.info(f"✅ [{device_type}] Успешно: {ip}")
+
+            else:
+                logging.warning(f"⚠ [{device_type}] Файлы не созданы: {ip}")
+
+            return ip
+
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+
+            future_map = {
+                executor.submit(worker, task): task
+                for task in tasks
+            }
+
+            for future in as_completed(future_map):
+
+                task = future_map[future]
+
+                ip = task["router"].get(
+                    "ip",
+                    task["router"].get("host", "Unknown")
+                )
 
                 try:
-                    # Передаем плагину конфигурацию с уже расшифрованным SSH-паролем
-                    created_files = plugin_func(secure_router)
-                    
-                    if created_files:
-                        self._rotate_local(backup_path, max_backups)
+                    future.result(timeout=BACKUP_TIMEOUT)
+                    success += 1
 
-                        if ftp_config:
-                            self._upload_to_ftp(ftp_config, created_files)
-                            
-                        logging.info(f"✅ Успешно завершено для: {ip}")
+                except TimeoutError:
+                    failed += 1
+                    logging.error(f"⏰ Таймаут бэкапа: {ip}")
+
                 except Exception as e:
-                    logging.error(f"❌ Ошибка при бэкапе {ip}: {e}")
+                    failed += 1
+                    logging.error(f"❌ Ошибка бэкапа {ip}: {e}")
+
+        logging.info(
+            f"🏁 Бэкап завершён. Успешно: {success}, ошибок: {failed}, всего: {total}"
+        )

@@ -1,75 +1,54 @@
-import os
 import sys
-import logging
-import argparse
+import webbrowser
 import uvicorn
 
-# --- 1. Базовые пути ---
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-if BASE_DIR not in sys.path:
-    sys.path.insert(0, BASE_DIR)
-
-from core.service_installer import install_service, uninstall_service
-
-# --- 2. Настройка логирования ---
-log_file = os.path.join(BASE_DIR, "network_backup.log")
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler(log_file, encoding="utf-8"),
-        logging.StreamHandler(sys.stdout)
-    ]
+from core.context import (
+    ensure_directories,
+    ensure_default_files,
+    load_json,
+    CONFIG_FILE,
 )
+from core.logger import setup_logging
 
 
-def run_app(host: str = "0.0.0.0", port: int = 8000, reload: bool = False):
-    """Запуск приложения (Веб-панель + Фоновый планировщик) через Uvicorn"""
-    uvicorn.run("web.server:app", host=host, port=port, reload=reload)
+def bootstrap():
+    ensure_directories()
+    ensure_default_files()
 
 
-def run_cli_backup():
-    """Сохранение старой логики: Однократный консольный запуск всех бэкапов без веб-сервера"""
-    from core.plugin_manager import PluginManager
+def run_server():
+    config = load_json(CONFIG_FILE)
 
-    logging.info("🚀 Запуск менеджера резервного копирования (консольный режим)...")
+    host = config.get("host", "127.0.0.1")
+    port = config.get("port", 8080)
 
-    # Инициализация без передачи объекта storage
-    manager = PluginManager(plugins_dir=os.path.join(BASE_DIR, "plugins"))
-    manager.discover_and_load_plugins()
-    manager.run_all_backups()
+    uvicorn.run(
+        "web.server:app",
+        host=host,
+        port=port,
+        reload=False,
+        workers=1,
+    )
 
-    logging.info("----------------------------------------")
-    logging.info("🎉 Общий цикл резервного копирования завершен.\n")
 
+def open_browser():
+    config = load_json(CONFIG_FILE)
 
-def main():
-    parser = argparse.ArgumentParser(description="Network Backup Manager")
-    parser.add_argument("--install", action="store_true", help="Установить службу в систему")
-    parser.add_argument("--uninstall", action="store_true", help="Удалить службу из системы")
-    parser.add_argument("--service", action="store_true", help="Запуск в режиме системной службы ОС")
-    parser.add_argument("--cli", action="store_true", help="Разовый запуск бэкапов без веб-сервера")
-    parser.add_argument("--host", type=str, default="0.0.0.0", help="IP-адрес веб-сервера (по умолчанию 0.0.0.0)")
-    parser.add_argument("--port", type=int, default=8000, help="Порт веб-сервера (по умолчанию 8000)")
-
-    args = parser.parse_args()
-
-    if args.install:
-        install_service()
-    elif args.uninstall:
-        uninstall_service()
-    elif args.cli:
-        run_cli_backup()
-    elif args.service:
-        # Режим службы ОС (без автоперезагрузки кода)
-        logging.info("🚀 Запуск службы Network Backup Manager...")
-        run_app(host=args.host, port=args.port, reload=False)
-    else:
-        # Обычный запуск из консоли
-        logging.info(f"🚀 Запуск веб-панели и планировщика на http://{args.host}:{args.port}")
-        run_app(host=args.host, port=args.port, reload=True)
+    if config.get("open_browser", True):
+        url = f"http://127.0.0.1:{config.get('port', 8080)}"
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
-    main()
+    bootstrap()
+    setup_logging()
+
+    service_mode = "--service" in sys.argv
+
+    if not service_mode:
+        open_browser()
+
+    run_server()
