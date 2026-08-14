@@ -5,16 +5,19 @@ import traceback
 import logging
 import re
 import threading
+import secrets
+import hashlib
+import base64
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
 from logging.handlers import RotatingFileHandler
-
-from fastapi import FastAPI, HTTPException, Request, Form, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Request, Form, BackgroundTasks, Depends, status
 from contextlib import asynccontextmanager
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 from fastapi.templating import Jinja2Templates
-
+from fastapi.staticfiles import StaticFiles
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from core.secure_storage import SecureStorage
 from core.scheduler import BackupScheduler
 
@@ -60,6 +63,7 @@ def backup_finished():
 # --- 3. Инициализация компонентов ядра ---
 DATE_DIR_REGEX = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 storage = SecureStorage(str(BASE_DIR))
+security = HTTPBasic()
 
 try:
     from core.plugin_manager import PluginManager
@@ -87,12 +91,94 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "web" / "static")), name="static")
+
 templates = None
 if (BASE_DIR / "web" / "templates").exists():
     templates = Jinja2Templates(directory=str(BASE_DIR / "web" / "templates"))
 
 
 # --- 4. Вспомогательные функции ---
+
+def hash_password(password: str, salt: bytes | None = None) -> str:
+    if salt is None:
+        salt = os.urandom(16)
+
+    key = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        260000,
+    )
+
+    return (
+        "pbkdf2_sha256$260000$"
+        + base64.b64encode(salt).decode()
+        + "$"
+        + base64.b64encode(key).decode()
+    )
+
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        algorithm, iterations, salt_b64, key_b64 = stored.split("$")
+
+        salt = base64.b64decode(salt_b64)
+        expected = base64.b64decode(key_b64)
+
+        test = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt,
+            int(iterations),
+        )
+
+        return secrets.compare_digest(test, expected)
+
+    except Exception:
+        return False
+
+
+def require_auth(credentials: HTTPBasicCredentials = Depends(security)):
+    auth_file = BASE_DIR / "data" / "auth.json"
+
+    if not auth_file.exists():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Файл auth.json не найден",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+    try:
+        data = json.loads(auth_file.read_text(encoding="utf-8"))
+
+        username = data["username"]
+        password_hash = data["password_hash"]
+
+    except Exception as e:
+        logging.error(f"Ошибка чтения auth.json: {e}")
+
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Некорректный файл auth.json",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+    valid = (
+        secrets.compare_digest(credentials.username, username)
+        and verify_password(credentials.password, password_hash)
+    )
+
+    if not valid:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Неверный логин или пароль",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+    return credentials.username
+
+
 
 def read_log_tail(file_path: Path, limit: str = "100"):
     if not file_path.exists():
@@ -205,7 +291,10 @@ def execute_all_backups_task():
 # --- 5. Маршруты страниц (Routes) ---
 
 @app.get("/", response_class=HTMLResponse)
-def read_root(request: Request):
+def read_root(
+    request: Request,
+    user: str = Depends(require_auth)
+):
     """Главная страница"""
     if not templates:
         return HTMLResponse("<h2>⚠️ Папка web/templates не найдена</h2>", status_code=500)
@@ -248,7 +337,10 @@ def read_root(request: Request):
 
 
 @app.get("/add", response_class=HTMLResponse)
-def add_router_page(request: Request):
+def add_router_page(
+    request: Request,
+    user: str = Depends(require_auth)
+):
     plugins_list = list(plugin_manager._plugins.keys()) if plugin_manager else []
     if templates and (BASE_DIR / "web" / "templates" / "add.html").exists():
         return templates.TemplateResponse(request, "add.html", {
@@ -259,6 +351,7 @@ def add_router_page(request: Request):
 
 @app.post("/save-router")
 async def save_router_endpoint(
+    user: str = Depends(require_auth),
     device_type: str = Form(...),
     ip: str = Form(...),
     version: str = Form("7"),
@@ -317,7 +410,12 @@ async def save_router_endpoint(
 
 
 @app.get("/run-progress/{device_type}/{index}")
-def run_backup(device_type: str, index: int, background_tasks: BackgroundTasks):
+def run_backup(
+    device_type: str,
+    index: int,
+    background_tasks: BackgroundTasks,
+    user: str = Depends(require_auth)
+):
     if is_backup_running():
         return RedirectResponse(url=f"/logs/device/{device_type}/{index}", status_code=303)
 
@@ -336,14 +434,22 @@ def run_backup(device_type: str, index: int, background_tasks: BackgroundTasks):
 
 
 @app.post("/run-now")
-def run_now_endpoint(background_tasks: BackgroundTasks):
+def run_now_endpoint(
+    background_tasks: BackgroundTasks,
+    user: str = Depends(require_auth)
+):
     if not is_backup_running():
         background_tasks.add_task(execute_all_backups_task)
     return RedirectResponse(url="/logs/main", status_code=303)
 
 
 @app.get("/backups/{device_type}/{index}", response_class=HTMLResponse)
-def backups_page(request: Request, device_type: str, index: int):
+def backups_page(
+    request: Request,
+    device_type: str,
+    index: int,
+    user: str = Depends(require_auth)
+):
     plugin = plugin_manager._plugins.get(device_type) if plugin_manager else None
     if not plugin or index >= len(plugin.get("routers", [])):
         return HTMLResponse("<h3>Устройство не найдено</h3>", status_code=404)
@@ -392,7 +498,10 @@ def backups_page(request: Request, device_type: str, index: int):
 
 
 @app.get("/scheduler", response_class=HTMLResponse)
-def scheduler_page(request: Request):
+def scheduler_page(
+    request: Request,
+    user: str = Depends(require_auth)
+):
     return templates.TemplateResponse(request, "scheduler.html", {
         "config": scheduler.config
     })
@@ -400,6 +509,7 @@ def scheduler_page(request: Request):
 
 @app.post("/scheduler/save")
 async def save_scheduler_config(
+    user: str = Depends(require_auth),
     enabled: bool = Form(False),
     mode: str = Form("daily"),
     daily_time: str = Form("03:00"),
@@ -416,7 +526,12 @@ async def save_scheduler_config(
 
 
 @app.get("/download-backup/{device_type}/{index}/{filepath:path}")
-def download_backup(device_type: str, index: int, filepath: str):
+def download_backup(
+    device_type: str,
+    index: int,
+    filepath: str,
+    user: str = Depends(require_auth)
+):
     plugin = plugin_manager._plugins.get(device_type) if plugin_manager else None
     if not plugin or index >= len(plugin.get("routers", [])):
         raise HTTPException(status_code=404, detail="Устройство не найдено")
@@ -442,7 +557,12 @@ def download_backup(device_type: str, index: int, filepath: str):
 
 
 @app.get("/logs/main", response_class=HTMLResponse)
-def logs_main_endpoint(request: Request, limit: str = "100", raw: bool = False):
+def logs_main_endpoint(
+    request: Request,
+    limit: str = "100",
+    raw: bool = False,
+    user: str = Depends(require_auth)
+):
     log_file = BASE_DIR / "network_backup.log"
     if not log_file.exists():
         log_file = LOG_DIR / "app.log"
@@ -461,7 +581,12 @@ def logs_main_endpoint(request: Request, limit: str = "100", raw: bool = False):
 
 
 @app.get("/logs/global", response_class=HTMLResponse)
-def logs_global_endpoint(request: Request, limit: str = "100", raw: bool = False):
+def logs_global_endpoint(
+    request: Request,
+    limit: str = "100",
+    raw: bool = False,
+    user: str = Depends(require_auth)
+):
     log_file = LOG_DIR / "app.log"
     content, lines_shown, has_more = read_log_tail(log_file, limit)
     if raw:
@@ -477,7 +602,14 @@ def logs_global_endpoint(request: Request, limit: str = "100", raw: bool = False
 
 
 @app.get("/logs/device/{device_type}/{index}", response_class=HTMLResponse)
-def device_logs(request: Request, device_type: str, index: int, limit: str = "100", raw: bool = False):
+def device_logs(
+    request: Request,
+    device_type: str,
+    index: int,
+    limit: str = "100",
+    raw: bool = False,
+    user: str = Depends(require_auth)
+):
     device_name = f"{device_type} #{index}"
 
     if plugin_manager and device_type in plugin_manager._plugins:
@@ -502,7 +634,12 @@ def device_logs(request: Request, device_type: str, index: int, limit: str = "10
 
 
 @app.get("/edit/{device_type}/{index}", response_class=HTMLResponse)
-def edit_router(request: Request, device_type: str, index: int):
+def edit_router(
+    request: Request,
+    device_type: str,
+    index: int,
+    user: str = Depends(require_auth)
+):
     plugin = plugin_manager._plugins.get(device_type) if plugin_manager else None
     if not plugin or index >= len(plugin.get("routers", [])):
         return HTMLResponse("<h3>Устройство не найдено</h3>", status_code=404)
@@ -528,19 +665,19 @@ def edit_router(request: Request, device_type: str, index: int):
 
 
 @app.post("/update-router/{device_type}/{index}")
+    
 async def update_router(
     device_type: str,
     index: int,
+    user: str = Depends(require_auth),
     ip: str = Form(...),
     version: str = Form("7"),
-    port: int = Form(22),
     username: str = Form("admin"),
     ssh_pass: str = Form(""),
     private_key: str = Form(""),
     backup_path: str = Form(...),
     max_backups: int = Form(5),
     ftp_host: str = Form(""),
-    ftp_port: int = Form(21),
     ftp_dir: str = Form(""),
     ftp_user: str = Form(""),
     ftp_pass: str = Form("")
