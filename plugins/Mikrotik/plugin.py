@@ -3,272 +3,295 @@ import time
 import subprocess
 import logging
 from datetime import datetime
+
 import paramiko
 from scp import SCPClient
 
-# --- Ожидание файлов для ROS 6.x ---
-def wait_for_files_ros6(ip, username, key, port, required_files, forbidden_files=None, timeout=20):
-    if forbidden_files is None:
-        forbidden_files = []
 
-    ssh_base = [
-        "ssh", "-i", key,
+def wait_for_files_ros6(host, user, port, key_path, filenames, timeout=30):
+    """Ожидание появления файлов на ROS6 через SSH CLI"""
+    start = time.time()
+
+    ssh_cmd = [
+        "ssh",
+        "-p", str(port),
+        "-i", key_path,
+        "-oBatchMode=yes",
+        "-oStrictHostKeyChecking=no",
+        "-oUserKnownHostsFile=/dev/null",
         "-oMACs=hmac-sha1,hmac-md5",
         "-oKexAlgorithms=+diffie-hellman-group1-sha1",
         "-oPubkeyAcceptedAlgorithms=+ssh-rsa",
-        "-p", str(port),
-        f"{username}@{ip}"
+        f"{user}@{host}",
+        "/file print without-paging"
     ]
 
-    start_time = time.time()
-    while time.time() - start_time < timeout:
+    while time.time() - start < timeout:
         try:
             result = subprocess.run(
-                ssh_base + ["/file print without-paging"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                ssh_cmd,
+                capture_output=True,
+                text=True,
+                timeout=10
             )
-            output = result.stdout
-            lines = output.splitlines()
-            existing_files = set()
 
-            for line in lines:
+            output = result.stdout
+
+            existing_files = set()
+            for line in output.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
                 parts = line.split()
                 if len(parts) >= 2:
                     existing_files.add(parts[1].strip())
 
-            missing_required = [f for f in required_files if f not in existing_files]
-            present_forbidden = [f for f in forbidden_files if f in existing_files]
-
-            if not missing_required and not present_forbidden:
-                logging.info("✅ Все нужные файлы MikroTik 6 найдены.")
+            if all(f in existing_files for f in filenames):
                 return True
 
-        except Exception as e:
-            logging.warning(f"⚠️ Ошибка при проверке файлов ROS 6: {e}")
+        except Exception:
+            pass
 
         time.sleep(1)
 
-    logging.error(f"⏱️ Таймаут: файлы ROS 6 не появились за {timeout} секунд.")
     return False
 
-# --- Ожидание файлов для ROS 7.x ---
-def wait_for_files(ssh_client, required_files, forbidden_files=None, timeout=20):
-    if forbidden_files is None:
-        forbidden_files = []
 
-    start_time = time.time()
-    while time.time() - start_time < timeout:
+def wait_for_files(ssh_client, filenames, timeout=30):
+    """Ожидание появления файлов на ROS7 через Paramiko"""
+    start = time.time()
+
+    while time.time() - start < timeout:
         try:
-            stdin, stdout, stderr = ssh_client.exec_command("/file print without-paging")
-            file_list_raw = stdout.read().decode("utf-8")
+            stdin, stdout, stderr = ssh_client.exec_command(
+                "/file print without-paging"
+            )
+            output = stdout.read().decode(errors="ignore")
 
-            lines = file_list_raw.splitlines()
             existing_files = set()
-
-            for line in lines:
+            for line in output.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
                 parts = line.split()
                 if len(parts) >= 2:
                     existing_files.add(parts[1].strip())
 
-            missing_required = [f for f in required_files if f not in existing_files]
-            present_forbidden = [f for f in forbidden_files if f in existing_files]
-
-            if not missing_required and not present_forbidden:
-                logging.info("✅ Все нужные файлы MikroTik 7 найдены.")
+            if all(f in existing_files for f in filenames):
                 return True
 
-        except Exception as e:
-            logging.warning(f"⚠️ Ошибка при проверке файлов ROS 7: {e}")
+        except Exception:
+            pass
 
         time.sleep(1)
 
-    logging.error(f"⏱️ Таймаут: файлы ROS 7 не появились за {timeout} секунд.")
     return False
 
 
 def backup_router_ros6(router, local_dir):
-    """Бэкап RouterOS 6.x с объединением команд для защиты от заморозки SSH-сессий"""
-    ip = router["ip"]
-    username = router["username"]
-    port = str(router.get("port", 22))
-
-    current_plugin_dir = os.path.dirname(os.path.abspath(__file__))
+    host = router["host"]
+    user = router.get("username", "admin")
+    port = router.get("port", 22)
     key_filename = router.get("private_key", "id_rsa.key")
-    key = key_filename if os.path.isabs(key_filename) else os.path.join(current_plugin_dir, key_filename)
 
-    null_host_file = "NUL" if os.name == "nt" else "/dev/null"
+    current_plugin_dir = os.path.dirname(__file__)
+    key = (
+        key_filename
+        if os.path.isabs(key_filename)
+        else os.path.join(current_plugin_dir, key_filename)
+    )
+
+    date_str = datetime.now().strftime("%Y-%m-%d")
 
     ssh_base = [
         "ssh",
-        "-T",                       # Отключение TTY
+        "-p", str(port),
+        "-i", key,
+        "-T",
         "-n",
         "-oBatchMode=yes",
         "-oConnectTimeout=10",
         "-oServerAliveInterval=5",
-        "-oLogLevel=ERROR",
-        "-i", key,
+        "-oStrictHostKeyChecking=no",
+        "-oUserKnownHostsFile=/dev/null",
         "-oMACs=hmac-sha1,hmac-md5",
         "-oKexAlgorithms=+diffie-hellman-group1-sha1",
         "-oPubkeyAcceptedAlgorithms=+ssh-rsa",
-        "-oStrictHostKeyChecking=no",
-        f"-oUserKnownHostsFile={null_host_file}",
-        "-p", port,
-        f"{username}@{ip}"
+        f"{user}@{host}"
     ]
 
-    scp_opts = [
+    scp_base = [
         "scp",
+        "-P", str(port),
+        "-i", key,
         "-oBatchMode=yes",
         "-oConnectTimeout=10",
-        "-oLogLevel=ERROR",
-        "-i", key,
+        "-oStrictHostKeyChecking=no",
+        "-oUserKnownHostsFile=/dev/null",
         "-oMACs=hmac-sha1,hmac-md5",
         "-oKexAlgorithms=+diffie-hellman-group1-sha1",
-        "-oPubkeyAcceptedAlgorithms=+ssh-rsa",
-        "-oStrictHostKeyChecking=no",
-        f"-oUserKnownHostsFile={null_host_file}",
-        "-P", port
+        "-oPubkeyAcceptedAlgorithms=+ssh-rsa"
     ]
 
-    def run_cmd(cmd_list, timeout=40):
-        res = subprocess.run(
-            cmd_list,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+    def run_cmd(cmd, timeout=60):
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
             text=True,
             timeout=timeout,
             stdin=subprocess.DEVNULL
         )
-        if res.returncode != 0:
-            err_msg = res.stderr.strip() or res.stdout.strip() or f"Exit Code {res.returncode}"
-            raise Exception(f"SSH CLI Error: {err_msg}")
-        return res.stdout
+        if result.returncode != 0:
+            raise Exception(result.stderr.strip() or "Команда завершилась с ошибкой")
+        return result.stdout
+
+    logging.info(f"🔐 ROS6 backup via system ssh/scp: {host}:{port}")
+
+    combined_cmd = (
+        "/system backup save name=auto-backup dont-encrypt=yes; "
+        "/export file=auto-export"
+    )
+
+    run_cmd(ssh_base + [combined_cmd], timeout=90)
+
+    time.sleep(2)
+
+    if not wait_for_files_ros6(
+        host,
+        user,
+        port,
+        key,
+        ["auto-backup.backup", "auto-export.rsc"],
+        timeout=30
+    ):
+        raise Exception("Файлы backup/export не появились на роутере")
+
+    created_files = []
+
+    for src, suffix in [
+        ("auto-backup.backup", ".backup"),
+        ("auto-export.rsc", ".rsc"),
+    ]:
+        dest = os.path.join(local_dir, f"{host}_{date_str}{suffix}")
+
+        run_cmd(scp_base + [f"{user}@{host}:{src}", dest], timeout=60)
+
+        if not os.path.exists(dest):
+            raise Exception(f"Файл не скачан: {dest}")
+
+        if suffix == ".backup" and os.path.getsize(dest) == 0:
+            raise Exception(f"Пустой backup-файл: {dest}")
+
+        created_files.append(dest)
 
     try:
-        logging.info(f"📡 Создание бэкапа на MikroTik ROS 6 ({ip})...")
-
-        # 🌟 Объединяем команды в ОДИН SSH-запрос через точку с запятой
-        cmd_combined = "/system backup save name=auto-backup dont-encrypt=yes; /export file=auto-export"
-        try:
-            run_cmd(ssh_base + [cmd_combined], timeout=40)
-        except Exception:
-            # Если dont-encrypt не поддерживается старой версией ROS 6
-            cmd_fallback = "/system backup save name=auto-backup; /export file=auto-export"
-            run_cmd(ssh_base + [cmd_fallback], timeout=40)
-
-        # ⏳ Пауза 2 секунды, чтобы SSH-демон ROS 6 успел корректно закрыть сокет
-        time.sleep(2)
-
-        today = datetime.now().strftime("%Y-%m-%d")
-        created_files = []
-
-        # Скачиваем созданные файлы
-        for src, suffix in [("auto-backup.backup", ".backup"), ("auto-export.rsc", ".rsc")]:
-            dest = os.path.join(local_dir, f"{ip}_{today}{suffix}")
-            run_cmd(scp_opts + [f"{username}@{ip}:{src}", dest], timeout=30)
-            logging.info(f"📥 Получен файл: {dest}")
-            if os.path.exists(dest):
-                created_files.append(dest)
-            time.sleep(1)
-
-        # Удаляем временные файлы с роутера одной объединенной командой
-        try:
-            run_cmd(ssh_base + ["/file remove auto-backup.backup; /file remove auto-export.rsc"], timeout=10)
-        except Exception:
-            pass
-
-        return created_files
-
-    except Exception as e:
-        logging.error(f"❌ Ошибка бэкапа MikroTik 6.x ({ip}): {e}")
-        raise e
-
-
-
-# --- Бэкап RouterOS 7.x ---
-def backup_router_ros7(router, local_dir):
-    ip = router["ip"]
-    username = router["username"]
-    
-    # Получаем расшифрованный ядром пароль (или кодовую фразу ключа)
-    ssh_password = router.get("ssh_pass", "")
-    
-    current_plugin_dir = os.path.dirname(os.path.abspath(__file__))
-    key_filename = router.get("private_key", "id_rsa.key")
-    if not os.path.isabs(key_filename):
-        key = os.path.join(current_plugin_dir, key_filename)
-    else:
-        key = key_filename
-    port = router.get("port", 22)
-    
-    try:
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        
-        if os.path.exists(key):
-            pkey = paramiko.RSAKey(filename=key)
-            client.connect(ip, username=username, pkey=pkey, password=ssh_password if ssh_password else None, port=port, timeout=10)
-        else:
-            client.connect(ip, username=username, password=ssh_password, port=port, timeout=10)
-
-        client.exec_command("/system backup save name=auto-backup")
-        client.exec_command("/export file=auto-export")
-
-        wait_for_files(
-            client,
-            required_files=["auto-backup.backup", "auto-export.rsc"],
-            forbidden_files=["auto-export.rsc.in_progress"]
+        run_cmd(
+            ssh_base + [
+                "/file remove auto-backup.backup; /file remove auto-export.rsc"
+            ],
+            timeout=20
         )
-
-        with SCPClient(client.get_transport()) as scp:
-            for suffix in [".backup", ".rsc"]:
-                src = "auto-backup.backup" if suffix == ".backup" else "auto-export.rsc"
-                dest = os.path.join(local_dir, f"{ip}_{datetime.now().date()}{suffix}")
-                scp.get(src, dest)
-                # Получаем абсолютный путь для логирования
-                full_path = os.path.abspath(dest)
-                logging.info(f"📥 Получен файл: {dest}")
-
-        client.exec_command("/file remove auto-backup.backup")
-        client.exec_command("/file remove auto-export.rsc")
-        client.close()
-        
     except Exception as e:
-        logging.error(f"❌ Ошибка при бэкапе RouterOS 7.x: {e}")
-        raise e
-    
-# --- Главная функция-диспетчер плагина ---
+        logging.warning(f"⚠ Не удалось удалить временные файлы на {host}: {e}")
+
+    logging.info(f"📥 ROS6 backup saved: {host}")
+    return created_files
+
+
+def backup_router_ros7(router, local_dir):
+    host = router["host"]
+    user = router.get("username", "admin")
+    port = router.get("port", 22)
+    key_filename = router.get("private_key", "id_rsa.key")
+    ssh_password = router.get("ssh_pass", "")
+
+    current_plugin_dir = os.path.dirname(__file__)
+    key = (
+        key_filename
+        if os.path.isabs(key_filename)
+        else os.path.join(current_plugin_dir, key_filename)
+    )
+
+    date_str = datetime.now().strftime("%Y-%m-%d")
+
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+    pkey = paramiko.RSAKey.from_private_key_file(key)
+
+    client.connect(
+        host,
+        port=port,
+        username=user,
+        pkey=pkey,
+        password=ssh_password if ssh_password else None,
+        timeout=10
+    )
+
+    logging.info(f"🔐 ROS7 backup via Paramiko/SCP: {host}:{port}")
+
+    # Ждём завершения создания backup
+    stdin, stdout, stderr = client.exec_command(
+        "/system backup save name=auto-backup"
+    )
+    stdout.channel.recv_exit_status()
+
+    # Ждём завершения export
+    stdin, stdout, stderr = client.exec_command(
+        "/export file=auto-export"
+    )
+    stdout.channel.recv_exit_status()
+
+    if not wait_for_files(
+        client,
+        ["auto-backup.backup", "auto-export.rsc"],
+        timeout=30
+    ):
+        raise Exception("Файлы backup/export не появились на роутере")
+
+    created_files = []
+
+    with SCPClient(client.get_transport()) as scp:
+        for src, suffix in [
+            ("auto-backup.backup", ".backup"),
+            ("auto-export.rsc", ".rsc"),
+        ]:
+            dest = os.path.join(local_dir, f"{host}_{date_str}{suffix}")
+
+            scp.get(src, dest)
+
+            if not os.path.exists(dest):
+                raise Exception(f"Файл не скачан: {dest}")
+
+            if suffix == ".backup" and os.path.getsize(dest) == 0:
+                raise Exception(f"Пустой backup-файл: {dest}")
+
+            created_files.append(dest)
+
+    client.exec_command(
+        "/file remove auto-backup.backup; /file remove auto-export.rsc"
+    )
+
+    client.close()
+
+    logging.info(f"📥 ROS7 backup saved: {host}")
+    return created_files
+
+
 def backup_router(router):
-    ip = router["ip"]
     backup_path = router["backup_path"]
-    version = str(router.get("version", "7"))
 
     today = datetime.now().strftime("%Y-%m-%d")
     local_dir = os.path.join(backup_path, today)
     os.makedirs(local_dir, exist_ok=True)
 
-    logging.info(f"📡 Бэкап MikroTik {ip} (ROS {version})")
-    
-    created_files = []
-    try:
-        if version.startswith("6"):
-            backup_router_ros6(router, local_dir)
-        else:
-            backup_router_ros7(router, local_dir)
+    version = str(router.get("version", "7"))
 
-        for suffix in [".backup", ".rsc"]:
-            file_path = os.path.join(local_dir, f"{ip}_{today}{suffix}")
-            if os.path.exists(file_path):
-                created_files.append(file_path)
-                
-        return created_files
+    if version.startswith("6"):
+        return backup_router_ros6(router, local_dir)
+    else:
+        return backup_router_ros7(router, local_dir)
 
-    except Exception as e:
-        logging.error(f"❌ Ошибка при бэкапе MikroTik {ip}: {e}")
-        raise e
-    
-def run_backup(router_config):
-    """
-    Точка входа для плагина MikroTik.
-    """
-    return backup_router(router_config)
+
+def run_backup(router):
+    return backup_router(router)

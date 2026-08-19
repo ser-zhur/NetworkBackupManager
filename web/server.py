@@ -20,14 +20,23 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from core.secure_storage import SecureStorage
 from core.scheduler import BackupScheduler
+from core.context import (
+    BASE_DIR,
+    DATA_DIR,
+    LOGS_DIR,
+    BACKUPS_DIR,
+    PLUGINS_DIR,
+    WEB_DIR,
+    AUTH_FILE,
+    load_json,
+    save_json,
+)
 
 # --- 1. Базовые пути и логирование ---
-BASE_DIR = Path(__file__).resolve().parent.parent
-LOG_DIR = BASE_DIR / "logs"
-LOG_DIR.mkdir(exist_ok=True)
+LOGS_DIR.mkdir(exist_ok=True)
 
 file_handler = RotatingFileHandler(
-    LOG_DIR / "app.log",
+    LOGS_DIR / "app.log",
     maxBytes=2 * 1024 * 1024,
     backupCount=3,
     encoding="utf-8"
@@ -91,11 +100,15 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-app.mount("/static", StaticFiles(directory=str(BASE_DIR / "web" / "static")), name="static")
+app.mount(
+    "/static",
+    StaticFiles(directory=str(WEB_DIR / "static")),
+    name="static"
+)
 
 templates = None
 if (BASE_DIR / "web" / "templates").exists():
-    templates = Jinja2Templates(directory=str(BASE_DIR / "web" / "templates"))
+    templates = Jinja2Templates(directory=str(WEB_DIR / "templates"))
 
 
 # --- 4. Вспомогательные функции ---
@@ -140,7 +153,7 @@ def verify_password(password: str, stored: str) -> bool:
 
 
 def require_auth(credentials: HTTPBasicCredentials = Depends(security)):
-    auth_file = BASE_DIR / "data" / "auth.json"
+    auth_file = AUTH_FILE
 
     if not auth_file.exists():
         raise HTTPException(
@@ -204,51 +217,54 @@ def read_log_tail(file_path: Path, limit: str = "100"):
         return f"Ошибка чтения файла логов: {e}", 0, False
 
 
-def get_device_backup_info(backup_path_str: str):
-    if not backup_path_str:
-        return 0, "Нет данных", None
 
-    path = Path(backup_path_str)
+
+
+def get_device_backup_info(backup_path):
+    """
+    Определяет количество бэкапов и возраст последнего бэкапа
+    по имени папки формата YYYY-MM-DD или YYYY-MM-DD_...
+    """
+
+    path = Path(backup_path)
+
     if not path.is_absolute():
         path = BASE_DIR / path
 
     if not path.exists() or not path.is_dir():
-        return 0, "Нет данных", None
+        return 0, "Нет бэкапов", None
 
-    valid_backup_dirs = []
-    for item in path.rglob("*"):
-        if item.is_dir() and DATE_DIR_REGEX.match(item.name):
-            has_files = any(f.is_file() for f in item.rglob("*"))
-            if has_files:
-                valid_backup_dirs.append(item)
+    dated_dirs = []
 
-    if not valid_backup_dirs:
-        return 0, "Нет данных", None
+    for item in path.iterdir():
+        if not item.is_dir():
+            continue
 
-    count = len(valid_backup_dirs)
+        name = item.name
 
-    newest_mtime = 0
-    for d in valid_backup_dirs:
-        for f in d.rglob("*"):
-            if f.is_file():
-                mtime = f.stat().st_mtime
-                if mtime > newest_mtime:
-                    newest_mtime = mtime
+        # Берём только первые 10 символов: YYYY-MM-DD
+        date_part = name[:10]
 
-    if newest_mtime > 0:
-        dt_last = datetime.fromtimestamp(newest_mtime)
-        last_date = dt_last.strftime("%Y-%m-%d %H:%M")
-        age_days = (datetime.now() - dt_last).days
-    else:
-        latest_dir = max(valid_backup_dirs, key=lambda d: d.name)
-        last_date = latest_dir.name
         try:
-            dt_last = datetime.strptime(latest_dir.name, "%Y-%m-%d")
-            age_days = (datetime.now() - dt_last).days
-        except Exception:
-            age_days = 0
+            folder_date = datetime.strptime(date_part, "%Y-%m-%d")
+            dated_dirs.append((folder_date, item))
+        except ValueError:
+            continue
 
-    return count, last_date, age_days
+    if not dated_dirs:
+        return 0, "Нет бэкапов", None
+
+    latest_date, latest_dir = max(dated_dirs, key=lambda x: x[0])
+
+    age_days = (datetime.now() - latest_date).days
+
+    return len(dated_dirs), latest_date.strftime("%Y-%m-%d"), age_days
+
+
+
+
+
+
 
 
 def execute_device_backup_task(device_type: str, index: int, secure_router: dict):
@@ -563,9 +579,9 @@ def logs_main_endpoint(
     raw: bool = False,
     user: str = Depends(require_auth)
 ):
-    log_file = BASE_DIR / "network_backup.log"
+    log_file = LOGS_DIR / "app.log"
     if not log_file.exists():
-        log_file = LOG_DIR / "app.log"
+        log_file = LOGS_DIR / "app.log"
 
     content, lines_shown, has_more = read_log_tail(log_file, limit)
     if raw:
@@ -587,7 +603,7 @@ def logs_global_endpoint(
     raw: bool = False,
     user: str = Depends(require_auth)
 ):
-    log_file = LOG_DIR / "app.log"
+    log_file = LOGS_DIR / "app.log"
     content, lines_shown, has_more = read_log_tail(log_file, limit)
     if raw:
         return HTMLResponse(content, media_type="text/plain")
@@ -618,7 +634,7 @@ def device_logs(
             router = routers[index]
             device_name = router.get("host") or router.get("ip") or router.get("address") or device_name
 
-    log_file = LOG_DIR / "app.log"
+    log_file = LOGS_DIR / "app.log"
     content, lines_shown, has_more = read_log_tail(log_file, limit)
 
     if raw:

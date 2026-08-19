@@ -1,6 +1,7 @@
 import os
 import copy
 import importlib
+import importlib.util
 import json
 import logging
 from datetime import datetime
@@ -29,7 +30,14 @@ class PluginManager:
                 if os.path.exists(plugin_file):
                     device_type = item.lower()
                     try:
-                        module = importlib.import_module(f"plugins.{item}.plugin")
+                        spec = importlib.util.spec_from_file_location(
+                            f"plugin_{item}",
+                            plugin_file
+                            )
+
+                        module = importlib.util.module_from_spec(spec)
+                        spec.loader.exec_module(module)
+                        
                         if hasattr(module, "run_backup"):
                             routers_path = os.path.join(item_path, "routers.json")
                             routers_data = []

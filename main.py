@@ -28,6 +28,7 @@ def run_server():
         port=port,
         reload=False,
         workers=1,
+        log_config=None
     )
 
 
