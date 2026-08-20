@@ -1,12 +1,23 @@
 import os
+import sys
 import time
 import subprocess
 import logging
-from datetime import datetime
-
 import paramiko
+from datetime import datetime
 from scp import SCPClient
+from pathlib import Path
 
+# Определяем флаг скрытия окна для Windows
+CREATE_NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
+def enforce_key_permissions(key_path: str):
+    """Ограничивает права на приватный ключ SSH в средах Windows."""
+    if sys.platform == "win32":
+        path = Path(key_path).resolve()
+        # Сброс наследования и выдача прав только текущему пользователю/системе
+        cmd = f'icacls "{path}" /inheritance:r /grant:r "%username%:F" /grant:r "NT AUTHORITY\\SYSTEM:F"'
+        subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=CREATE_NO_WINDOW)
 
 def wait_for_files_ros6(host, user, port, key_path, filenames, timeout=30):
     """Ожидание появления файлов на ROS6 через SSH CLI"""
@@ -32,7 +43,8 @@ def wait_for_files_ros6(host, user, port, key_path, filenames, timeout=30):
                 ssh_cmd,
                 capture_output=True,
                 text=True,
-                timeout=10
+                timeout=10,
+                creationflags=CREATE_NO_WINDOW
             )
 
             output = result.stdout
@@ -139,7 +151,8 @@ def backup_router_ros6(router, local_dir):
             capture_output=True,
             text=True,
             timeout=timeout,
-            stdin=subprocess.DEVNULL
+            stdin=subprocess.DEVNULL,
+            creationflags=CREATE_NO_WINDOW
         )
         if result.returncode != 0:
             raise Exception(result.stderr.strip() or "Команда завершилась с ошибкой")

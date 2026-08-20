@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from core.secure_storage import SecureStorage
 from core.scheduler import BackupScheduler
+from core.service_installer import get_status, schedule_restart, schedule_stop
 from core.context import (
     BASE_DIR,
     DATA_DIR,
@@ -31,6 +32,7 @@ from core.context import (
     load_json,
     save_json,
 )
+
 
 # --- 1. Базовые пути и логирование ---
 LOGS_DIR.mkdir(exist_ok=True)
@@ -68,7 +70,7 @@ def backup_finished():
         if active_backups_count > 0:
             active_backups_count -= 1
 
-
+    
 # --- 3. Инициализация компонентов ядра ---
 DATE_DIR_REGEX = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 storage = SecureStorage(str(BASE_DIR))
@@ -217,13 +219,10 @@ def read_log_tail(file_path: Path, limit: str = "100"):
         return f"Ошибка чтения файла логов: {e}", 0, False
 
 
-
-
-
 def get_device_backup_info(backup_path):
     """
     Определяет количество бэкапов и возраст последнего бэкапа
-    по имени папки формата YYYY-MM-DD или YYYY-MM-DD_...
+    по имени папки формата YYYY-MM-DD (учитываются только непустые каталоги).
     """
 
     path = Path(backup_path)
@@ -240,9 +239,17 @@ def get_device_backup_info(backup_path):
         if not item.is_dir():
             continue
 
-        name = item.name
+        # 1. Проверяем, что папка не пустая (содержит хотя бы один файл)
+        try:
+            has_files = any(f.is_file() for f in item.iterdir())
+        except (PermissionError, OSError):
+            has_files = False
 
-        # Берём только первые 10 символов: YYYY-MM-DD
+        if not has_files:
+            continue
+
+        # 2. Проверяем формат даты в имени папки (первые 10 символов: YYYY-MM-DD)
+        name = item.name
         date_part = name[:10]
 
         try:
@@ -259,13 +266,6 @@ def get_device_backup_info(backup_path):
     age_days = (datetime.now() - latest_date).days
 
     return len(dated_dirs), latest_date.strftime("%Y-%m-%d"), age_days
-
-
-
-
-
-
-
 
 def execute_device_backup_task(device_type: str, index: int, secure_router: dict):
     """Выполнение одиночного бэкапа с учетом состояния активности"""
@@ -348,7 +348,40 @@ def read_root(
     return templates.TemplateResponse(request, "index.html", {
         "devices": devices,
         "scheduler_status": scheduler.get_status_text(),
-        "is_backup_running": is_backup_running()
+        "is_backup_running": is_backup_running(),
+        "service": get_status(),
+    })
+
+
+@app.post("/service/restart", response_class=HTMLResponse)
+def service_restart_endpoint(
+    request: Request,
+    user: str = Depends(require_auth)
+):
+    ok, message = schedule_restart()
+    logging.info("Перезапуск службы запрошен пользователем %s: %s", user, message)
+    if not templates:
+        return HTMLResponse(message)
+    return templates.TemplateResponse(request, "service_action.html", {
+        "title": "Перезапуск службы",
+        "message": message,
+        "ok": ok,
+    })
+
+
+@app.post("/service/stop", response_class=HTMLResponse)
+def service_stop_endpoint(
+    request: Request,
+    user: str = Depends(require_auth)
+):
+    ok, message = schedule_stop()
+    logging.info("Остановка службы запрошена пользователем %s: %s", user, message)
+    if not templates:
+        return HTMLResponse(message)
+    return templates.TemplateResponse(request, "service_action.html", {
+        "title": "Остановка службы",
+        "message": message,
+        "ok": ok,
     })
 
 
@@ -387,7 +420,8 @@ async def save_router_endpoint(
     encrypted_ssh_pass = storage.encrypt(ssh_pass) if ssh_pass else ""
     
     new_router = {
-        ("ip" if device_type.lower() == "mikrotik" else "host"): ip,
+        "host": ip,
+        "ip": ip,
         "username": username,
         "ssh_pass": encrypted_ssh_pass,
         "backup_path": backup_path,
@@ -696,7 +730,9 @@ async def update_router(
     ftp_host: str = Form(""),
     ftp_dir: str = Form(""),
     ftp_user: str = Form(""),
-    ftp_pass: str = Form("")
+    ftp_pass: str = Form(""),
+    port: int = Form(22),
+    ftp_port: int = Form(21)
 ):
     if not plugin_manager or device_type not in plugin_manager._plugins:
         raise HTTPException(status_code=400, detail="Плагин не найден")
@@ -706,7 +742,8 @@ async def update_router(
         raise HTTPException(status_code=404, detail="Устройство не найдено")
 
     updated_router = {
-        ("ip" if device_type.lower() == "mikrotik" else "host"): ip,
+        "host": ip,
+        "ip": ip,
         "username": username,
         "ssh_pass": storage.encrypt(ssh_pass) if ssh_pass else "",
         "backup_path": backup_path,
