@@ -3,7 +3,7 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = [('web', 'web'), ('core', 'core')]
 binaries = []
-hiddenimports = ['core', 'core.context', 'core.secure_storage', 'core.scheduler', 'core.plugin_manager', 'fastapi', 'fastapi.templating', 'fastapi.staticfiles', 'starlette.templating', 'starlette.staticfiles', 'jinja2', 'uvicorn', 'uvicorn.logging', 'uvicorn.loops.auto', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets.auto', 'scp']
+hiddenimports = ['core', 'core.context', 'core.secure_storage', 'core.scheduler', 'core.plugin_manager', 'core.service_installer', 'fastapi', 'fastapi.templating', 'fastapi.staticfiles', 'starlette.templating', 'starlette.staticfiles', 'jinja2', 'uvicorn', 'uvicorn.logging', 'uvicorn.loops.auto', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets.auto', 'scp']
 tmp_ret = collect_all('paramiko')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('cryptography')

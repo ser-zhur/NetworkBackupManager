@@ -1,23 +1,94 @@
 <!DOCTYPE html>
 <html lang="ru">
+
 <head>
+
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
     <title>{{ title }}</title>
+
     <script src="https://cdn.tailwindcss.com"></script>
+
+    <link
+        rel="icon"
+        href="/static/favicon.ico"
+    >
+
 </head>
+
+
 <body class="bg-gray-100 min-h-screen text-gray-800 py-16">
-    <div class="container mx-auto px-4 max-w-lg">
-        <div class="bg-white rounded-xl shadow p-8 text-center">
-            <h1 class="text-xl font-bold text-gray-900 mb-3">{{ title }}</h1>
-            <p class="text-sm text-gray-600 mb-6">{{ message }}</p>
-            {% if ok %}
-            <p class="text-xs text-gray-400 mb-6">Если панель не откроется сама, обновите страницу через 5–10 секунд.</p>
-            <a href="/" class="inline-block bg-blue-600 hover:bg-blue-700 text-white font-medium px-5 py-2 rounded-lg text-sm">На главную</a>
-            {% else %}
-            <a href="/" class="inline-block bg-gray-200 hover:bg-gray-300 text-gray-800 font-medium px-5 py-2 rounded-lg text-sm">Назад</a>
-            {% endif %}
+
+
+<div class="container mx-auto px-4 max-w-lg">
+
+
+    <div class="bg-white rounded-xl shadow p-8 text-center">
+
+
+        {% if ok %}
+
+        <div class="text-4xl mb-4">
+            ✓
         </div>
+
+        <h1 class="text-xl font-bold text-gray-900 mb-3">
+            {{ title }}
+        </h1>
+
+        <p class="text-sm text-gray-600 mb-6">
+            {{ message }}
+        </p>
+
+        <p class="text-xs text-gray-400 mb-6">
+            Если панель не откроется сама,
+            обновите страницу через несколько секунд.
+        </p>
+
+
+        {% else %}
+
+        <div class="text-4xl mb-4">
+            ⚠️
+        </div>
+
+        <h1 class="text-xl font-bold text-red-800 mb-3">
+            {{ title }}
+        </h1>
+
+        <p class="text-sm text-gray-600 mb-6">
+            {{ message }}
+        </p>
+
+        {% endif %}
+
+
+        <a
+            href="/service"
+            class="inline-block bg-slate-600 hover:bg-slate-700 text-white font-medium px-5 py-2 rounded-lg text-sm"
+        >
+            ← Управление службой
+        </a>
+
+
+        <a
+            href="/"
+            class="inline-block bg-gray-200 hover:bg-gray-300 text-gray-800 font-medium px-5 py-2 rounded-lg text-sm ml-2"
+        >
+            На главную
+        </a>
+
+
     </div>
+
+</div>
+
+
 </body>
+
 </html>

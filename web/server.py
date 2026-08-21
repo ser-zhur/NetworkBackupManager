@@ -1,26 +1,68 @@
 import os
 import json
 import copy
-import traceback
 import logging
 import re
 import threading
 import secrets
 import hashlib
 import base64
+
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
 from logging.handlers import RotatingFileHandler
-from fastapi import FastAPI, HTTPException, Request, Form, BackgroundTasks, Depends, status
 from contextlib import asynccontextmanager
-from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
-from fastapi.templating import Jinja2Templates
-from fastapi.staticfiles import StaticFiles
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from core.secure_storage import SecureStorage
-from core.scheduler import BackupScheduler
-from core.service_installer import get_status, schedule_restart, schedule_stop
+
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Request,
+    Form,
+    BackgroundTasks,
+    Depends,
+)
+
+from fastapi.responses import (
+    HTMLResponse,
+    RedirectResponse,
+    FileResponse,
+)
+
+from fastapi.templating import (
+    Jinja2Templates,
+)
+
+from fastapi.staticfiles import (
+    StaticFiles,
+)
+
+from fastapi.security import (
+    HTTPBasic,
+    HTTPBasicCredentials,
+)
+
+
+from core.secure_storage import (
+    SecureStorage,
+)
+
+from core.scheduler import (
+    BackupScheduler,
+)
+
+from core.service_installer import (
+    get_status,
+    schedule_restart,
+    schedule_stop,
+    install_service,
+    uninstall_service,
+    start_service,
+    is_admin,
+    is_service_registered,
+    relaunch_elevated,
+)
+
 from core.context import (
     BASE_DIR,
     DATA_DIR,
@@ -30,93 +72,200 @@ from core.context import (
     WEB_DIR,
     AUTH_FILE,
     load_json,
-    save_json,
 )
 
 
-# --- 1. Базовые пути и логирование ---
-LOGS_DIR.mkdir(exist_ok=True)
+# =========================================================
+# LOGGING
+# =========================================================
+
+LOGS_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
+)
 
 file_handler = RotatingFileHandler(
     LOGS_DIR / "app.log",
     maxBytes=2 * 1024 * 1024,
     backupCount=3,
-    encoding="utf-8"
+    encoding="utf-8",
 )
-file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+
+file_handler.setFormatter(
+    logging.Formatter(
+        "%(asctime)s "
+        "[%(levelname)s] "
+        "%(message)s"
+    )
+)
 
 logging.basicConfig(
     level=logging.INFO,
-    handlers=[file_handler, logging.StreamHandler()]
+    handlers=[
+        file_handler,
+        logging.StreamHandler(),
+    ],
 )
 
-# --- 2. Учет состояния выполняющихся бэкапов ---
+
+# =========================================================
+# BACKUP STATE
+# =========================================================
+
 backup_lock = threading.Lock()
+
 active_backups_count = 0
 
+
 def is_backup_running() -> bool:
-    """Проверка: выполняется ли сейчас хотя бы один бэкап"""
+
     with backup_lock:
-        return active_backups_count > 0
+
+        return (
+            active_backups_count > 0
+        )
+
 
 def backup_started():
+
     global active_backups_count
+
     with backup_lock:
+
         active_backups_count += 1
 
+
 def backup_finished():
+
     global active_backups_count
+
     with backup_lock:
+
         if active_backups_count > 0:
+
             active_backups_count -= 1
 
-    
-# --- 3. Инициализация компонентов ядра ---
-DATE_DIR_REGEX = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-storage = SecureStorage(str(BASE_DIR))
+
+# =========================================================
+# CORE
+# =========================================================
+
+DATE_DIR_REGEX = re.compile(
+    r"^\d{4}-\d{2}-\d{2}$"
+)
+
+storage = SecureStorage(
+    str(BASE_DIR)
+)
+
 security = HTTPBasic()
 
+
+# =========================================================
+# PLUGIN MANAGER
+# =========================================================
+
 try:
-    from core.plugin_manager import PluginManager
+
+    from core.plugin_manager import (
+        PluginManager,
+    )
+
     plugin_manager = PluginManager()
+
     plugin_manager.discover_and_load_plugins()
-except Exception as e:
-    logging.error(f"Ошибка загрузки PluginManager: {e}")
+
+except Exception as exc:
+
+    logging.error(
+        "Ошибка загрузки PluginManager: %s",
+        exc,
+    )
+
     plugin_manager = None
 
-scheduler = BackupScheduler(plugin_manager)
+
+# =========================================================
+# SCHEDULER
+# =========================================================
+
+scheduler = BackupScheduler(
+    plugin_manager
+)
+
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    logging.info("🚀 Запуск планировщика...")
+async def lifespan(
+    app: FastAPI,
+):
+
+    logging.info(
+        "🚀 Запуск планировщика..."
+    )
+
     scheduler.start()
 
     try:
+
         yield
+
     finally:
-        logging.info("🛑 Остановка планировщика...")
+
+        logging.info(
+            "🛑 Остановка планировщика..."
+        )
+
         scheduler.stop()
+
+
+# =========================================================
+# FASTAPI
+# =========================================================
 
 app = FastAPI(
     title="Network Backup Manager",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
+
 
 app.mount(
     "/static",
-    StaticFiles(directory=str(WEB_DIR / "static")),
-    name="static"
+    StaticFiles(
+        directory=str(
+            WEB_DIR / "static"
+        )
+    ),
+    name="static",
 )
 
+
 templates = None
-if (BASE_DIR / "web" / "templates").exists():
-    templates = Jinja2Templates(directory=str(WEB_DIR / "templates"))
+
+if (
+    BASE_DIR
+    / "web"
+    / "templates"
+).exists():
+
+    templates = Jinja2Templates(
+        directory=str(
+            WEB_DIR
+            / "templates"
+        )
+    )
 
 
-# --- 4. Вспомогательные функции ---
+# =========================================================
+# PASSWORD
+# =========================================================
 
-def hash_password(password: str, salt: bytes | None = None) -> str:
+def hash_password(
+    password: str,
+    salt: bytes | None = None,
+) -> str:
+
     if salt is None:
+
         salt = os.urandom(16)
 
     key = hashlib.pbkdf2_hmac(
@@ -128,18 +277,37 @@ def hash_password(password: str, salt: bytes | None = None) -> str:
 
     return (
         "pbkdf2_sha256$260000$"
-        + base64.b64encode(salt).decode()
+        + base64.b64encode(
+            salt
+        ).decode()
         + "$"
-        + base64.b64encode(key).decode()
+        + base64.b64encode(
+            key
+        ).decode()
     )
 
 
-def verify_password(password: str, stored: str) -> bool:
-    try:
-        algorithm, iterations, salt_b64, key_b64 = stored.split("$")
+def verify_password(
+    password: str,
+    stored: str,
+) -> bool:
 
-        salt = base64.b64decode(salt_b64)
-        expected = base64.b64decode(key_b64)
+    try:
+
+        algorithm, iterations, salt_b64, key_b64 = (
+            stored.split("$")
+        )
+
+        if algorithm != "pbkdf2_sha256":
+            return False
+
+        salt = base64.b64decode(
+            salt_b64
+        )
+
+        expected = base64.b64decode(
+            key_b64
+        )
 
         test = hashlib.pbkdf2_hmac(
             "sha256",
@@ -148,259 +316,1044 @@ def verify_password(password: str, stored: str) -> bool:
             int(iterations),
         )
 
-        return secrets.compare_digest(test, expected)
+        return secrets.compare_digest(
+            test,
+            expected,
+        )
 
     except Exception:
+
         return False
 
 
-def require_auth(credentials: HTTPBasicCredentials = Depends(security)):
-    auth_file = AUTH_FILE
+# =========================================================
+# AUTH
+# =========================================================
 
-    if not auth_file.exists():
+def require_auth(
+    credentials:
+        HTTPBasicCredentials =
+        Depends(security),
+):
+
+    if not AUTH_FILE.exists():
+
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Файл auth.json не найден",
-            headers={"WWW-Authenticate": "Basic"},
+            status_code=401,
+            detail=(
+                "Файл auth.json не найден. "
+                "Создайте пользователя командой "
+                "--create-user."
+            ),
+            headers={
+                "WWW-Authenticate":
+                "Basic"
+            },
         )
 
     try:
-        data = json.loads(auth_file.read_text(encoding="utf-8"))
 
-        username = data["username"]
-        password_hash = data["password_hash"]
+        data = json.loads(
+            AUTH_FILE.read_text(
+                encoding="utf-8"
+            )
+        )
 
-    except Exception as e:
-        logging.error(f"Ошибка чтения auth.json: {e}")
+        username = data[
+            "username"
+        ]
+
+        password_hash = data[
+            "password_hash"
+        ]
+
+    except Exception as exc:
+
+        logging.error(
+            "Ошибка чтения auth.json: %s",
+            exc,
+        )
 
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Некорректный файл auth.json",
-            headers={"WWW-Authenticate": "Basic"},
+            status_code=401,
+            detail=(
+                "Некорректный файл auth.json."
+            ),
+            headers={
+                "WWW-Authenticate":
+                "Basic"
+            },
         )
 
     valid = (
-        secrets.compare_digest(credentials.username, username)
-        and verify_password(credentials.password, password_hash)
+        secrets.compare_digest(
+            credentials.username,
+            username,
+        )
+        and
+        verify_password(
+            credentials.password,
+            password_hash,
+        )
     )
 
     if not valid:
+
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Неверный логин или пароль",
-            headers={"WWW-Authenticate": "Basic"},
+            status_code=401,
+            detail="Неверный логин или пароль.",
+            headers={
+                "WWW-Authenticate":
+                "Basic"
+            },
         )
 
     return credentials.username
 
 
+# =========================================================
+# LOG READER
+# =========================================================
 
-def read_log_tail(file_path: Path, limit: str = "100"):
+def read_log_tail(
+    file_path: Path,
+    limit: str = "100",
+):
+
     if not file_path.exists():
-        return "Лог-файл пока отсутствует...", 0, False
+
+        return (
+            "Лог-файл пока отсутствует...",
+            0,
+            False,
+        )
 
     try:
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+
+        with open(
+            file_path,
+            "r",
+            encoding="utf-8",
+            errors="ignore",
+        ) as f:
+
             lines = f.readlines()
 
         total_lines = len(lines)
 
         if limit == "all":
-            return "".join(lines), total_lines, False
 
-        max_l = int(limit) if limit.isdigit() else 100
+            return (
+                "".join(lines),
+                total_lines,
+                False,
+            )
+
+        max_l = (
+            int(limit)
+            if limit.isdigit()
+            else 100
+        )
+
         if total_lines > max_l:
+
             tail = lines[-max_l:]
-            return "".join(tail), len(tail), True
 
-        return "".join(lines), total_lines, False
+            return (
+                "".join(tail),
+                len(tail),
+                True,
+            )
 
-    except Exception as e:
-        return f"Ошибка чтения файла логов: {e}", 0, False
+        return (
+            "".join(lines),
+            total_lines,
+            False,
+        )
+
+    except Exception as exc:
+
+        return (
+            f"Ошибка чтения файла логов: {exc}",
+            0,
+            False,
+        )
 
 
-def get_device_backup_info(backup_path):
-    """
-    Определяет количество бэкапов и возраст последнего бэкапа
-    по имени папки формата YYYY-MM-DD (учитываются только непустые каталоги).
-    """
+# =========================================================
+# BACKUP INFO
+# =========================================================
 
-    path = Path(backup_path)
+def get_device_backup_info(
+    backup_path,
+):
+
+    path = Path(
+        backup_path
+    )
 
     if not path.is_absolute():
-        path = BASE_DIR / path
 
-    if not path.exists() or not path.is_dir():
-        return 0, "Нет бэкапов", None
+        path = (
+            BASE_DIR / path
+        )
+
+    if (
+        not path.exists()
+        or not path.is_dir()
+    ):
+
+        return (
+            0,
+            "Нет бэкапов",
+            None,
+        )
 
     dated_dirs = []
 
     for item in path.iterdir():
+
         if not item.is_dir():
             continue
 
-        # 1. Проверяем, что папка не пустая (содержит хотя бы один файл)
         try:
-            has_files = any(f.is_file() for f in item.iterdir())
-        except (PermissionError, OSError):
+
+            has_files = any(
+                f.is_file()
+                for f in item.iterdir()
+            )
+
+        except (
+            PermissionError,
+            OSError,
+        ):
+
             has_files = False
 
         if not has_files:
             continue
 
-        # 2. Проверяем формат даты в имени папки (первые 10 символов: YYYY-MM-DD)
-        name = item.name
-        date_part = name[:10]
+        date_part = item.name[:10]
 
         try:
-            folder_date = datetime.strptime(date_part, "%Y-%m-%d")
-            dated_dirs.append((folder_date, item))
+
+            folder_date = (
+                datetime.strptime(
+                    date_part,
+                    "%Y-%m-%d",
+                )
+            )
+
+            dated_dirs.append(
+                (
+                    folder_date,
+                    item,
+                )
+            )
+
         except ValueError:
+
             continue
 
     if not dated_dirs:
-        return 0, "Нет бэкапов", None
 
-    latest_date, latest_dir = max(dated_dirs, key=lambda x: x[0])
+        return (
+            0,
+            "Нет бэкапов",
+            None,
+        )
 
-    age_days = (datetime.now() - latest_date).days
+    latest_date, latest_dir = max(
+        dated_dirs,
+        key=lambda x: x[0],
+    )
 
-    return len(dated_dirs), latest_date.strftime("%Y-%m-%d"), age_days
+    age_days = (
+        datetime.now()
+        - latest_date
+    ).days
 
-def execute_device_backup_task(device_type: str, index: int, secure_router: dict):
-    """Выполнение одиночного бэкапа с учетом состояния активности"""
+    return (
+        len(dated_dirs),
+        latest_date.strftime(
+            "%Y-%m-%d"
+        ),
+        age_days,
+    )
+
+
+# =========================================================
+# BACKUP TASKS
+# =========================================================
+
+def execute_device_backup_task(
+    device_type: str,
+    index: int,
+    secure_router: dict,
+):
+
     backup_started()
+
     try:
-        plugin = plugin_manager._plugins.get(device_type) if plugin_manager else None
+
+        plugin = (
+            plugin_manager
+            ._plugins
+            .get(device_type)
+            if plugin_manager
+            else None
+        )
+
         if not plugin:
             return
 
-        backup_func = plugin.get("func")
+        backup_func = plugin.get(
+            "func"
+        )
+
         if not backup_func:
             return
 
-        ip_disp = secure_router.get("host") or secure_router.get("ip")
-        logging.info(f"🚀 [Фон] Запуск бэкапа: {device_type} / {ip_disp}")
+        ip_disp = (
+            secure_router.get("host")
+            or secure_router.get("ip")
+        )
 
-        created_files = backup_func(secure_router)
-        if created_files and hasattr(plugin_manager, "_rotate_local"):
-            plugin_manager._rotate_local(secure_router.get("backup_path"), secure_router.get("max_backups", 7))
-        logging.info(f"✅ [Фон] Бэкап успешно завершен для {ip_disp}")
-    except Exception as e:
-        logging.error(f"❌ [Фон] Ошибка при бэкапе: {e}")
+        logging.info(
+            "🚀 [Фон] Запуск бэкапа: "
+            "%s / %s",
+            device_type,
+            ip_disp,
+        )
+
+        created_files = (
+            backup_func(
+                secure_router
+            )
+        )
+
+        if (
+            created_files
+            and hasattr(
+                plugin_manager,
+                "_rotate_local",
+            )
+        ):
+
+            plugin_manager._rotate_local(
+                secure_router.get(
+                    "backup_path"
+                ),
+                secure_router.get(
+                    "max_backups",
+                    7,
+                ),
+            )
+
+        logging.info(
+            "✅ [Фон] Бэкап успешно "
+            "завершен для %s",
+            ip_disp,
+        )
+
+    except Exception as exc:
+
+        logging.error(
+            "❌ [Фон] Ошибка при бэкапе: %s",
+            exc,
+        )
+
     finally:
+
         backup_finished()
 
 
 def execute_all_backups_task():
-    """Выполнение массового бэкапа всех устройств с учетом состояния активности"""
+
     backup_started()
+
     try:
+
         if plugin_manager:
+
             plugin_manager.run_all_backups()
-    except Exception as e:
-        logging.error(f"❌ [Фон] Ошибка при массовом бэкапе: {e}")
+
+    except Exception as exc:
+
+        logging.error(
+            "❌ [Фон] Ошибка массового "
+            "бэкапа: %s",
+            exc,
+        )
+
     finally:
+
         backup_finished()
 
 
-# --- 5. Маршруты страниц (Routes) ---
+# =========================================================
+# MAIN PAGE
+# =========================================================
 
-@app.get("/", response_class=HTMLResponse)
+@app.get(
+    "/",
+    response_class=HTMLResponse,
+)
 def read_root(
     request: Request,
-    user: str = Depends(require_auth)
+    user: str = Depends(
+        require_auth
+    ),
 ):
-    """Главная страница"""
-    if not templates:
-        return HTMLResponse("<h2>⚠️ Папка web/templates не найдена</h2>", status_code=500)
 
     devices = []
-    if plugin_manager and hasattr(plugin_manager, "_plugins"):
-        for device_type, plugin_data in plugin_manager._plugins.items():
-            routers = plugin_data.get("routers", [])
-            for index, router in enumerate(routers):
-                ip_addr = router.get("host") or router.get("ip") or router.get("address", "Не указан")
-                b_path = router.get("backup_path", "backups/")
-                
-                count, last_date, age_days = get_device_backup_info(b_path)
 
-                if count == 0 or age_days is None:
-                    row_class = "bg-white hover:bg-gray-50"
+    if (
+        plugin_manager
+        and hasattr(
+            plugin_manager,
+            "_plugins",
+        )
+    ):
+
+        for (
+            device_type,
+            plugin_data,
+        ) in (
+            plugin_manager
+            ._plugins
+            .items()
+        ):
+
+            routers = plugin_data.get(
+                "routers",
+                [],
+            )
+
+            for index, router in enumerate(
+                routers
+            ):
+
+                ip_addr = (
+                    router.get("host")
+                    or router.get("ip")
+                    or router.get(
+                        "address",
+                        "Не указан",
+                    )
+                )
+
+                b_path = router.get(
+                    "backup_path",
+                    "backups/",
+                )
+
+                (
+                    count,
+                    last_date,
+                    age_days,
+                ) = get_device_backup_info(
+                    b_path
+                )
+
+                if (
+                    count == 0
+                    or age_days is None
+                ):
+
+                    row_class = (
+                        "bg-white "
+                        "hover:bg-gray-50"
+                    )
+
                 elif age_days < 15:
-                    row_class = "bg-emerald-50/80 hover:bg-emerald-100/80"
-                elif 15 <= age_days <= 30:
-                    row_class = "bg-amber-100/70 hover:bg-amber-200/70"
+
+                    row_class = (
+                        "bg-emerald-50/80 "
+                        "hover:bg-emerald-100/80"
+                    )
+
+                elif age_days <= 30:
+
+                    row_class = (
+                        "bg-amber-100/70 "
+                        "hover:bg-amber-200/70"
+                    )
+
                 else:
-                    row_class = "bg-rose-100/80 hover:bg-rose-200/80"
+
+                    row_class = (
+                        "bg-rose-100/80 "
+                        "hover:bg-rose-200/80"
+                    )
 
                 devices.append({
-                    "type": device_type,
-                    "ip": ip_addr,
-                    "backup_path": b_path,
-                    "backup_dir_name": Path(b_path).name,
-                    "backup_count": count,
-                    "last_backup_date": last_date,
-                    "row_class": row_class,
-                    "index": index
+                    "type":
+                        device_type,
+
+                    "ip":
+                        ip_addr,
+
+                    "backup_path":
+                        b_path,
+
+                    "backup_dir_name":
+                        Path(
+                            b_path
+                        ).name,
+
+                    "backup_count":
+                        count,
+
+                    "last_backup_date":
+                        last_date,
+
+                    "row_class":
+                        row_class,
+
+                    "index":
+                        index,
                 })
 
-    return templates.TemplateResponse(request, "index.html", {
-        "devices": devices,
-        "scheduler_status": scheduler.get_status_text(),
-        "is_backup_running": is_backup_running(),
-        "service": get_status(),
-    })
+    return templates.TemplateResponse(
+        request,
+        "index.html",
+        {
+            "devices":
+                devices,
+
+            "scheduler_status":
+                scheduler.get_status_text(),
+
+            "is_backup_running":
+                is_backup_running(),
+
+            "service":
+                get_status(),
+        },
+    )
 
 
-@app.post("/service/restart", response_class=HTMLResponse)
+# =========================================================
+# SERVICE PAGE
+# =========================================================
+
+@app.get(
+    "/service",
+    response_class=HTMLResponse,
+)
+def service_page(
+    request: Request,
+    user: str = Depends(
+        require_auth
+    ),
+):
+
+    return templates.TemplateResponse(
+        request,
+        "service.html",
+        {
+            "service":
+                get_status(),
+        },
+    )
+
+
+# =========================================================
+# SERVICE INSTALL
+# =========================================================
+
+@app.post(
+    "/service/install",
+    response_class=HTMLResponse,
+)
+def service_install_endpoint(
+    request: Request,
+    user: str = Depends(
+        require_auth
+    ),
+):
+
+    if is_service_registered():
+
+        return templates.TemplateResponse(
+            request,
+            "service_action.html",
+            {
+                "title":
+                    "Регистрация службы",
+
+                "message":
+                    "Служба уже зарегистрирована.",
+
+                "ok":
+                    True,
+            },
+        )
+
+    # -----------------------------------------------------
+    # Уже администратор
+    # -----------------------------------------------------
+
+    if is_admin():
+
+        ok, message = (
+            install_service()
+        )
+
+        logging.info(
+            "Регистрация службы "
+            "пользователем %s: %s",
+            user,
+            message,
+        )
+
+        return templates.TemplateResponse(
+            request,
+            "service_action.html",
+            {
+                "title":
+                    "Регистрация службы",
+
+                "message":
+                    message,
+
+                "ok":
+                    ok,
+            },
+        )
+
+    # -----------------------------------------------------
+    # Запрашиваем UAC
+    # -----------------------------------------------------
+
+    ok = relaunch_elevated(
+        [
+            "--install-service"
+        ]
+    )
+
+    if not ok:
+
+        return templates.TemplateResponse(
+            request,
+            "service_action.html",
+            {
+                "title":
+                    "Регистрация службы",
+
+                "message":
+                    (
+                        "Не удалось запросить "
+                        "права администратора."
+                    ),
+
+                "ok":
+                    False,
+            },
+        )
+
+    # -----------------------------------------------------
+    # Интерактивный процесс после UAC
+    # -----------------------------------------------------
+
+    if not get_status().get(
+        "service_mode",
+        False,
+    ):
+
+        def delayed_exit():
+
+            import time
+            import os
+
+            time.sleep(5)
+
+            try:
+
+                os._exit(0)
+
+            except Exception:
+
+                pass
+
+        threading.Thread(
+            target=delayed_exit,
+            daemon=True,
+        ).start()
+
+    return templates.TemplateResponse(
+        request,
+        "service_action.html",
+        {
+            "title":
+                "Регистрация службы",
+
+            "message":
+                (
+                    "Запрошена регистрация службы "
+                    "с правами администратора. "
+                    "После подтверждения UAC служба "
+                    "будет зарегистрирована и запущена."
+                ),
+
+            "ok":
+                True,
+        },
+    )
+
+
+# =========================================================
+# SERVICE START
+# =========================================================
+
+@app.post(
+    "/service/start",
+    response_class=HTMLResponse,
+)
+def service_start_endpoint(
+    request: Request,
+    user: str = Depends(
+        require_auth
+    ),
+):
+
+    if not is_service_registered():
+
+        return templates.TemplateResponse(
+            request,
+            "service_action.html",
+            {
+                "title":
+                    "Запуск службы",
+
+                "message":
+                    "Служба не зарегистрирована.",
+
+                "ok":
+                    False,
+            },
+        )
+
+    if is_admin():
+
+        ok, message = (
+            start_service()
+        )
+
+        logging.info(
+            "Запуск службы "
+            "пользователем %s: %s",
+            user,
+            message,
+        )
+
+        return templates.TemplateResponse(
+            request,
+            "service_action.html",
+            {
+                "title":
+                    "Запуск службы",
+
+                "message":
+                    message,
+
+                "ok":
+                    ok,
+            },
+        )
+
+    ok = relaunch_elevated(
+        [
+            "--start-service"
+        ]
+    )
+
+    return templates.TemplateResponse(
+        request,
+        "service_action.html",
+        {
+            "title":
+                "Запуск службы",
+
+            "message":
+                (
+                    "Запрошен запуск службы "
+                    "с правами администратора."
+                    if ok
+                    else
+                    "Не удалось запросить "
+                    "права администратора."
+                ),
+
+            "ok":
+                ok,
+        },
+    )
+
+
+# =========================================================
+# SERVICE RESTART
+# =========================================================
+
+@app.post(
+    "/service/restart",
+    response_class=HTMLResponse,
+)
 def service_restart_endpoint(
     request: Request,
-    user: str = Depends(require_auth)
+    user: str = Depends(
+        require_auth
+    ),
 ):
-    ok, message = schedule_restart()
-    logging.info("Перезапуск службы запрошен пользователем %s: %s", user, message)
-    if not templates:
-        return HTMLResponse(message)
-    return templates.TemplateResponse(request, "service_action.html", {
-        "title": "Перезапуск службы",
-        "message": message,
-        "ok": ok,
-    })
+
+    if not is_service_registered():
+
+        return templates.TemplateResponse(
+            request,
+            "service_action.html",
+            {
+                "title":
+                    "Перезапуск службы",
+
+                "message":
+                    "Служба не зарегистрирована.",
+
+                "ok":
+                    False,
+            },
+        )
+
+    ok, message = (
+        schedule_restart()
+    )
+
+    logging.info(
+        "Перезапуск службы "
+        "запрошен пользователем %s: %s",
+        user,
+        message,
+    )
+
+    return templates.TemplateResponse(
+        request,
+        "service_action.html",
+        {
+            "title":
+                "Перезапуск службы",
+
+            "message":
+                message,
+
+            "ok":
+                ok,
+        },
+    )
 
 
-@app.post("/service/stop", response_class=HTMLResponse)
+# =========================================================
+# SERVICE STOP
+# =========================================================
+
+@app.post(
+    "/service/stop",
+    response_class=HTMLResponse,
+)
 def service_stop_endpoint(
     request: Request,
-    user: str = Depends(require_auth)
+    user: str = Depends(
+        require_auth
+    ),
 ):
-    ok, message = schedule_stop()
-    logging.info("Остановка службы запрошена пользователем %s: %s", user, message)
-    if not templates:
-        return HTMLResponse(message)
-    return templates.TemplateResponse(request, "service_action.html", {
-        "title": "Остановка службы",
-        "message": message,
-        "ok": ok,
-    })
+
+    ok, message = (
+        schedule_stop()
+    )
+
+    logging.info(
+        "Остановка службы "
+        "запрошена пользователем %s: %s",
+        user,
+        message,
+    )
+
+    return templates.TemplateResponse(
+        request,
+        "service_action.html",
+        {
+            "title":
+                "Остановка службы",
+
+            "message":
+                message,
+
+            "ok":
+                ok,
+        },
+    )
 
 
-@app.get("/add", response_class=HTMLResponse)
+# =========================================================
+# SERVICE UNINSTALL
+# =========================================================
+
+@app.post(
+    "/service/uninstall",
+    response_class=HTMLResponse,
+)
+def service_uninstall_endpoint(
+    request: Request,
+    user: str = Depends(
+        require_auth
+    ),
+):
+
+    if not is_service_registered():
+
+        return templates.TemplateResponse(
+            request,
+            "service_action.html",
+            {
+                "title":
+                    "Удаление службы",
+
+                "message":
+                    "Служба не зарегистрирована.",
+
+                "ok":
+                    True,
+            },
+        )
+
+    # -----------------------------------------------------
+    # Уже администратор
+    # -----------------------------------------------------
+
+    if is_admin():
+
+        ok, message = (
+            uninstall_service()
+        )
+
+        logging.info(
+            "Удаление службы "
+            "пользователем %s: %s",
+            user,
+            message,
+        )
+
+        return templates.TemplateResponse(
+            request,
+            "service_action.html",
+            {
+                "title":
+                    "Удаление службы",
+
+                "message":
+                    message,
+
+                "ok":
+                    ok,
+            },
+        )
+
+    # -----------------------------------------------------
+    # UAC
+    # -----------------------------------------------------
+
+    ok = relaunch_elevated(
+        [
+            "--uninstall-service"
+        ]
+    )
+
+    if not ok:
+
+        return templates.TemplateResponse(
+            request,
+            "service_action.html",
+            {
+                "title":
+                    "Удаление службы",
+
+                "message":
+                    (
+                        "Не удалось запросить "
+                        "права администратора."
+                    ),
+
+                "ok":
+                    False,
+            },
+        )
+
+    return templates.TemplateResponse(
+        request,
+        "service_action.html",
+        {
+            "title":
+                "Удаление службы",
+
+            "message":
+                (
+                    "Запрошено удаление службы "
+                    "с правами администратора. "
+                    "После подтверждения UAC "
+                    "служба будет удалена."
+                ),
+
+            "ok":
+                True,
+        },
+    )
+
+
+# =========================================================
+# ADD ROUTER
+# =========================================================
+
+@app.get(
+    "/add",
+    response_class=HTMLResponse,
+)
 def add_router_page(
     request: Request,
-    user: str = Depends(require_auth)
+    user: str = Depends(
+        require_auth
+    ),
 ):
-    plugins_list = list(plugin_manager._plugins.keys()) if plugin_manager else []
-    if templates and (BASE_DIR / "web" / "templates" / "add.html").exists():
-        return templates.TemplateResponse(request, "add.html", {
-            "plugins": plugins_list
-        })
-    return HTMLResponse("<h3>Форма добавления недоступна</h3><a href='/'>Назад</a>")
+
+    plugins_list = (
+        list(
+            plugin_manager
+            ._plugins
+            .keys()
+        )
+        if plugin_manager
+        else []
+    )
+
+    return templates.TemplateResponse(
+        request,
+        "add.html",
+        {
+            "plugins":
+                plugins_list
+        },
+    )
 
 
-@app.post("/save-router")
+# =========================================================
+# SAVE ROUTER
+# =========================================================
+
+@app.post(
+    "/save-router"
+)
 async def save_router_endpoint(
-    user: str = Depends(require_auth),
+    user: str = Depends(
+        require_auth
+    ),
     device_type: str = Form(...),
     ip: str = Form(...),
     version: str = Form("7"),
@@ -412,314 +1365,972 @@ async def save_router_endpoint(
     ftp_host: str = Form(""),
     ftp_dir: str = Form(""),
     ftp_user: str = Form(""),
-    ftp_pass: str = Form("")
+    ftp_pass: str = Form(""),
 ):
-    if not plugin_manager or device_type not in plugin_manager._plugins:
-        raise HTTPException(status_code=400, detail="Указанный плагин не найден")
 
-    encrypted_ssh_pass = storage.encrypt(ssh_pass) if ssh_pass else ""
-    
+    if (
+        not plugin_manager
+        or device_type
+        not in plugin_manager._plugins
+    ):
+
+        raise HTTPException(
+            status_code=400,
+            detail="Указанный плагин не найден",
+        )
+
+    encrypted_ssh_pass = (
+        storage.encrypt(
+            ssh_pass
+        )
+        if ssh_pass
+        else ""
+    )
+
     new_router = {
-        "host": ip,
-        "ip": ip,
-        "username": username,
-        "ssh_pass": encrypted_ssh_pass,
-        "backup_path": backup_path,
-        "max_backups": int(max_backups)
+        "host":
+            ip,
+
+        "ip":
+            ip,
+
+        "username":
+            username,
+
+        "ssh_pass":
+            encrypted_ssh_pass,
+
+        "backup_path":
+            backup_path,
+
+        "max_backups":
+            int(max_backups),
     }
 
-    if device_type.lower() == "mikrotik":
-        new_router["version"] = version
-        new_router["private_key"] = private_key if private_key else "id_rsa.key"
+    if (
+        device_type.lower()
+        == "mikrotik"
+    ):
+
+        new_router[
+            "version"
+        ] = version
+
+        new_router[
+            "private_key"
+        ] = (
+            private_key
+            if private_key
+            else "id_rsa.key"
+        )
+
     else:
-        new_router["ssh_key"] = private_key if private_key else "id_rsa.key"
-        new_router["port"] = 6132
+
+        new_router[
+            "ssh_key"
+        ] = (
+            private_key
+            if private_key
+            else "id_rsa.key"
+        )
+
+        new_router[
+            "port"
+        ] = 6132
 
     if ftp_host:
+
         new_router["ftp"] = {
-            "host": ftp_host,
-            "port": 21,
-            "remote_dir": ftp_dir,
-            "user": ftp_user,
-            "pass": storage.encrypt(ftp_pass) if ftp_pass else ""
+            "host":
+                ftp_host,
+
+            "port":
+                21,
+
+            "remote_dir":
+                ftp_dir,
+
+            "user":
+                ftp_user,
+
+            "pass":
+                storage.encrypt(
+                    ftp_pass
+                )
+                if ftp_pass
+                else "",
         }
 
-    plugin_data = plugin_manager._plugins[device_type]
-    plugin_data["routers"].append(new_router)
+    plugin_data = (
+        plugin_manager
+        ._plugins[
+            device_type
+        ]
+    )
 
-    target_dir = BASE_DIR / "plugins"
-    for p_folder in target_dir.iterdir():
-        if p_folder.is_dir() and p_folder.name.lower() == device_type.lower():
-            json_file = p_folder / "routers.json"
-            with open(json_file, "w", encoding="utf-8") as f:
-                json.dump(plugin_data["routers"], f, ensure_ascii=False, indent=4)
+    plugin_data[
+        "routers"
+    ].append(
+        new_router
+    )
+
+    target_dir = (
+        BASE_DIR / "plugins"
+    )
+
+    for p_folder in (
+        target_dir.iterdir()
+    ):
+
+        if (
+            p_folder.is_dir()
+            and
+            p_folder.name.lower()
+            == device_type.lower()
+        ):
+
+            json_file = (
+                p_folder
+                / "routers.json"
+            )
+
+            with open(
+                json_file,
+                "w",
+                encoding="utf-8",
+            ) as f:
+
+                json.dump(
+                    plugin_data[
+                        "routers"
+                    ],
+                    f,
+                    ensure_ascii=False,
+                    indent=4,
+                )
+
             break
 
-    logging.info(f"➕ Добавлено новое устройство ({device_type}): {ip}")
-    return RedirectResponse(url="/", status_code=303)
+    logging.info(
+        "➕ Добавлено новое устройство "
+        "(%s): %s",
+        device_type,
+        ip,
+    )
+
+    return RedirectResponse(
+        url="/",
+        status_code=303,
+    )
 
 
-@app.get("/run-progress/{device_type}/{index}")
+# =========================================================
+# SINGLE BACKUP
+# =========================================================
+
+@app.get(
+    "/run-progress/{device_type}/{index}"
+)
 def run_backup(
     device_type: str,
     index: int,
-    background_tasks: BackgroundTasks,
-    user: str = Depends(require_auth)
+    background_tasks:
+        BackgroundTasks,
+    user: str = Depends(
+        require_auth
+    ),
 ):
+
     if is_backup_running():
-        return RedirectResponse(url=f"/logs/device/{device_type}/{index}", status_code=303)
 
-    plugin = plugin_manager._plugins.get(device_type) if plugin_manager else None
-    if not plugin or index < 0 or index >= len(plugin.get("routers", [])):
-        return HTMLResponse("<h3>Устройство не найдено</h3><a href='/'>Назад</a>", status_code=404)
+        return RedirectResponse(
+            url=(
+                f"/logs/device/"
+                f"{device_type}/{index}"
+            ),
+            status_code=303,
+        )
 
-    router = plugin["routers"][index]
+    plugin = (
+        plugin_manager
+        ._plugins
+        .get(device_type)
+        if plugin_manager
+        else None
+    )
 
-    secure_router = copy.deepcopy(router)
-    if "ssh_pass" in secure_router and secure_router["ssh_pass"]:
-        secure_router["ssh_pass"] = storage.decrypt(secure_router["ssh_pass"])
+    if (
+        not plugin
+        or index < 0
+        or index >= len(
+            plugin.get(
+                "routers",
+                []
+            )
+        )
+    ):
 
-    background_tasks.add_task(execute_device_backup_task, device_type, index, secure_router)
-    return RedirectResponse(url=f"/logs/device/{device_type}/{index}", status_code=303)
+        return HTMLResponse(
+            "<h3>Устройство не найдено</h3>"
+            "<a href='/'>Назад</a>",
+            status_code=404,
+        )
+
+    router = (
+        plugin["routers"][index]
+    )
+
+    secure_router = copy.deepcopy(
+        router
+    )
+
+    if (
+        "ssh_pass"
+        in secure_router
+        and secure_router[
+            "ssh_pass"
+        ]
+    ):
+
+        secure_router[
+            "ssh_pass"
+        ] = storage.decrypt(
+            secure_router[
+                "ssh_pass"
+            ]
+        )
+
+    background_tasks.add_task(
+        execute_device_backup_task,
+        device_type,
+        index,
+        secure_router,
+    )
+
+    return RedirectResponse(
+        url=(
+            f"/logs/device/"
+            f"{device_type}/{index}"
+        ),
+        status_code=303,
+    )
 
 
-@app.post("/run-now")
+# =========================================================
+# ALL BACKUPS
+# =========================================================
+
+@app.post(
+    "/run-now"
+)
 def run_now_endpoint(
-    background_tasks: BackgroundTasks,
-    user: str = Depends(require_auth)
+    background_tasks:
+        BackgroundTasks,
+    user: str = Depends(
+        require_auth
+    ),
 ):
+
     if not is_backup_running():
-        background_tasks.add_task(execute_all_backups_task)
-    return RedirectResponse(url="/logs/main", status_code=303)
+
+        background_tasks.add_task(
+            execute_all_backups_task
+        )
+
+    return RedirectResponse(
+        url="/logs/main",
+        status_code=303,
+    )
 
 
-@app.get("/backups/{device_type}/{index}", response_class=HTMLResponse)
+# =========================================================
+# BACKUPS
+# =========================================================
+
+@app.get(
+    "/backups/{device_type}/{index}",
+    response_class=HTMLResponse,
+)
 def backups_page(
     request: Request,
     device_type: str,
     index: int,
-    user: str = Depends(require_auth)
+    user: str = Depends(
+        require_auth
+    ),
 ):
-    plugin = plugin_manager._plugins.get(device_type) if plugin_manager else None
-    if not plugin or index >= len(plugin.get("routers", [])):
-        return HTMLResponse("<h3>Устройство не найдено</h3>", status_code=404)
 
-    router = plugin["routers"][index]
-    backup_path = Path(router.get("backup_path", "backups"))
+    plugin = (
+        plugin_manager
+        ._plugins
+        .get(device_type)
+        if plugin_manager
+        else None
+    )
+
+    if (
+        not plugin
+        or index < 0
+        or index >= len(
+            plugin.get(
+                "routers",
+                []
+            )
+        )
+    ):
+
+        return HTMLResponse(
+            "<h3>Устройство не найдено</h3>",
+            status_code=404,
+        )
+
+    router = (
+        plugin["routers"][index]
+    )
+
+    backup_path = Path(
+        router.get(
+            "backup_path",
+            "backups",
+        )
+    )
+
     if not backup_path.is_absolute():
-        backup_path = BASE_DIR / backup_path
 
-    grouped_backups = defaultdict(list)
+        backup_path = (
+            BASE_DIR
+            / backup_path
+        )
 
-    if backup_path.exists() and backup_path.is_dir():
-        for item in sorted(backup_path.iterdir(), reverse=True):
+    grouped_backups = (
+        defaultdict(list)
+    )
+
+    if (
+        backup_path.exists()
+        and backup_path.is_dir()
+    ):
+
+        for item in sorted(
+            backup_path.iterdir(),
+            reverse=True,
+        ):
+
             if item.is_dir():
-                folder_name = item.name
-                files_in_dir = sorted(
-                    [f for f in item.iterdir() if f.is_file()],
-                    key=lambda x: x.name
+
+                folder_name = (
+                    item.name
                 )
+
+                files_in_dir = sorted(
+                    [
+                        f
+                        for f in item.iterdir()
+                        if f.is_file()
+                    ],
+                    key=lambda x:
+                        x.name,
+                )
+
                 for f in files_in_dir:
-                    size_bytes = f.stat().st_size
-                    size_str = f"{size_bytes / 1024:.1f} KB" if size_bytes >= 1024 else f"{size_bytes} B"
-                    rel_path = f"{folder_name}/{f.name}"
-                    
-                    grouped_backups[folder_name].append({
-                        "name": f.name,
-                        "rel_path": rel_path,
-                        "size": size_str
+
+                    size_bytes = (
+                        f.stat()
+                        .st_size
+                    )
+
+                    if (
+                        size_bytes
+                        >= 1024
+                    ):
+
+                        size_str = (
+                            f"{size_bytes / 1024:.1f} KB"
+                        )
+
+                    else:
+
+                        size_str = (
+                            f"{size_bytes} B"
+                        )
+
+                    rel_path = (
+                        f"{folder_name}/"
+                        f"{f.name}"
+                    )
+
+                    grouped_backups[
+                        folder_name
+                    ].append({
+                        "name":
+                            f.name,
+
+                        "rel_path":
+                            rel_path,
+
+                        "size":
+                            size_str,
                     })
+
             elif item.is_file():
-                size_bytes = item.stat().st_size
-                size_str = f"{size_bytes / 1024:.1f} KB" if size_bytes >= 1024 else f"{size_bytes} B"
-                grouped_backups["Корневой каталог"].append({
-                    "name": item.name,
-                    "rel_path": item.name,
-                    "size": size_str
+
+                size_bytes = (
+                    item.stat()
+                    .st_size
+                )
+
+                if size_bytes >= 1024:
+
+                    size_str = (
+                        f"{size_bytes / 1024:.1f} KB"
+                    )
+
+                else:
+
+                    size_str = (
+                        f"{size_bytes} B"
+                    )
+
+                grouped_backups[
+                    "Корневой каталог"
+                ].append({
+                    "name":
+                        item.name,
+
+                    "rel_path":
+                        item.name,
+
+                    "size":
+                        size_str,
                 })
 
-    return templates.TemplateResponse(request, "backups.html", {
-        "device_type": device_type,
-        "index": index,
-        "router": router,
-        "grouped_backups": dict(grouped_backups),
-        "backup_path": str(backup_path)
-    })
+    return templates.TemplateResponse(
+        request,
+        "backups.html",
+        {
+            "device_type":
+                device_type,
+
+            "index":
+                index,
+
+            "router":
+                router,
+
+            "grouped_backups":
+                dict(
+                    grouped_backups
+                ),
+
+            "backup_path":
+                str(
+                    backup_path
+                ),
+        },
+    )
 
 
-@app.get("/scheduler", response_class=HTMLResponse)
+# =========================================================
+# SCHEDULER
+# =========================================================
+
+@app.get(
+    "/scheduler",
+    response_class=HTMLResponse,
+)
 def scheduler_page(
     request: Request,
-    user: str = Depends(require_auth)
+    user: str = Depends(
+        require_auth
+    ),
 ):
-    return templates.TemplateResponse(request, "scheduler.html", {
-        "config": scheduler.config
-    })
+
+    return templates.TemplateResponse(
+        request,
+        "scheduler.html",
+        {
+            "config":
+                scheduler.config
+        },
+    )
 
 
-@app.post("/scheduler/save")
+@app.post(
+    "/scheduler/save"
+)
 async def save_scheduler_config(
-    user: str = Depends(require_auth),
+    user: str = Depends(
+        require_auth
+    ),
     enabled: bool = Form(False),
     mode: str = Form("daily"),
     daily_time: str = Form("03:00"),
-    interval_hours: int = Form(24)
+    interval_hours: int = Form(24),
 ):
+
     scheduler.save_config({
-        "enabled": enabled,
-        "mode": mode,
-        "daily_time": daily_time,
-        "interval_hours": interval_hours
+        "enabled":
+            enabled,
+
+        "mode":
+            mode,
+
+        "daily_time":
+            daily_time,
+
+        "interval_hours":
+            interval_hours,
     })
-    logging.info(f"⏰ Изменены настройки планировщика: {scheduler.get_status_text()}")
-    return RedirectResponse(url="/", status_code=303)
+
+    logging.info(
+        "⏰ Изменены настройки "
+        "планировщика: %s",
+        scheduler.get_status_text(),
+    )
+
+    return RedirectResponse(
+        url="/",
+        status_code=303,
+    )
 
 
-@app.get("/download-backup/{device_type}/{index}/{filepath:path}")
+# =========================================================
+# DOWNLOAD BACKUP
+# =========================================================
+
+@app.get(
+    "/download-backup/"
+    "{device_type}/{index}/{filepath:path}"
+)
 def download_backup(
     device_type: str,
     index: int,
     filepath: str,
-    user: str = Depends(require_auth)
+    user: str = Depends(
+        require_auth
+    ),
 ):
-    plugin = plugin_manager._plugins.get(device_type) if plugin_manager else None
-    if not plugin or index >= len(plugin.get("routers", [])):
-        raise HTTPException(status_code=404, detail="Устройство не найдено")
 
-    router = plugin["routers"][index]
-    backup_path = Path(router.get("backup_path", "backups"))
+    plugin = (
+        plugin_manager
+        ._plugins
+        .get(device_type)
+        if plugin_manager
+        else None
+    )
+
+    if (
+        not plugin
+        or index < 0
+        or index >= len(
+            plugin.get(
+                "routers",
+                []
+            )
+        )
+    ):
+
+        raise HTTPException(
+            status_code=404,
+            detail="Устройство не найдено",
+        )
+
+    router = (
+        plugin["routers"][index]
+    )
+
+    backup_path = Path(
+        router.get(
+            "backup_path",
+            "backups",
+        )
+    )
+
     if not backup_path.is_absolute():
-        backup_path = BASE_DIR / backup_path
 
-    file_full_path = (backup_path / filepath).resolve()
+        backup_path = (
+            BASE_DIR
+            / backup_path
+        )
 
-    if not str(file_full_path).startswith(str(backup_path.resolve())):
-        raise HTTPException(status_code=403, detail="Отказано в доступе")
+    backup_root = (
+        backup_path.resolve()
+    )
 
-    if not file_full_path.exists() or not file_full_path.is_file():
-        raise HTTPException(status_code=404, detail="Файл бэкапа не найден")
+    file_full_path = (
+        backup_path
+        / filepath
+    ).resolve()
+
+    try:
+
+        file_full_path.relative_to(
+            backup_root
+        )
+
+    except ValueError:
+
+        raise HTTPException(
+            status_code=403,
+            detail="Отказано в доступе",
+        )
+
+    if (
+        not file_full_path.exists()
+        or not file_full_path.is_file()
+    ):
+
+        raise HTTPException(
+            status_code=404,
+            detail="Файл бэкапа не найден",
+        )
 
     return FileResponse(
         path=file_full_path,
         filename=file_full_path.name,
-        media_type="application/octet-stream"
+        media_type=(
+            "application/octet-stream"
+        ),
     )
 
 
-@app.get("/logs/main", response_class=HTMLResponse)
+# =========================================================
+# MAIN LOG
+# =========================================================
+
+@app.get(
+    "/logs/main",
+    response_class=HTMLResponse,
+)
 def logs_main_endpoint(
     request: Request,
     limit: str = "100",
     raw: bool = False,
-    user: str = Depends(require_auth)
+    user: str = Depends(
+        require_auth
+    ),
 ):
-    log_file = LOGS_DIR / "app.log"
-    if not log_file.exists():
-        log_file = LOGS_DIR / "app.log"
 
-    content, lines_shown, has_more = read_log_tail(log_file, limit)
+    log_file = (
+        LOGS_DIR
+        / "app.log"
+    )
+
+    content, lines_shown, has_more = (
+        read_log_tail(
+            log_file,
+            limit,
+        )
+    )
+
     if raw:
-        return HTMLResponse(content, media_type="text/plain")
 
-    return templates.TemplateResponse(request, "logs.html", {
-        "log_type": "Main Service Log",
-        "content": content,
-        "lines_shown": int(lines_shown),
-        "has_more": has_more,
-        "limit": limit
-    })
+        return HTMLResponse(
+            content,
+            media_type="text/plain",
+        )
+
+    return templates.TemplateResponse(
+        request,
+        "logs.html",
+        {
+            "log_type":
+                "Main Service Log",
+
+            "content":
+                content,
+
+            "lines_shown":
+                int(lines_shown),
+
+            "has_more":
+                has_more,
+
+            "limit":
+                limit,
+        },
+    )
 
 
-@app.get("/logs/global", response_class=HTMLResponse)
+# =========================================================
+# GLOBAL LOG
+# =========================================================
+
+@app.get(
+    "/logs/global",
+    response_class=HTMLResponse,
+)
 def logs_global_endpoint(
     request: Request,
     limit: str = "100",
     raw: bool = False,
-    user: str = Depends(require_auth)
+    user: str = Depends(
+        require_auth
+    ),
 ):
-    log_file = LOGS_DIR / "app.log"
-    content, lines_shown, has_more = read_log_tail(log_file, limit)
+
+    log_file = (
+        LOGS_DIR
+        / "app.log"
+    )
+
+    content, lines_shown, has_more = (
+        read_log_tail(
+            log_file,
+            limit,
+        )
+    )
+
     if raw:
-        return HTMLResponse(content, media_type="text/plain")
 
-    return templates.TemplateResponse(request, "logs.html", {
-        "log_type": "Web Server Log",
-        "content": content,
-        "lines_shown": int(lines_shown),
-        "has_more": has_more,
-        "limit": limit
-    })
+        return HTMLResponse(
+            content,
+            media_type="text/plain",
+        )
+
+    return templates.TemplateResponse(
+        request,
+        "logs.html",
+        {
+            "log_type":
+                "Web Server Log",
+
+            "content":
+                content,
+
+            "lines_shown":
+                int(lines_shown),
+
+            "has_more":
+                has_more,
+
+            "limit":
+                limit,
+        },
+    )
 
 
-@app.get("/logs/device/{device_type}/{index}", response_class=HTMLResponse)
+# =========================================================
+# DEVICE LOG
+# =========================================================
+
+@app.get(
+    "/logs/device/"
+    "{device_type}/{index}",
+    response_class=HTMLResponse,
+)
 def device_logs(
     request: Request,
     device_type: str,
     index: int,
     limit: str = "100",
     raw: bool = False,
-    user: str = Depends(require_auth)
+    user: str = Depends(
+        require_auth
+    ),
 ):
-    device_name = f"{device_type} #{index}"
 
-    if plugin_manager and device_type in plugin_manager._plugins:
-        routers = plugin_manager._plugins[device_type].get("routers", [])
-        if 0 <= index < len(routers):
-            router = routers[index]
-            device_name = router.get("host") or router.get("ip") or router.get("address") or device_name
+    device_name = (
+        f"{device_type} #{index}"
+    )
 
-    log_file = LOGS_DIR / "app.log"
-    content, lines_shown, has_more = read_log_tail(log_file, limit)
+    if (
+        plugin_manager
+        and device_type
+        in plugin_manager._plugins
+    ):
+
+        routers = (
+            plugin_manager
+            ._plugins[
+                device_type
+            ].get(
+                "routers",
+                [],
+            )
+        )
+
+        if (
+            0 <= index
+            < len(routers)
+        ):
+
+            router = (
+                routers[index]
+            )
+
+            device_name = (
+                router.get("host")
+                or router.get("ip")
+                or router.get("address")
+                or device_name
+            )
+
+    log_file = (
+        LOGS_DIR
+        / "app.log"
+    )
+
+    content, lines_shown, has_more = (
+        read_log_tail(
+            log_file,
+            limit,
+        )
+    )
 
     if raw:
-        return HTMLResponse(content, media_type="text/plain")
 
-    return templates.TemplateResponse(request, "logs.html", {
-        "log_type": f"Устройство {device_name}",
-        "content": content,
-        "lines_shown": int(lines_shown),
-        "has_more": has_more,
-        "limit": limit
-    })
+        return HTMLResponse(
+            content,
+            media_type="text/plain",
+        )
+
+    return templates.TemplateResponse(
+        request,
+        "logs.html",
+        {
+            "log_type":
+                f"Устройство {device_name}",
+
+            "content":
+                content,
+
+            "lines_shown":
+                int(lines_shown),
+
+            "has_more":
+                has_more,
+
+            "limit":
+                limit,
+        },
+    )
 
 
-@app.get("/edit/{device_type}/{index}", response_class=HTMLResponse)
+# =========================================================
+# EDIT ROUTER
+# =========================================================
+
+@app.get(
+    "/edit/{device_type}/{index}",
+    response_class=HTMLResponse,
+)
 def edit_router(
     request: Request,
     device_type: str,
     index: int,
-    user: str = Depends(require_auth)
+    user: str = Depends(
+        require_auth
+    ),
 ):
-    plugin = plugin_manager._plugins.get(device_type) if plugin_manager else None
-    if not plugin or index >= len(plugin.get("routers", [])):
-        return HTMLResponse("<h3>Устройство не найдено</h3>", status_code=404)
 
-    router = copy.deepcopy(plugin["routers"][index])
+    plugin = (
+        plugin_manager
+        ._plugins
+        .get(device_type)
+        if plugin_manager
+        else None
+    )
 
-    if "ssh_pass" in router and router["ssh_pass"]:
-        router["ssh_pass_decrypted"] = storage.decrypt(router["ssh_pass"])
+    if (
+        not plugin
+        or index < 0
+        or index >= len(
+            plugin.get(
+                "routers",
+                []
+            )
+        )
+    ):
+
+        return HTMLResponse(
+            "<h3>Устройство не найдено</h3>",
+            status_code=404,
+        )
+
+    router = copy.deepcopy(
+        plugin["routers"][index]
+    )
+
+    if (
+        "ssh_pass" in router
+        and router["ssh_pass"]
+    ):
+
+        router[
+            "ssh_pass_decrypted"
+        ] = storage.decrypt(
+            router["ssh_pass"]
+        )
+
     else:
-        router["ssh_pass_decrypted"] = ""
 
-    if "ftp" in router and isinstance(router["ftp"], dict):
-        if "pass" in router["ftp"] and router["ftp"]["pass"]:
-            router["ftp"]["pass_decrypted"] = storage.decrypt(router["ftp"]["pass"])
+        router[
+            "ssh_pass_decrypted"
+        ] = ""
+
+    if (
+        "ftp" in router
+        and isinstance(
+            router["ftp"],
+            dict,
+        )
+    ):
+
+        if (
+            "pass"
+            in router["ftp"]
+            and router["ftp"]["pass"]
+        ):
+
+            router[
+                "ftp"
+            ][
+                "pass_decrypted"
+            ] = storage.decrypt(
+                router[
+                    "ftp"
+                ]["pass"]
+            )
+
         else:
-            router["ftp"]["pass_decrypted"] = ""
 
-    return templates.TemplateResponse(request, "edit.html", {
-        "device_type": device_type,
-        "index": index,
-        "router": router
-    })
+            router[
+                "ftp"
+            ][
+                "pass_decrypted"
+            ] = ""
+
+    return templates.TemplateResponse(
+        request,
+        "edit.html",
+        {
+            "device_type":
+                device_type,
+
+            "index":
+                index,
+
+            "router":
+                router,
+        },
+    )
 
 
-@app.post("/update-router/{device_type}/{index}")
-    
+# =========================================================
+# UPDATE ROUTER
+# =========================================================
+
+@app.post(
+    "/update-router/"
+    "{device_type}/{index}"
+)
 async def update_router(
     device_type: str,
     index: int,
-    user: str = Depends(require_auth),
+    user: str = Depends(
+        require_auth
+    ),
     ip: str = Form(...),
     version: str = Form("7"),
     username: str = Form("admin"),
@@ -732,56 +2343,193 @@ async def update_router(
     ftp_user: str = Form(""),
     ftp_pass: str = Form(""),
     port: int = Form(22),
-    ftp_port: int = Form(21)
+    ftp_port: int = Form(21),
 ):
-    if not plugin_manager or device_type not in plugin_manager._plugins:
-        raise HTTPException(status_code=400, detail="Плагин не найден")
 
-    routers_list = plugin_manager._plugins[device_type].get("routers", [])
-    if index < 0 or index >= len(routers_list):
-        raise HTTPException(status_code=404, detail="Устройство не найдено")
+    if (
+        not plugin_manager
+        or device_type
+        not in plugin_manager._plugins
+    ):
+
+        raise HTTPException(
+            status_code=400,
+            detail="Плагин не найден",
+        )
+
+    routers_list = (
+        plugin_manager
+        ._plugins[
+            device_type
+        ].get(
+            "routers",
+            [],
+        )
+    )
+
+    if (
+        index < 0
+        or index >= len(
+            routers_list
+        )
+    ):
+
+        raise HTTPException(
+            status_code=404,
+            detail="Устройство не найдено",
+        )
 
     updated_router = {
-        "host": ip,
-        "ip": ip,
-        "username": username,
-        "ssh_pass": storage.encrypt(ssh_pass) if ssh_pass else "",
-        "backup_path": backup_path,
-        "max_backups": int(max_backups)
+        "host":
+            ip,
+
+        "ip":
+            ip,
+
+        "username":
+            username,
+
+        "ssh_pass":
+            storage.encrypt(
+                ssh_pass
+            )
+            if ssh_pass
+            else "",
+
+        "backup_path":
+            backup_path,
+
+        "max_backups":
+            int(max_backups),
     }
 
-    if device_type.lower() == "mikrotik":
-        updated_router["version"] = version
-        updated_router["private_key"] = private_key if private_key else "id_rsa.key"
+    if (
+        device_type.lower()
+        == "mikrotik"
+    ):
+
+        updated_router[
+            "version"
+        ] = version
+
+        updated_router[
+            "private_key"
+        ] = (
+            private_key
+            if private_key
+            else "id_rsa.key"
+        )
+
         if port != 22:
-            updated_router["port"] = port
+
+            updated_router[
+                "port"
+            ] = port
+
     else:
-        updated_router["ssh_key"] = private_key if private_key else "id_rsa.key"
-        updated_router["port"] = port
+
+        updated_router[
+            "ssh_key"
+        ] = (
+            private_key
+            if private_key
+            else "id_rsa.key"
+        )
+
+        updated_router[
+            "port"
+        ] = port
 
     if ftp_host:
-        updated_router["ftp"] = {
-            "host": ftp_host,
-            "port": int(ftp_port),
-            "remote_dir": ftp_dir,
-            "user": ftp_user,
-            "pass": storage.encrypt(ftp_pass) if ftp_pass else ""
+
+        updated_router[
+            "ftp"
+        ] = {
+            "host":
+                ftp_host,
+
+            "port":
+                int(ftp_port),
+
+            "remote_dir":
+                ftp_dir,
+
+            "user":
+                ftp_user,
+
+            "pass":
+                storage.encrypt(
+                    ftp_pass
+                )
+                if ftp_pass
+                else "",
         }
 
-    routers_list[index] = updated_router
+    routers_list[
+        index
+    ] = updated_router
 
-    target_dir = BASE_DIR / "plugins"
-    for p_folder in target_dir.iterdir():
-        if p_folder.is_dir() and p_folder.name.lower() == device_type.lower():
-            json_file = p_folder / "routers.json"
-            with open(json_file, "w", encoding="utf-8") as f:
-                json.dump(routers_list, f, ensure_ascii=False, indent=4)
+    target_dir = (
+        BASE_DIR / "plugins"
+    )
+
+    for p_folder in (
+        target_dir.iterdir()
+    ):
+
+        if (
+            p_folder.is_dir()
+            and
+            p_folder.name.lower()
+            == device_type.lower()
+        ):
+
+            json_file = (
+                p_folder
+                / "routers.json"
+            )
+
+            with open(
+                json_file,
+                "w",
+                encoding="utf-8",
+            ) as f:
+
+                json.dump(
+                    routers_list,
+                    f,
+                    ensure_ascii=False,
+                    indent=4,
+                )
+
             break
 
-    logging.info(f"⚙ Обновлены настройки устройства [{device_type}] #{index}: {ip}")
-    return RedirectResponse(url="/", status_code=303)
+    logging.info(
+        "⚙ Обновлены настройки "
+        "устройства [%s] #%s: %s",
+        device_type,
+        index,
+        ip,
+    )
 
+    return RedirectResponse(
+        url="/",
+        status_code=303,
+    )
+
+
+# =========================================================
+# RUN DIRECTLY
+# =========================================================
 
 if __name__ == "__main__":
+
     import uvicorn
-    uvicorn.run("web.server:app", host="127.0.0.1", port=8000, reload=True)
+
+    uvicorn.run(
+        "web.server:app",
+        host="127.0.0.1",
+        port=8080,
+        reload=False,
+        log_config=None,
+    )
