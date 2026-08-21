@@ -6,84 +6,108 @@ import ctypes
 import logging
 import platform
 import subprocess
-from pathlib import Path
 
-from core.context import BASE_DIR, CONFIG_FILE, load_json
+from core.context import (
+    BASE_DIR,
+    CONFIG_FILE,
+    load_json,
+)
+
 
 SERVICE_NAME = "NetworkBackupManager"
-LINUX_UNIT = f"{SERVICE_NAME.lower()}.service"
 
-DESCRIPTION = "Служба автоматического резервного копирования сетевого оборудования"
+LINUX_UNIT = (
+    f"{SERVICE_NAME.lower()}.service"
+)
 
-
-# =========================================================
-# Учётная запись службы
-# =========================================================
-
-# Сейчас Windows-задача запускается от SYSTEM.
-# Если в будущем захотим использовать отдельного пользователя,
-# меняем это значение в одном месте.
-WINDOWS_SERVICE_ACCOUNT = "SYSTEM"
-
-# SID NT AUTHORITY\SYSTEM
-WINDOWS_SYSTEM_SID = "*S-1-5-18"
-
-# SID BUILTIN\Administrators
-WINDOWS_ADMINISTRATORS_SID = "*S-1-5-32-544"
-
-# SID Everyone
-WINDOWS_EVERYONE_SID = "*S-1-1-0"
-
-# SID Authenticated Users
-WINDOWS_AUTH_USERS_SID = "*S-1-5-11"
-
-# SID Users
-WINDOWS_USERS_SID = "*S-1-5-32-545"
+DESCRIPTION = (
+    "Служба автоматического резервного "
+    "копирования сетевого оборудования"
+)
 
 
 # =========================================================
-# Общие функции
+# PRIVILEGES
 # =========================================================
 
 def is_admin() -> bool:
+    """
+    Проверка административных прав.
+
+    Windows:
+        Administrator
+
+    Linux:
+        root
+    """
+
     try:
+
         if platform.system() == "Windows":
-            return ctypes.windll.shell32.IsUserAnAdmin() != 0
+
+            return (
+                ctypes.windll.shell32.IsUserAnAdmin()
+                != 0
+            )
 
         return os.geteuid() == 0
 
     except Exception:
+
         return False
 
+
+# =========================================================
+# SERVICE PROCESS
+# =========================================================
 
 def is_service_process() -> bool:
     return "--service" in sys.argv
 
 
-def get_service_command() -> tuple[str, list[str], str]:
+def get_service_command() -> tuple[
+    str,
+    list[str],
+    str,
+]:
     """
     Исполняемый файл, аргументы и рабочий каталог
-    для запуска службы.
+    для автозапуска службы.
     """
 
     work_dir = str(BASE_DIR)
 
     if getattr(sys, "frozen", False):
-        return sys.executable, ["--service"], work_dir
+
+        return (
+            sys.executable,
+            ["--service"],
+            work_dir,
+        )
 
     return (
         sys.executable,
-        [str(BASE_DIR / "main.py"), "--service"],
+        [
+            str(
+                BASE_DIR / "main.py"
+            ),
+            "--service",
+        ],
         work_dir,
     )
 
 
-def _run(cmd, **kwargs):
-    """
-    Выполнить системную команду.
-    """
+# =========================================================
+# SUBPROCESS
+# =========================================================
 
-    encoding = "cp866" if platform.system() == "Windows" else "utf-8"
+def _run(cmd, **kwargs):
+
+    encoding = (
+        "cp866"
+        if platform.system() == "Windows"
+        else "utf-8"
+    )
 
     return subprocess.run(
         cmd,
@@ -96,313 +120,126 @@ def _run(cmd, **kwargs):
 
 
 def _windows_flags():
+
     return (
-        getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
-        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-        | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        getattr(
+            subprocess,
+            "DETACHED_PROCESS",
+            0x00000008,
+        )
+        |
+        getattr(
+            subprocess,
+            "CREATE_NEW_PROCESS_GROUP",
+            0x00000200,
+        )
+        |
+        getattr(
+            subprocess,
+            "CREATE_NO_WINDOW",
+            0x08000000,
+        )
     )
 
 
 def _spawn_detached(cmd):
+
     kwargs = {}
 
     if platform.system() == "Windows":
-        kwargs["creationflags"] = _windows_flags()
+
+        kwargs["creationflags"] = (
+            _windows_flags()
+        )
+
         kwargs["close_fds"] = True
+
     else:
+
         kwargs["start_new_session"] = True
 
-    subprocess.Popen(cmd, **kwargs)
-
-
-# =========================================================
-# Работа с SSH-ключом
-# =========================================================
-
-def get_mikrotik_key_path() -> Path:
-    """
-    Возвращает стандартный путь к приватному ключу MikroTik.
-
-    Ключ хранится внутри каталога плагина.
-    """
-
-    return BASE_DIR / "plugins" / "Mikrotik" / "id_rsa.key"
-
-
-def _run_icacls(args: list[str], path: Path) -> bool:
-    """
-    Запуск icacls без shell=True.
-    """
-
-    try:
-        result = subprocess.run(
-            ["icacls", str(path)] + args,
-            capture_output=True,
-            text=True,
-            encoding="cp866",
-            errors="ignore",
-            creationflags=_windows_flags(),
-        )
-
-        if result.returncode != 0:
-            logging.error(
-                "icacls %s для %s завершился с ошибкой: %s",
-                " ".join(args),
-                path,
-                (result.stderr or result.stdout).strip(),
-            )
-            return False
-
-        return True
-
-    except Exception as e:
-        logging.error(
-            "Ошибка запуска icacls для %s: %s",
-            path,
-            e,
-        )
-        return False
-
-
-def set_windows_key_permissions(key_path: Path) -> bool:
-    """
-    Устанавливает корректного владельца и ACL приватного SSH-ключа.
-
-    Сейчас служба работает от SYSTEM, поэтому:
-        владелец = NT AUTHORITY\\SYSTEM
-
-    Администраторы получают полный доступ.
-
-    Все остальные пользователи удаляются из ACL.
-
-    Это делается установщиком, а не во время каждого backup.
-    """
-
-    key_path = key_path.resolve()
-
-    if not key_path.exists():
-        logging.warning(
-            "SSH-ключ MikroTik не найден: %s",
-            key_path,
-        )
-        return False
-
-    logging.info(
-        "Настройка безопасности SSH-ключа: %s",
-        key_path,
+    subprocess.Popen(
+        cmd,
+        **kwargs,
     )
-
-    # -----------------------------------------------------
-    # 1. Убираем наследование
-    # -----------------------------------------------------
-
-    if not _run_icacls(
-        ["/inheritance:r"],
-        key_path,
-    ):
-        return False
-
-    # -----------------------------------------------------
-    # 2. Устанавливаем владельца SYSTEM
-    # -----------------------------------------------------
-
-    if not _run_icacls(
-        ["/setowner", WINDOWS_SYSTEM_SID],
-        key_path,
-    ):
-        logging.error(
-            "Не удалось установить владельцем SSH-ключа SYSTEM: %s",
-            key_path,
-        )
-        return False
-
-    # -----------------------------------------------------
-    # 3. Удаляем старые явные разрешения
-    # -----------------------------------------------------
-
-    for sid in (
-        WINDOWS_EVERYONE_SID,
-        WINDOWS_AUTH_USERS_SID,
-        WINDOWS_USERS_SID,
-    ):
-        _run_icacls(
-            ["/remove:g", sid],
-            key_path,
-        )
-
-    # -----------------------------------------------------
-    # 4. Убираем потенциально оставшиеся права
-    #    Administrators/SYSTEM перед назначением заново
-    # -----------------------------------------------------
-
-    _run_icacls(
-        ["/remove:g", WINDOWS_SYSTEM_SID],
-        key_path,
-    )
-
-    _run_icacls(
-        ["/remove:g", WINDOWS_ADMINISTRATORS_SID],
-        key_path,
-    )
-
-    # -----------------------------------------------------
-    # 5. SYSTEM получает полный доступ
-    # -----------------------------------------------------
-
-    if not _run_icacls(
-        ["/grant:r", f"{WINDOWS_SYSTEM_SID}:F"],
-        key_path,
-    ):
-        return False
-
-    # -----------------------------------------------------
-    # 6. Administrators получают полный доступ
-    # -----------------------------------------------------
-
-    if not _run_icacls(
-        ["/grant:r", f"{WINDOWS_ADMINISTRATORS_SID}:F"],
-        key_path,
-    ):
-        return False
-
-    # -----------------------------------------------------
-    # 7. Проверяем итоговый ACL
-    # -----------------------------------------------------
-
-    result = _run(
-        ["icacls", str(key_path)],
-    )
-
-    if result.returncode == 0:
-        logging.info(
-            "Права SSH-ключа успешно настроены:\n%s",
-            result.stdout.strip(),
-        )
-
-    logging.info(
-        "Владелец SSH-ключа: NT AUTHORITY\\SYSTEM"
-    )
-
-    return True
-
-
-def set_linux_key_permissions(key_path: Path) -> bool:
-    """
-    Для Linux:
-      владелец = root
-      права = 600
-    """
-
-    key_path = key_path.resolve()
-
-    if not key_path.exists():
-        logging.warning(
-            "SSH-ключ MikroTik не найден: %s",
-            key_path,
-        )
-        return False
-
-    try:
-        os.chown(key_path, 0, 0)
-        os.chmod(key_path, 0o600)
-
-        logging.info(
-            "Права SSH-ключа настроены: owner=root, mode=600: %s",
-            key_path,
-        )
-
-        return True
-
-    except OSError as e:
-        logging.error(
-            "Не удалось настроить права SSH-ключа %s: %s",
-            key_path,
-            e,
-        )
-        return False
-
-
-def configure_mikrotik_key_permissions() -> bool:
-    """
-    Настройка прав SSH-ключа MikroTik.
-
-    Вызывается установщиком один раз при установке/обновлении
-    службы.
-
-    Windows:
-        SYSTEM = владелец
-        Administrators = полный доступ
-
-    Linux:
-        root = владелец
-        chmod 600
-    """
-
-    key_path = get_mikrotik_key_path()
-
-    logging.info(
-        "Проверка SSH-ключа MikroTik: %s",
-        key_path,
-    )
-
-    if platform.system() == "Windows":
-        return set_windows_key_permissions(key_path)
-
-    if platform.system() == "Linux":
-        return set_linux_key_permissions(key_path)
-
-    logging.warning(
-        "Настройка прав SSH-ключа не реализована для ОС: %s",
-        platform.system(),
-    )
-
-    return False
 
 
 # =========================================================
 # HTTP
 # =========================================================
 
-def wait_for_http(timeout: float = 20) -> bool:
-    config = load_json(CONFIG_FILE, {})
+def wait_for_http(
+    timeout: float = 20,
+) -> bool:
+
+    config = load_json(
+        CONFIG_FILE,
+        {},
+    )
 
     host = "127.0.0.1"
-    port = int(config.get("port", 8080))
 
-    deadline = time.time() + timeout
+    port = int(
+        config.get(
+            "port",
+            8080,
+        )
+    )
+
+    deadline = (
+        time.time()
+        + timeout
+    )
 
     while time.time() < deadline:
+
         try:
+
             with socket.create_connection(
-                (host, port),
+                (
+                    host,
+                    port,
+                ),
                 timeout=1,
             ):
                 return True
 
         except OSError:
+
             time.sleep(0.4)
 
     return False
 
 
 def is_http_up() -> bool:
-    return wait_for_http(timeout=0.8)
+    return wait_for_http(
+        timeout=0.8
+    )
 
 
 # =========================================================
-# Служба
+# SERVICE STATUS
 # =========================================================
 
 def is_service_registered() -> bool:
+
     system = platform.system()
 
     if system == "Windows":
+
         res = _run(
-            ["schtasks", "/query", "/tn", SERVICE_NAME]
+            [
+                "schtasks",
+                "/query",
+                "/tn",
+                SERVICE_NAME,
+            ]
         )
+
         return res.returncode == 0
 
     if system == "Linux":
+
         return os.path.exists(
             os.path.join(
                 "/etc/systemd/system",
@@ -414,9 +251,11 @@ def is_service_registered() -> bool:
 
 
 def is_os_service_running() -> bool:
+
     system = platform.system()
 
     if system == "Windows":
+
         res = _run(
             [
                 "schtasks",
@@ -432,7 +271,10 @@ def is_os_service_running() -> bool:
         if res.returncode != 0:
             return False
 
-        text = f"{res.stdout}\n{res.stderr}".lower()
+        text = (
+            f"{res.stdout}\n"
+            f"{res.stderr}"
+        ).lower()
 
         return (
             "running" in text
@@ -440,6 +282,7 @@ def is_os_service_running() -> bool:
         )
 
     if system == "Linux":
+
         res = _run(
             [
                 "systemctl",
@@ -457,7 +300,10 @@ def is_os_service_running() -> bool:
 
 
 def get_status() -> dict:
-    registered = is_service_registered()
+
+    registered = (
+        is_service_registered()
+    )
 
     return {
         "registered": registered,
@@ -467,120 +313,169 @@ def get_status() -> dict:
             else False
         ),
         "http_up": True,
-        "service_mode": is_service_process(),
+        "service_mode": (
+            is_service_process()
+        ),
         "can_restart": registered,
         "can_stop": True,
     }
 
 
 # =========================================================
-# Повышение прав
+# ELEVATION
 # =========================================================
 
-def relaunch_elevated(args: list[str]) -> bool:
+def relaunch_elevated(
+    args: list[str],
+) -> bool:
     """
-    Повторный запуск с правами администратора / root.
+    Повторный запуск с повышенными правами.
+
+    Windows:
+        UAC / runas
+
+    Linux:
+        pkexec / sudo
     """
 
     system = platform.system()
 
     if system == "Windows":
 
-        if getattr(sys, "frozen", False):
-            params = subprocess.list2cmdline(args)
+        if getattr(
+            sys,
+            "frozen",
+            False,
+        ):
+
+            params = (
+                subprocess.list2cmdline(
+                    args
+                )
+            )
+
             exe = sys.executable
 
         else:
-            params = subprocess.list2cmdline(
-                [str(BASE_DIR / "main.py")] + args
+
+            params = (
+                subprocess.list2cmdline(
+                    [
+                        str(
+                            BASE_DIR
+                            / "main.py"
+                        )
+                    ]
+                    + args
+                )
             )
+
             exe = sys.executable
 
-        rc = ctypes.windll.shell32.ShellExecuteW(
-            None,
-            "runas",
-            exe,
-            params,
-            str(BASE_DIR),
-            1,
+        rc = (
+            ctypes.windll.shell32
+            .ShellExecuteW(
+                None,
+                "runas",
+                exe,
+                params,
+                str(BASE_DIR),
+                1,
+            )
         )
 
         return int(rc) > 32
 
     if system == "Linux":
 
-        cmd = [sys.executable]
+        cmd = [
+            sys.executable
+        ]
 
-        if not getattr(sys, "frozen", False):
+        if not getattr(
+            sys,
+            "frozen",
+            False,
+        ):
+
             cmd.append(
-                str(BASE_DIR / "main.py")
+                str(
+                    BASE_DIR
+                    / "main.py"
+                )
             )
 
         cmd.extend(args)
 
-        for wrapper in ("pkexec", "sudo"):
+        for wrapper in (
+            "pkexec",
+            "sudo",
+        ):
+
             try:
+
                 res = subprocess.run(
-                    [wrapper, *cmd],
+                    [
+                        wrapper,
+                        *cmd,
+                    ],
                     cwd=str(BASE_DIR),
                 )
 
-                return res.returncode == 0
+                return (
+                    res.returncode == 0
+                )
 
             except FileNotFoundError:
+
                 continue
 
     return False
 
 
 # =========================================================
-# Установка
+# INSTALL SERVICE
 # =========================================================
 
-def install_service() -> tuple[bool, str]:
+def install_service() -> tuple[
+    bool,
+    str,
+]:
 
     if not is_admin():
+
         return (
             False,
-            "Для установки службы нужны права "
-            "администратора (Windows) или root (Linux).",
-        )
-
-    # -----------------------------------------------------
-    # ВАЖНО:
-    # Права на SSH-ключ устанавливаются ДО регистрации
-    # и запуска службы.
-    # -----------------------------------------------------
-
-    logging.info(
-        "Настройка прав приватного SSH-ключа MikroTik..."
-    )
-
-    if not configure_mikrotik_key_permissions():
-        return (
-            False,
-            "Не удалось настроить права приватного SSH-ключа MikroTik.",
+            "Для установки службы нужны "
+            "права администратора (Windows) "
+            "или root (Linux).",
         )
 
     system = platform.system()
 
     if system == "Windows":
+
         return _install_windows_task()
 
     if system == "Linux":
+
         return _install_linux_service()
 
     return (
         False,
-        f"ОС {system} не поддерживается для автоустановки службы.",
+        f"ОС {system} не поддерживается "
+        "для автоустановки службы.",
     )
 
 
 # =========================================================
-# Запуск службы
+# START SERVICE
 # =========================================================
 
-def start_service() -> tuple[bool, str]:
+def start_service() -> tuple[
+    bool,
+    str,
+]:
 
     system = platform.system()
 
@@ -596,13 +491,20 @@ def start_service() -> tuple[bool, str]:
         )
 
         if res.returncode == 0:
-            return True, "Служба запущена."
+
+            return (
+                True,
+                "Служба запущена.",
+            )
 
         return (
             False,
-            res.stdout
-            or res.stderr
-            or "Не удалось запустить задачу Windows.",
+            (
+                res.stdout
+                or res.stderr
+                or "Не удалось запустить "
+                   "задачу Windows."
+            ),
         )
 
     if system == "Linux":
@@ -616,29 +518,43 @@ def start_service() -> tuple[bool, str]:
         )
 
         if res.returncode == 0:
-            return True, "Служба запущена."
+
+            return (
+                True,
+                "Служба запущена.",
+            )
 
         return (
             False,
-            res.stdout
-            or res.stderr
-            or "Не удалось запустить службу systemd.",
+            (
+                res.stdout
+                or res.stderr
+                or "Не удалось запустить "
+                   "службу systemd."
+            ),
         )
 
-    return False, "Неподдерживаемая ОС."
+    return (
+        False,
+        "Неподдерживаемая ОС.",
+    )
 
 
 # =========================================================
-# Удаление службы
+# UNINSTALL SERVICE
 # =========================================================
 
-def uninstall_service() -> tuple[bool, str]:
+def uninstall_service() -> tuple[
+    bool,
+    str,
+]:
 
     if not is_admin():
+
         return (
             False,
-            "Для удаления службы нужны права "
-            "администратора или root.",
+            "Для удаления службы нужны "
+            "права администратора или root.",
         )
 
     system = platform.system()
@@ -665,6 +581,7 @@ def uninstall_service() -> tuple[bool, str]:
         )
 
         if res.returncode == 0:
+
             return (
                 True,
                 "Фоновая задача Windows удалена.",
@@ -672,9 +589,11 @@ def uninstall_service() -> tuple[bool, str]:
 
         return (
             False,
-            res.stdout
-            or res.stderr
-            or "Ошибка удаления задачи.",
+            (
+                res.stdout
+                or res.stderr
+                or "Ошибка удаления задачи."
+            ),
         )
 
     if system == "Linux":
@@ -700,8 +619,13 @@ def uninstall_service() -> tuple[bool, str]:
             LINUX_UNIT,
         )
 
-        if os.path.exists(service_file):
-            os.remove(service_file)
+        if os.path.exists(
+            service_file
+        ):
+
+            os.remove(
+                service_file
+            )
 
         _run(
             [
@@ -715,14 +639,24 @@ def uninstall_service() -> tuple[bool, str]:
             "Служба Linux удалена.",
         )
 
-    return False, "Неподдерживаемая ОС."
+    return (
+        False,
+        "Неподдерживаемая ОС.",
+    )
 
 
 # =========================================================
-# Остановка
+# STOP
 # =========================================================
 
-def schedule_stop() -> tuple[bool, str]:
+def schedule_stop() -> tuple[
+    bool,
+    str,
+]:
+    """
+    Остановка с задержкой,
+    чтобы HTTP-ответ успел уйти.
+    """
 
     if is_service_registered():
 
@@ -735,15 +669,17 @@ def schedule_stop() -> tuple[bool, str]:
                     "cmd",
                     "/c",
                     (
-                        f"timeout /t 2 /nobreak >nul "
-                        f"& schtasks /end /tn {SERVICE_NAME}"
+                        "timeout /t 2 /nobreak >nul "
+                        "& schtasks /end /tn "
+                        f"{SERVICE_NAME}"
                     ),
                 ]
             )
 
             return (
                 True,
-                "Служба будет остановлена через несколько секунд. "
+                "Служба будет остановлена "
+                "через несколько секунд. "
                 "Панель станет недоступна.",
             )
 
@@ -754,7 +690,7 @@ def schedule_stop() -> tuple[bool, str]:
                     "/bin/bash",
                     "-c",
                     (
-                        f"sleep 2; "
+                        "sleep 2; "
                         f"systemctl stop {LINUX_UNIT}"
                     ),
                 ]
@@ -762,7 +698,8 @@ def schedule_stop() -> tuple[bool, str]:
 
             return (
                 True,
-                "Служба будет остановлена через несколько секунд. "
+                "Служба будет остановлена "
+                "через несколько секунд. "
                 "Панель станет недоступна.",
             )
 
@@ -770,18 +707,23 @@ def schedule_stop() -> tuple[bool, str]:
 
     return (
         True,
-        "Процесс будет остановлен через несколько секунд. "
+        "Процесс будет остановлен "
+        "через несколько секунд. "
         "Панель станет недоступна.",
     )
 
 
 # =========================================================
-# Перезапуск
+# RESTART
 # =========================================================
 
-def schedule_restart() -> tuple[bool, str]:
+def schedule_restart() -> tuple[
+    bool,
+    str,
+]:
 
     if not is_service_registered():
+
         return (
             False,
             "Служба не установлена — "
@@ -797,10 +739,12 @@ def schedule_restart() -> tuple[bool, str]:
                 "cmd",
                 "/c",
                 (
-                    f"timeout /t 2 /nobreak >nul "
-                    f"& schtasks /end /tn {SERVICE_NAME} "
-                    f"& timeout /t 2 /nobreak >nul "
-                    f"& schtasks /run /tn {SERVICE_NAME}"
+                    "timeout /t 2 /nobreak >nul "
+                    "& schtasks /end /tn "
+                    f"{SERVICE_NAME} "
+                    "& timeout /t 2 /nobreak >nul "
+                    "& schtasks /run /tn "
+                    f"{SERVICE_NAME}"
                 ),
             ]
         )
@@ -808,7 +752,8 @@ def schedule_restart() -> tuple[bool, str]:
         return (
             True,
             "Служба перезапускается. "
-            "Обновите страницу через несколько секунд.",
+            "Обновите страницу через "
+            "несколько секунд.",
         )
 
     if system == "Linux":
@@ -818,7 +763,7 @@ def schedule_restart() -> tuple[bool, str]:
                 "/bin/bash",
                 "-c",
                 (
-                    f"sleep 2; "
+                    "sleep 2; "
                     f"systemctl restart {LINUX_UNIT}"
                 ),
             ]
@@ -827,11 +772,19 @@ def schedule_restart() -> tuple[bool, str]:
         return (
             True,
             "Служба перезапускается. "
-            "Обновите страницу через несколько секунд.",
+            "Обновите страницу через "
+            "несколько секунд.",
         )
 
-    return False, "Неподдерживаемая ОС."
+    return (
+        False,
+        "Неподдерживаемая ОС.",
+    )
 
+
+# =========================================================
+# SELF EXIT
+# =========================================================
 
 def _spawn_self_exit():
 
@@ -844,8 +797,9 @@ def _spawn_self_exit():
                 "cmd",
                 "/c",
                 (
-                    f"timeout /t 2 /nobreak >nul "
-                    f"& taskkill /PID {pid} /F"
+                    "timeout /t 2 /nobreak >nul "
+                    "& taskkill /PID "
+                    f"{pid} /F"
                 ),
             ]
         )
@@ -856,47 +810,73 @@ def _spawn_self_exit():
             [
                 "/bin/bash",
                 "-c",
-                f"sleep 2; kill {pid}",
+                (
+                    "sleep 2; "
+                    f"kill {pid}"
+                ),
             ]
         )
 
 
 # =========================================================
-# Windows Task Scheduler
+# WINDOWS TASK
 # =========================================================
 
 def _windows_task_tr() -> str:
 
-    exe, args, work_dir = get_service_command()
+    exe, args, work_dir = (
+        get_service_command()
+    )
 
-    inner = subprocess.list2cmdline(
-        [exe] + args
+    inner = (
+        subprocess.list2cmdline(
+            [exe] + args
+        )
     )
 
     return (
-        f'cmd /c cd /d "{work_dir}" && {inner}'
+        f'cmd /c cd /d "{work_dir}" '
+        f"&& {inner}"
     )
 
 
-def _install_windows_task() -> tuple[bool, str]:
+def _install_windows_task() -> tuple[
+    bool,
+    str,
+]:
 
     logging.info(
         "Регистрация фоновой задачи Windows: %s",
         SERVICE_NAME,
     )
 
+    # =====================================================
+    # ВАЖНО:
+    #
+    # /RU SYSTEM
+    #
+    # Служба работает от SYSTEM.
+    #
+    # Никаких icacls/chmod/ACL здесь нет.
+    # =====================================================
+
     res = _run(
         [
             "schtasks",
             "/create",
+
             "/tn",
             SERVICE_NAME,
+
             "/tr",
             _windows_task_tr(),
+
             "/sc",
             "onstart",
+
             "/ru",
-            WINDOWS_SERVICE_ACCOUNT,
+            "SYSTEM",
+
             "/f",
         ]
     )
@@ -914,24 +894,26 @@ def _install_windows_task() -> tuple[bool, str]:
             msg,
         )
 
-        return False, msg
+        return (
+            False,
+            msg,
+        )
 
-    ok, start_msg = start_service()
+    ok, start_msg = (
+        start_service()
+    )
 
     if ok:
 
         logging.info(
-            "Фоновая задача Windows зарегистрирована "
-            "и запущена от %s.",
-            WINDOWS_SERVICE_ACCOUNT,
+            "Фоновая задача Windows "
+            "зарегистрирована и запущена."
         )
 
         return (
             True,
-            (
-                "Фоновая задача Windows зарегистрирована "
-                f"и запущена от {WINDOWS_SERVICE_ACCOUNT}."
-            ),
+            "Фоновая задача Windows "
+            "зарегистрирована и запущена.",
         )
 
     logging.warning(
@@ -942,19 +924,24 @@ def _install_windows_task() -> tuple[bool, str]:
     return (
         True,
         (
-            "Задача создана, но не стартовала сразу: "
-            f"{start_msg}"
+            "Задача создана, но не стартовала "
+            f"сразу: {start_msg}"
         ),
     )
 
 
 # =========================================================
-# Linux systemd
+# LINUX SYSTEMD
 # =========================================================
 
-def _install_linux_service() -> tuple[bool, str]:
+def _install_linux_service() -> tuple[
+    bool,
+    str,
+]:
 
-    exe, args, work_dir = get_service_command()
+    exe, args, work_dir = (
+        get_service_command()
+    )
 
     quoted = " ".join(
         _shlex_quote(part)
@@ -994,7 +981,10 @@ WantedBy=multi-user.target
             "w",
             encoding="utf-8",
         ) as f:
-            f.write(unit_content)
+
+            f.write(
+                unit_content
+            )
 
         _run(
             [
@@ -1036,39 +1026,50 @@ WantedBy=multi-user.target
                 detail,
             )
 
-            return False, detail
+            return (
+                False,
+                detail,
+            )
 
         logging.info(
-            "Служба systemd создана, включена "
-            "в автозагрузку и запущена."
+            "Служба systemd создана, "
+            "включена в автозагрузку "
+            "и запущена."
         )
 
         return (
             True,
-            (
-                "Служба systemd создана, включена "
-                "в автозагрузку и запущена."
-            ),
+            "Служба systemd создана, "
+            "включена в автозагрузку "
+            "и запущена.",
         )
 
-    except Exception as e:
+    except Exception as exc:
 
         logging.error(
             "Ошибка установки службы Linux: %s",
-            e,
+            exc,
         )
 
-        return False, str(e)
+        return (
+            False,
+            str(exc),
+        )
 
 
 # =========================================================
-# Shell quoting
+# SHELL QUOTING
 # =========================================================
 
-def _shlex_quote(value: str) -> str:
+def _shlex_quote(
+    value: str,
+) -> str:
 
     if platform.system() == "Windows":
-        return subprocess.list2cmdline([value])
+
+        return subprocess.list2cmdline(
+            [value]
+        )
 
     import shlex
 
