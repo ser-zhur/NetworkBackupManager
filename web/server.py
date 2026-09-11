@@ -105,8 +105,19 @@ logging.basicConfig(
         file_handler,
         logging.StreamHandler(),
     ],
+    force=True,
 )
 
+# Отключаем запись access-логов uvicorn в app.log
+for _name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
+    _lg = logging.getLogger(_name)
+    _lg.propagate = False
+    if not _lg.handlers:
+        _console = logging.StreamHandler()
+        _console.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+        ))
+        _lg.addHandler(_console)
 
 # =========================================================
 # BACKUP STATE

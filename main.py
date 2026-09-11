@@ -1,14 +1,25 @@
+# =========================================================
+# СТАНДАРТНЫЕ ИМПОРТЫ
+# =========================================================
+
+import multiprocessing
+
+# FIX: freeze_support() вызывается сразу после импорта multiprocessing,
+# до любых тяжёлых импортов (core.*, tkinter и т.п.).
+# Это критично для PyInstaller-EXE, порождающих дочерние процессы.
+if __name__ == "__main__":
+    multiprocessing.freeze_support()
+
+
 import os
 import sys
 import json
 import base64
 import hashlib
-import secrets
-import getpass
 import ctypes
 import logging
 import webbrowser
-import time
+import threading
 from pathlib import Path
 
 
@@ -16,6 +27,8 @@ from pathlib import Path
 # ОСНОВНЫЕ ПУТИ
 # =========================================================
 
+# FIX: APPLICATION_DIR вычисляется, но в этом файле не используется.
+# Оставлен на случай, если понадобится в других модулях через import.
 if getattr(sys, "frozen", False):
     APPLICATION_DIR = Path(sys.executable).resolve().parent
 else:
@@ -23,18 +36,18 @@ else:
 
 
 # =========================================================
-# КОНСОЛЬ ДЛЯ --create-user
+# КОНСОЛЬ ДЛЯ EXE С --noconsole
 # =========================================================
 
-def ensure_console():
+def ensure_console() -> bool:
     """
     Для EXE, собранного с --noconsole.
 
-    При запуске:
+    При запуске, например:
         NetworkBackupManager.exe --create-user
 
-    автоматически создаёт консоль Windows,
-    если её нет.
+    автоматически создаёт консоль Windows, если её нет.
+    Возвращает True, если консоль доступна (или уже была).
     """
 
     if os.name != "nt":
@@ -73,15 +86,19 @@ def ensure_console():
         return True
 
     except Exception:
+        # FIX: не глотаем молча — оставляем след в логе.
+        logging.debug(
+            "ensure_console: не удалось создать консоль",
+            exc_info=True,
+        )
         return False
 
 
 # =========================================================
-# ПЕРВИЧНЫЕ ИМПОРТЫ
+# ИМПОРТЫ ПРИЛОЖЕНИЯ
 # =========================================================
 
 from core.context import (
-    BASE_DIR,
     DATA_DIR,
     AUTH_FILE,
     CONFIG_FILE,
@@ -143,10 +160,6 @@ def hash_password(
 
 
 # =========================================================
-# CREATE USER
-# =========================================================
-
-# =========================================================
 # CREATE USER — GUI
 # =========================================================
 
@@ -155,34 +168,34 @@ def create_user() -> int:
     Графическое создание пользователя.
 
     Работает в EXE, собранном с --noconsole.
-
-    Возможности:
-        - ввод имени пользователя;
-        - ввод пароля;
-        - повторный ввод пароля;
-        - проверка совпадения;
-        - проверка длины;
-        - подтверждение перезаписи существующего пользователя;
-        - сохранение только password_hash.
     """
 
-    import tkinter as tk
-    from tkinter import messagebox
+    # FIX: готовим каталоги и дефолтные файлы заранее,
+    # чтобы AUTH_FILE гарантированно лежал в существующем каталоге.
+    try:
+        ensure_directories()
+        ensure_default_files()
+    except Exception as exc:
+        # Если GUI не запустится — хотя бы консоль покажет причину.
+        ensure_console()
+        print(f"Не удалось подготовить каталоги данных: {exc}")
+        return 1
+
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+    except Exception as exc:
+        ensure_console()
+        print(f"Не удалось загрузить tkinter: {exc}")
+        return 1
 
     # -----------------------------------------------------
     # ROOT WINDOW
     # -----------------------------------------------------
 
     root = tk.Tk()
-
-    root.title(
-        "NetworkBackupManager — создание пользователя"
-    )
-
-    root.resizable(
-        False,
-        False,
-    )
+    root.title("NetworkBackupManager — создание пользователя")
+    root.resizable(False, False)
 
     # -----------------------------------------------------
     # WINDOW SIZE / POSITION
@@ -194,32 +207,17 @@ def create_user() -> int:
     screen_width = root.winfo_screenwidth()
     screen_height = root.winfo_screenheight()
 
-    x = (
-        screen_width - width
-    ) // 2
+    x = (screen_width - width) // 2
+    y = (screen_height - height) // 2
 
-    y = (
-        screen_height - height
-    ) // 2
-
-    root.geometry(
-        f"{width}x{height}+{x}+{y}"
-    )
+    root.geometry(f"{width}x{height}+{x}+{y}")
 
     # -----------------------------------------------------
     # MAIN FRAME
     # -----------------------------------------------------
 
-    frame = tk.Frame(
-        root,
-        padx=25,
-        pady=20,
-    )
-
-    frame.pack(
-        fill="both",
-        expand=True,
-    )
+    frame = tk.Frame(root, padx=25, pady=20)
+    frame.pack(fill="both", expand=True)
 
     # -----------------------------------------------------
     # TITLE
@@ -228,111 +226,60 @@ def create_user() -> int:
     title = tk.Label(
         frame,
         text="Создание пользователя",
-        font=(
-            "Segoe UI",
-            15,
-            "bold",
-        ),
+        font=("Segoe UI", 15, "bold"),
     )
-
-    title.pack(
-        pady=(0, 20),
-    )
+    title.pack(pady=(0, 20))
 
     # -----------------------------------------------------
     # USERNAME
     # -----------------------------------------------------
 
     username_frame = tk.Frame(frame)
-
-    username_frame.pack(
-        fill="x",
-        pady=5,
-    )
+    username_frame.pack(fill="x", pady=5)
 
     tk.Label(
         username_frame,
         text="Имя пользователя:",
         width=20,
         anchor="w",
-    ).pack(
-        side="left",
-    )
+    ).pack(side="left")
 
-    username_entry = tk.Entry(
-        username_frame,
-        width=30,
-    )
-
-    username_entry.pack(
-        side="left",
-        fill="x",
-        expand=True,
-    )
+    username_entry = tk.Entry(username_frame, width=30)
+    username_entry.pack(side="left", fill="x", expand=True)
 
     # -----------------------------------------------------
     # PASSWORD
     # -----------------------------------------------------
 
     password_frame = tk.Frame(frame)
-
-    password_frame.pack(
-        fill="x",
-        pady=5,
-    )
+    password_frame.pack(fill="x", pady=5)
 
     tk.Label(
         password_frame,
         text="Пароль:",
         width=20,
         anchor="w",
-    ).pack(
-        side="left",
-    )
+    ).pack(side="left")
 
-    password_entry = tk.Entry(
-        password_frame,
-        width=30,
-        show="*",
-    )
-
-    password_entry.pack(
-        side="left",
-        fill="x",
-        expand=True,
-    )
+    password_entry = tk.Entry(password_frame, width=30, show="*")
+    password_entry.pack(side="left", fill="x", expand=True)
 
     # -----------------------------------------------------
     # PASSWORD CONFIRM
     # -----------------------------------------------------
 
     confirm_frame = tk.Frame(frame)
-
-    confirm_frame.pack(
-        fill="x",
-        pady=5,
-    )
+    confirm_frame.pack(fill="x", pady=5)
 
     tk.Label(
         confirm_frame,
         text="Повторите пароль:",
         width=20,
         anchor="w",
-    ).pack(
-        side="left",
-    )
+    ).pack(side="left")
 
-    confirm_entry = tk.Entry(
-        confirm_frame,
-        width=30,
-        show="*",
-    )
-
-    confirm_entry.pack(
-        side="left",
-        fill="x",
-        expand=True,
-    )
+    confirm_entry = tk.Entry(confirm_frame, width=30, show="*")
+    confirm_entry.pack(side="left", fill="x", expand=True)
 
     # -----------------------------------------------------
     # PASSWORD REQUIREMENTS
@@ -343,10 +290,7 @@ def create_user() -> int:
         text="Пароль должен содержать минимум 6 символов.",
         fg="gray",
     )
-
-    info.pack(
-        pady=(8, 15),
-    )
+    info.pack(pady=(8, 15))
 
     # -----------------------------------------------------
     # CREATE
@@ -354,52 +298,31 @@ def create_user() -> int:
 
     def save_user():
 
-        username = (
-            username_entry
-            .get()
-            .strip()
-        )
-
-        password = (
-            password_entry
-            .get()
-        )
-
-        password2 = (
-            confirm_entry
-            .get()
-        )
+        username = username_entry.get().strip()
+        password = password_entry.get()
+        password2 = confirm_entry.get()
 
         # -------------------------------------------------
         # USERNAME
         # -------------------------------------------------
 
         if not username:
-
             messagebox.showerror(
                 "Ошибка",
                 "Имя пользователя не может быть пустым.",
                 parent=root,
             )
-
             username_entry.focus_set()
-
             return
 
-        if (
-            len(username) < 2
-            or len(username) > 64
-        ):
-
+        if len(username) < 2 or len(username) > 64:
             messagebox.showerror(
                 "Ошибка",
                 "Имя пользователя должно содержать "
                 "от 2 до 64 символов.",
                 parent=root,
             )
-
             username_entry.focus_set()
-
             return
 
         # -------------------------------------------------
@@ -407,28 +330,22 @@ def create_user() -> int:
         # -------------------------------------------------
 
         if not password:
-
             messagebox.showerror(
                 "Ошибка",
                 "Пароль не может быть пустым.",
                 parent=root,
             )
-
             password_entry.focus_set()
-
             return
 
         if len(password) < 6:
-
             messagebox.showerror(
                 "Ошибка",
                 "Пароль должен содержать "
                 "минимум 6 символов.",
                 parent=root,
             )
-
             password_entry.focus_set()
-
             return
 
         # -------------------------------------------------
@@ -436,15 +353,12 @@ def create_user() -> int:
         # -------------------------------------------------
 
         if password != password2:
-
             messagebox.showerror(
                 "Ошибка",
                 "Пароли не совпадают.",
                 parent=root,
             )
-
             confirm_entry.focus_set()
-
             return
 
         # -------------------------------------------------
@@ -452,21 +366,14 @@ def create_user() -> int:
         # -------------------------------------------------
 
         try:
-
-            DATA_DIR.mkdir(
-                parents=True,
-                exist_ok=True,
-            )
-
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
         except Exception as exc:
-
             messagebox.showerror(
                 "Ошибка",
                 "Не удалось создать каталог данных:\n\n"
                 f"{exc}",
                 parent=root,
             )
-
             return
 
         # -------------------------------------------------
@@ -474,18 +381,13 @@ def create_user() -> int:
         # -------------------------------------------------
 
         if AUTH_FILE.exists():
-
-            overwrite = (
-                messagebox.askyesno(
-                    "Пользователь уже существует",
-                    "Файл пользователя уже существует.\n\n"
-                    "Перезаписать пользователя?",
-                    parent=root,
-                )
+            overwrite = messagebox.askyesno(
+                "Пользователь уже существует",
+                "Файл пользователя уже существует.\n\n"
+                "Перезаписать пользователя?",
+                parent=root,
             )
-
             if not overwrite:
-
                 return
 
         # -------------------------------------------------
@@ -493,10 +395,7 @@ def create_user() -> int:
         # -------------------------------------------------
 
         try:
-
-            password_hash = hash_password(
-                password
-            )
+            password_hash = hash_password(password)
 
             data = {
                 "username": username,
@@ -513,14 +412,12 @@ def create_user() -> int:
             )
 
         except Exception as exc:
-
             messagebox.showerror(
                 "Ошибка",
                 "Не удалось сохранить пользователя:\n\n"
                 f"{exc}",
                 parent=root,
             )
-
             return
 
         # -------------------------------------------------
@@ -532,7 +429,6 @@ def create_user() -> int:
             "Пользователь успешно создан.",
             parent=root,
         )
-
         root.destroy()
 
     # -----------------------------------------------------
@@ -540,10 +436,7 @@ def create_user() -> int:
     # -----------------------------------------------------
 
     buttons = tk.Frame(frame)
-
-    buttons.pack(
-        pady=(5, 0),
-    )
+    buttons.pack(pady=(5, 0))
 
     create_button = tk.Button(
         buttons,
@@ -551,11 +444,7 @@ def create_user() -> int:
         width=22,
         command=save_user,
     )
-
-    create_button.pack(
-        side="left",
-        padx=5,
-    )
+    create_button.pack(side="left", padx=5)
 
     cancel_button = tk.Button(
         buttons,
@@ -563,25 +452,14 @@ def create_user() -> int:
         width=12,
         command=root.destroy,
     )
-
-    cancel_button.pack(
-        side="left",
-        padx=5,
-    )
+    cancel_button.pack(side="left", padx=5)
 
     # -----------------------------------------------------
     # ENTER / ESC
     # -----------------------------------------------------
 
-    root.bind(
-        "<Return>",
-        lambda event: save_user(),
-    )
-
-    root.bind(
-        "<Escape>",
-        lambda event: root.destroy(),
-    )
+    root.bind("<Return>", lambda event: save_user())
+    root.bind("<Escape>", lambda event: root.destroy())
 
     username_entry.focus_set()
 
@@ -604,16 +482,10 @@ def install_service_cli() -> int:
     ensure_default_files()
 
     if not is_admin():
-
-        print(
-            "Для установки службы нужны "
-            "права администратора."
-        )
-
+        print("Для установки службы нужны права администратора.")
         return 1
 
     ok, message = install_service()
-
     print(message)
 
     return 0 if ok else 1
@@ -628,16 +500,10 @@ def uninstall_service_cli() -> int:
     ensure_console()
 
     if not is_admin():
-
-        print(
-            "Для удаления службы нужны "
-            "права администратора."
-        )
-
+        print("Для удаления службы нужны права администратора.")
         return 1
 
     ok, message = uninstall_service()
-
     print(message)
 
     return 0 if ok else 1
@@ -652,30 +518,14 @@ def stop_service_cli() -> int:
     ensure_console()
 
     if not is_admin():
-
-        print(
-            "Для остановки службы нужны "
-            "права администратора."
-        )
-
+        print("Для остановки службы нужны права администратора.")
         return 1
 
-    system_registered = (
-        is_service_registered()
-    )
-
-    if system_registered:
-
-        ok, message = schedule_stop()
-
-    else:
-
-        print(
-            "Служба не зарегистрирована."
-        )
-
+    if not is_service_registered():
+        print("Служба не зарегистрирована.")
         return 1
 
+    ok, message = schedule_stop()
     print(message)
 
     return 0 if ok else 1
@@ -690,24 +540,14 @@ def restart_service_cli() -> int:
     ensure_console()
 
     if not is_admin():
-
-        print(
-            "Для перезапуска службы нужны "
-            "права администратора."
-        )
-
+        print("Для перезапуска службы нужны права администратора.")
         return 1
 
     if not is_service_registered():
-
-        print(
-            "Служба не зарегистрирована."
-        )
-
+        print("Служба не зарегистрирована.")
         return 1
 
     ok, message = schedule_restart()
-
     print(message)
 
     return 0 if ok else 1
@@ -717,24 +557,37 @@ def restart_service_cli() -> int:
 # CONFIG
 # =========================================================
 
-def get_web_config():
+def get_web_config() -> tuple[str, int]:
+    """
+    Возвращает (host, port) с защитой от некорректных значений.
+    """
 
-    config = load_json(
-        CONFIG_FILE,
-        {},
-    )
+    config = load_json(CONFIG_FILE, {})
 
-    host = config.get(
-        "host",
-        DEFAULT_HOST,
-    )
+    # host
+    host = config.get("host", DEFAULT_HOST)
+    if not isinstance(host, str) or not host.strip():
+        logging.warning(
+            "Некорректный host в конфиге (%r), использую %s",
+            host,
+            DEFAULT_HOST,
+        )
+        host = DEFAULT_HOST
 
-    port = int(
-        config.get(
-            "port",
+    # port
+    raw_port = config.get("port", DEFAULT_PORT)
+    try:
+        port = int(raw_port)
+        if not (1 <= port <= 65535):
+            raise ValueError("порт вне диапазона 1..65535")
+    except (TypeError, ValueError) as exc:
+        logging.warning(
+            "Некорректный port в конфиге (%r): %s; использую %s",
+            raw_port,
+            exc,
             DEFAULT_PORT,
         )
-    )
+        port = DEFAULT_PORT
 
     return host, port
 
@@ -743,53 +596,48 @@ def get_web_config():
 # OPEN BROWSER
 # =========================================================
 
-def open_browser_when_ready():
+def open_browser_when_ready() -> None:
 
     try:
-
-        if wait_for_http(20):
-
-            host, port = (
-                get_web_config()
+        if not wait_for_http(20):
+            logging.warning(
+                "Веб-сервер не ответил за 20 секунд — браузер не открыт."
             )
+            return
 
-            url = (
-                f"http://{host}:{port}"
-            )
+        host, port = get_web_config()
+        url = f"http://{host}:{port}"
 
-            logging.info(
-                "Открытие браузера: %s",
-                url,
-            )
-
-            webbrowser.open(
-                url,
-                new=2,
-            )
+        logging.info("Открытие браузера: %s", url)
+        webbrowser.open(url, new=2)
 
     except Exception as exc:
+        logging.error("Не удалось открыть браузер: %s", exc)
 
-        logging.error(
-            "Не удалось открыть браузер: %s",
-            exc,
-        )
+
+def start_browser_thread() -> None:
+    """
+    Запускает ожидание сервера и открытие браузера в фоне,
+    чтобы не блокировать основной поток.
+    """
+    threading.Thread(
+        target=open_browser_when_ready,
+        daemon=True,
+    ).start()
 
 
 # =========================================================
 # START WEB SERVER
 # =========================================================
 
-def run_web_server():
+def run_web_server() -> None:
 
     import uvicorn
 
-    host, port = (
-        get_web_config()
-    )
+    host, port = get_web_config()
 
     logging.info(
-        "Запуск NetworkBackupManager "
-        "на %s:%s",
+        "Запуск NetworkBackupManager на %s:%s",
         host,
         port,
     )
@@ -807,9 +655,7 @@ def run_web_server():
 # START NORMAL APPLICATION
 # =========================================================
 
-def run_application(
-    skip_service_install: bool = False,
-):
+def run_application(skip_service_install: bool = False) -> int:
 
     ensure_directories()
     ensure_default_files()
@@ -819,13 +665,8 @@ def run_application(
     # -----------------------------------------------------
 
     if is_service_process():
-
-        logging.info(
-            "Приложение запущено в режиме службы."
-        )
-
+        logging.info("Приложение запущено в режиме службы.")
         run_web_server()
-
         return 0
 
     # -----------------------------------------------------
@@ -833,23 +674,11 @@ def run_application(
     # -----------------------------------------------------
 
     if skip_service_install:
-
         logging.info(
-            "Запуск без установки службы "
-            "(--skip-service-install)."
+            "Запуск без установки службы (--skip-service-install)."
         )
-
-        open_browser_when_ready_later = True
-
-        import threading
-
-        threading.Thread(
-            target=open_browser_when_ready,
-            daemon=True,
-        ).start()
-
+        start_browser_thread()
         run_web_server()
-
         return 0
 
     # -----------------------------------------------------
@@ -857,84 +686,48 @@ def run_application(
     # -----------------------------------------------------
 
     if not is_service_registered():
-
-        logging.info(
-            "Служба не зарегистрирована."
-        )
+        logging.info("Служба не зарегистрирована.")
 
         if not is_admin():
+            print("Для первого запуска требуются права администратора.")
+            print("Запрашиваем повышение прав...")
 
-            print(
-                "Для первого запуска требуются "
-                "права администратора."
-            )
-
-            print(
-                "Запрашиваем повышение прав..."
-            )
-
-            ok = relaunch_elevated(
-                ["--install-service"]
-            )
-
+            ok = relaunch_elevated(["--install-service"])
             if not ok:
-
-                print(
-                    "Не удалось получить "
-                    "права администратора."
-                )
-
+                print("Не удалось получить права администратора.")
                 return 1
 
+            logging.info(
+                "Launcher завершает работу: запущена "
+                "копия с повышенными правами."
+            )
             return 0
 
-        ok, message = (
-            install_service()
-        )
-
+        ok, message = install_service()
         if not ok:
-
-            print(
-                "Ошибка установки службы:"
-            )
-
+            print("Ошибка установки службы:")
             print(message)
-
             return 1
 
-        logging.info(
-            "Служба установлена: %s",
-            message,
-        )
+        logging.info("Служба установлена: %s", message)
 
     else:
-
         # -------------------------------------------------
         # Служба уже зарегистрирована.
         # Убедимся, что она запущена.
         # -------------------------------------------------
 
         try:
-
-            from core.service_installer import (
-                is_os_service_running,
-            )
+            from core.service_installer import is_os_service_running
 
             if not is_os_service_running():
-
                 logging.info(
-                    "Служба зарегистрирована, "
-                    "но не запущена."
+                    "Служба зарегистрирована, но не запущена."
                 )
-
                 start_service()
 
         except Exception as exc:
-
-            logging.error(
-                "Ошибка запуска службы: %s",
-                exc,
-            )
+            logging.error("Ошибка запуска службы: %s", exc)
 
     # -----------------------------------------------------
     # После установки/запуска службы открываем браузер.
@@ -950,16 +743,42 @@ def run_application(
 # MAIN
 # =========================================================
 
-def main():
+# FIX: список известных CLI-флагов, чтобы предупреждать о неизвестных.
+_KNOWN_FLAGS = {
+    "--create-user",
+    "--install-service",
+    "--uninstall-service",
+    "--stop-service",
+    "--restart-service",
+    "--skip-service-install",
+}
+
+
+def main() -> int:
 
     args = sys.argv[1:]
+
+    # -----------------------------------------------------
+    # Проверка неизвестных аргументов
+    # -----------------------------------------------------
+
+    unknown = [a for a in args if a.startswith("-") and a not in _KNOWN_FLAGS]
+    if unknown:
+        ensure_console()
+        print("Неизвестные аргументы командной строки:")
+        for a in unknown:
+            print(f"  {a}")
+        print()
+        print("Известные флаги:")
+        for flag in sorted(_KNOWN_FLAGS):
+            print(f"  {flag}")
+        return 2
 
     # -----------------------------------------------------
     # CREATE USER
     # -----------------------------------------------------
 
     if "--create-user" in args:
-
         return create_user()
 
     # -----------------------------------------------------
@@ -967,9 +786,7 @@ def main():
     # -----------------------------------------------------
 
     if "--install-service" in args:
-
         ensure_console()
-
         return install_service_cli()
 
     # -----------------------------------------------------
@@ -977,7 +794,6 @@ def main():
     # -----------------------------------------------------
 
     if "--uninstall-service" in args:
-
         return uninstall_service_cli()
 
     # -----------------------------------------------------
@@ -985,7 +801,6 @@ def main():
     # -----------------------------------------------------
 
     if "--stop-service" in args:
-
         return stop_service_cli()
 
     # -----------------------------------------------------
@@ -993,22 +808,15 @@ def main():
     # -----------------------------------------------------
 
     if "--restart-service" in args:
-
         return restart_service_cli()
 
     # -----------------------------------------------------
     # SKIP SERVICE INSTALL
     # -----------------------------------------------------
 
-    skip_service_install = (
-        "--skip-service-install"
-        in args
-    )
+    skip_service_install = "--skip-service-install" in args
 
-    return run_application(
-        skip_service_install=
-        skip_service_install
-    )
+    return run_application(skip_service_install=skip_service_install)
 
 
 # =========================================================
@@ -1018,31 +826,22 @@ def main():
 if __name__ == "__main__":
 
     try:
-
-        sys.exit(
-            main()
-        )
+        sys.exit(main())
 
     except KeyboardInterrupt:
-
         sys.exit(130)
 
     except Exception as exc:
 
         try:
-
             ensure_console()
 
             print()
-            print(
-                "КРИТИЧЕСКАЯ ОШИБКА:"
-            )
+            print("КРИТИЧЕСКАЯ ОШИБКА:")
             print(exc)
             print()
 
-            input(
-                "Нажмите Enter..."
-            )
+            input("Нажмите Enter...")
 
         except Exception:
             pass

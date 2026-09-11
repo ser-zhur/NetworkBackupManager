@@ -255,7 +255,10 @@ def backup_router_ros6(router, local_dir):
         ssh_base + [combined_command],
         timeout=90,
     )
-
+    os.makedirs(
+        local_dir,
+        exist_ok=True,
+    )
     time.sleep(2)
 
     if not wait_for_files_ros6(
@@ -461,7 +464,6 @@ def _connect_ros7(
     transport.auth_publickey(
         username=user,
         key=pkey,
-        fallback=False,
     )
 
     if not transport.is_authenticated():
@@ -537,7 +539,10 @@ def backup_router_ros7(
             key_path=key,
             ssh_password=ssh_password,
         )
-
+        os.makedirs(
+            local_dir,
+            exist_ok=True,
+        )
         logging.info(
             "ROS7 SSH authentication successful: %s",
             host,
@@ -735,11 +740,6 @@ def backup_router(router):
     local_dir = os.path.join(
         backup_path,
         today,
-    )
-
-    os.makedirs(
-        local_dir,
-        exist_ok=True,
     )
 
     version = str(

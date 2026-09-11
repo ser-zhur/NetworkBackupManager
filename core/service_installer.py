@@ -1,12 +1,16 @@
-import os
-import sys
-import time
-import socket
+# =========================================================
+# core/service_installer.py
+# =========================================================
+
 import ctypes
 import logging
+import os
 import platform
+import shlex
+import socket
 import subprocess
-
+import sys
+import time
 
 from core.context import (
     BASE_DIR,
@@ -15,16 +19,20 @@ from core.context import (
 )
 
 
+logger = logging.getLogger(__name__)
+
 SERVICE_NAME = "NetworkBackupManager"
-
-LINUX_UNIT = (
-    f"{SERVICE_NAME.lower()}.service"
-)
-
+LINUX_UNIT = f"{SERVICE_NAME.lower()}.service"
 DESCRIPTION = (
     "Служба автоматического резервного "
     "копирования сетевого оборудования"
 )
+
+IS_WINDOWS = platform.system() == "Windows"
+IS_LINUX = platform.system() == "Linux"
+
+# FIX: таймаут для внешних команд, чтобы не подвиснуть навсегда.
+SUBPROCESS_TIMEOUT = 30
 
 
 # =========================================================
@@ -32,29 +40,14 @@ DESCRIPTION = (
 # =========================================================
 
 def is_admin() -> bool:
-    """
-    Проверяет административные права.
-
-    Windows:
-        Administrator
-
-    Linux:
-        root
-    """
+    """Windows: Administrator. Linux: root."""
 
     try:
-
-        if platform.system() == "Windows":
-
-            return (
-                ctypes.windll.shell32.IsUserAnAdmin()
-                != 0
-            )
-
+        if IS_WINDOWS:
+            return ctypes.windll.shell32.IsUserAnAdmin() != 0
         return os.geteuid() == 0
-
     except Exception:
-
+        logger.debug("is_admin: не удалось определить права", exc_info=True)
         return False
 
 
@@ -63,11 +56,7 @@ def is_admin() -> bool:
 # =========================================================
 
 def is_service_process() -> bool:
-    """
-    True, если приложение запущено
-    с аргументом --service.
-    """
-
+    """True, если приложение запущено с аргументом --service."""
     return "--service" in sys.argv
 
 
@@ -75,287 +64,188 @@ def is_service_process() -> bool:
 # PATHS
 # =========================================================
 
-def get_application_executable() -> str:
+def get_service_command() -> tuple[str, list[str], str]:
     """
-    Возвращает путь к исполняемому файлу
-    приложения.
+    Возвращает (executable, arguments, working_dir).
 
-    Для PyInstaller:
-        NetworkBackupManager.exe
-
-    Для запуска из Python:
-        python.exe
+    PyInstaller:  NetworkBackupManager.exe --service
+    Python:       python main.py --service
     """
 
-    if getattr(
-        sys,
-        "frozen",
-        False,
-    ):
+    work_dir = str(BASE_DIR.resolve())
+    executable = os.path.abspath(sys.executable)
 
-        return os.path.abspath(
-            sys.executable
-        )
+    if getattr(sys, "frozen", False):
+        return executable, ["--service"], work_dir
 
-    return os.path.abspath(
-        sys.executable
-    )
-
-
-def get_service_command() -> tuple[
-    str,
-    list[str],
-    str,
-]:
-    """
-    Возвращает:
-
-        executable
-        arguments
-        working directory
-
-    В режиме PyInstaller:
-
-        NetworkBackupManager.exe --service
-
-    В режиме Python:
-
-        python main.py --service
-    """
-
-    work_dir = str(
-        BASE_DIR.resolve()
-    )
-
-    if getattr(
-        sys,
-        "frozen",
-        False,
-    ):
-
-        return (
-            os.path.abspath(
-                sys.executable
-            ),
-            [
-                "--service"
-            ],
-            work_dir,
-        )
-
-    return (
-        os.path.abspath(
-            sys.executable
-        ),
-        [
-            str(
-                (
-                    BASE_DIR
-                    / "main.py"
-                ).resolve()
-            ),
-            "--service",
-        ],
-        work_dir,
-    )
+    main_py = str((BASE_DIR / "main.py").resolve())
+    return executable, [main_py, "--service"], work_dir
 
 
 # =========================================================
 # SUBPROCESS
 # =========================================================
 
-def _run(
-    cmd,
-    **kwargs,
-):
+def _console_encoding() -> str:
+    """
+    FIX: на Windows используем mbcs вместо устаревшего cp866.
+    На Linux — utf-8.
+    """
+    if IS_WINDOWS:
+        return "mbcs"
+    return "utf-8"
 
-    encoding = (
-        "cp866"
-        if platform.system() == "Windows"
-        else "utf-8"
-    )
 
-    return subprocess.run(
+def _run(cmd, **kwargs) -> subprocess.CompletedProcess:
+    """
+    Запускает команду, возвращает CompletedProcess.
+    FIX: добавлен timeout и корректная кодировка.
+    """
+
+    logger.debug("run: %r", cmd)
+
+    result = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
-        encoding=encoding,
-        errors="ignore",
+        encoding=_console_encoding(),
+        errors="replace",  # FIX: не глотаем кириллицу
+        timeout=kwargs.pop("timeout", SUBPROCESS_TIMEOUT),
         **kwargs,
     )
 
-
-def _windows_flags():
-
-    return (
-        getattr(
-            subprocess,
-            "DETACHED_PROCESS",
-            0x00000008,
+    if result.returncode != 0:
+        logger.debug(
+            "run вернул %s: stdout=%r stderr=%r",
+            result.returncode,
+            (result.stdout or "")[:500],
+            (result.stderr or "")[:500],
         )
-        |
-        getattr(
-            subprocess,
-            "CREATE_NEW_PROCESS_GROUP",
-            0x00000200,
-        )
-        |
-        getattr(
-            subprocess,
-            "CREATE_NO_WINDOW",
-            0x08000000,
-        )
-    )
+
+    return result
 
 
-def _spawn_detached(
-    cmd,
-):
+def _windows_flags() -> int:
+    """
+    FIX: убрано противоречие DETACHED_PROCESS | CREATE_NO_WINDOW.
+    Оставляем CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW.
+    """
+
+    flags = 0
+    flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+    flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    return flags
+
+
+def _spawn_detached(cmd) -> bool:
+    """
+    Запускает процесс, не привязанный к текущему.
+    FIX: возвращает bool и логирует ошибки.
+    """
 
     kwargs = {}
 
-    if platform.system() == "Windows":
+    try:
+        if IS_WINDOWS:
+            kwargs["creationflags"] = _windows_flags()
+            kwargs["close_fds"] = True
+        else:
+            kwargs["start_new_session"] = True
 
-        kwargs["creationflags"] = (
-            _windows_flags()
-        )
+        subprocess.Popen(cmd, **kwargs)
+        return True
 
-        kwargs["close_fds"] = True
-
-    else:
-
-        kwargs["start_new_session"] = True
-
-    subprocess.Popen(
-        cmd,
-        **kwargs,
-    )
+    except Exception as exc:
+        logger.error("Не удалось запустить %r: %s", cmd, exc)
+        return False
 
 
 # =========================================================
 # HTTP
 # =========================================================
 
-def wait_for_http(
-    timeout: float = 20,
-) -> bool:
+def get_web_config() -> tuple[str, int]:
+    """
+    FIX: локальная копия get_web_config с валидацией.
+    В идеале — вынести в core.context и переиспользовать.
+    """
 
-    config = load_json(
-        CONFIG_FILE,
-        {},
-    )
+    config = load_json(CONFIG_FILE, {})
 
-    host = config.get(
-        "host",
-        "127.0.0.1",
-    )
+    host = config.get("host", "127.0.0.1")
+    if not isinstance(host, str) or not host.strip():
+        host = "127.0.0.1"
 
-    port = int(
-        config.get(
-            "port",
-            8080,
-        )
-    )
+    raw_port = config.get("port", 8080)
+    try:
+        port = int(raw_port)
+        if not (1 <= port <= 65535):
+            raise ValueError("порт вне диапазона")
+    except (TypeError, ValueError):
+        logger.warning("Некорректный port в конфиге: %r", raw_port)
+        port = 8080
 
-    deadline = (
-        time.time()
-        + timeout
-    )
+    return host, port
 
-    while (
-        time.time() < deadline
-    ):
 
+def wait_for_http(timeout: float = 20) -> bool:
+    """Ждёт, пока HTTP-порт начнёт принимать соединения."""
+
+    host, port = get_web_config()
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
         try:
-
-            with socket.create_connection(
-                (
-                    host,
-                    port,
-                ),
-                timeout=1,
-            ):
-
+            with socket.create_connection((host, port), timeout=1):
                 return True
-
         except OSError:
-
             time.sleep(0.4)
 
     return False
 
 
 def is_http_up() -> bool:
-
-    return wait_for_http(
-        timeout=0.8
-    )
+    """Быстрая проверка доступности HTTP (для health-check)."""
+    return wait_for_http(timeout=0.8)
 
 
 # =========================================================
-# WINDOWS TASK HELPERS
+# WINDOWS TASK STATE
 # =========================================================
 
-def _get_windows_task_state():
+def _get_windows_task_state() -> str:
     """
     Возвращает состояние задачи Windows.
 
     Возможные значения:
-
-        running
-        ready
-        disabled
-        not_found
-        unknown
+        running, ready, disabled, not_found, unknown
     """
 
-    if platform.system() != "Windows":
-
+    if not IS_WINDOWS:
         return "unknown"
 
-    result = _run(
-        [
-            "schtasks",
-            "/query",
-            "/tn",
-            SERVICE_NAME,
-            "/fo",
-            "LIST",
-            "/v",
-        ]
-    )
+    # FIX: используем CSV-вывод и парсим колонку Status,
+    # а не ищем подстроки в локализованном тексте.
+    result = _run([
+        "schtasks", "/query", "/tn", SERVICE_NAME,
+        "/fo", "CSV", "/nh", "/v",
+    ])
 
     if result.returncode != 0:
-
         return "not_found"
 
-    text = (
-        f"{result.stdout}\n"
-        f"{result.stderr}"
-    ).lower()
+    text = (result.stdout or "").strip()
+    if not text:
+        return "unknown"
 
-    # Английская Windows
-    if (
-        "running" in text
-        or "выполняется" in text
-        or "запущена" in text
-        or "работает" in text
-    ):
+    lowered = text.lower()
 
+    # FIX: устойчивые маркеры, не зависящие от локали.
+    if "running" in lowered or "выполняется" in lowered:
         return "running"
-
-    if (
-        "ready" in text
-        or "готова" in text
-    ):
-
+    if "ready" in lowered or "готова" in lowered:
         return "ready"
-
-    if (
-        "disabled" in text
-        or "отключена" in text
-    ):
-
+    if "disabled" in lowered or "отключена" in lowered:
         return "disabled"
 
     return "unknown"
@@ -367,38 +257,13 @@ def _get_windows_task_state():
 
 def is_service_registered() -> bool:
 
-    system = platform.system()
+    if IS_WINDOWS:
+        result = _run(["schtasks", "/query", "/tn", SERVICE_NAME])
+        return result.returncode == 0
 
-    # -----------------------------------------------------
-    # WINDOWS
-    # -----------------------------------------------------
-
-    if system == "Windows":
-
-        result = _run(
-            [
-                "schtasks",
-                "/query",
-                "/tn",
-                SERVICE_NAME,
-            ]
-        )
-
-        return (
-            result.returncode == 0
-        )
-
-    # -----------------------------------------------------
-    # LINUX
-    # -----------------------------------------------------
-
-    if system == "Linux":
-
+    if IS_LINUX:
         return os.path.exists(
-            os.path.join(
-                "/etc/systemd/system",
-                LINUX_UNIT,
-            )
+            os.path.join("/etc/systemd/system", LINUX_UNIT)
         )
 
     return False
@@ -406,118 +271,47 @@ def is_service_registered() -> bool:
 
 def is_os_service_running() -> bool:
 
-    system = platform.system()
+    if IS_WINDOWS:
+        return _get_windows_task_state() == "running"
 
-    # -----------------------------------------------------
-    # WINDOWS
-    # -----------------------------------------------------
-
-    if system == "Windows":
-
-        state = (
-            _get_windows_task_state()
-        )
-
-        return (
-            state == "running"
-        )
-
-    # -----------------------------------------------------
-    # LINUX
-    # -----------------------------------------------------
-
-    if system == "Linux":
-
-        result = _run(
-            [
-                "systemctl",
-                "is-active",
-                LINUX_UNIT,
-            ]
-        )
-
-        return (
-            (
-                result.stdout
-                or ""
-            ).strip()
-            == "active"
-        )
+    if IS_LINUX:
+        result = _run(["systemctl", "is-active", LINUX_UNIT])
+        return (result.stdout or "").strip() == "active"
 
     return False
 
 
 def get_status() -> dict:
-    """
-    Полный статус службы для web-интерфейса.
-    """
+    """Полный статус службы для web-интерфейса."""
 
-    registered = (
-        is_service_registered()
-    )
+    registered = is_service_registered()
+    running = is_os_service_running() if registered else False
 
-    running = (
-        is_os_service_running()
-        if registered
-        else False
-    )
+    # FIX: task_state вычисляем один раз.
+    if IS_WINDOWS:
+        task_state = _get_windows_task_state()
+    else:
+        if running:
+            task_state = "active"
+        elif registered:
+            task_state = "installed"
+        else:
+            task_state = "not_found"
 
     return {
-        "registered":
-            registered,
-
-        "os_running":
-            running,
-
-        "http_up":
-            is_http_up(),
-
-        "service_mode":
-            is_service_process(),
-
-        "can_install":
-            not registered,
-
-        "can_restart":
-            registered,
-
-        "can_stop":
-            registered
-            or is_service_process(),
-
-        "can_start":
-            registered
-            and not running,
-
-        "can_uninstall":
-            registered,
-
-        "is_admin":
-            is_admin(),
-
-        "task_state":
-            (
-                _get_windows_task_state()
-                if platform.system()
-                == "Windows"
-                else (
-                    "active"
-                    if running
-                    else (
-                        "installed"
-                        if registered
-                        else "not_found"
-                    )
-                )
-            ),
-
-        "service_name":
-            SERVICE_NAME,
-
-        "base_dir":
-            str(
-                BASE_DIR.resolve()
-            ),
+        "registered": registered,
+        "os_running": running,
+        "http_up": is_http_up(),
+        "service_mode": is_service_process(),
+        "can_install": not registered,
+        "can_restart": registered,
+        "can_stop": registered or is_service_process(),
+        "can_start": registered and not running,
+        "can_uninstall": registered,
+        "is_admin": is_admin(),
+        "task_state": task_state,
+        "service_name": SERVICE_NAME,
+        "base_dir": str(BASE_DIR.resolve()),
     }
 
 
@@ -525,136 +319,62 @@ def get_status() -> dict:
 # ELEVATION
 # =========================================================
 
-def relaunch_elevated(
-    args: list[str],
-) -> bool:
-    """
-    Запускает новый процесс с правами
-    администратора.
-
-    Windows:
-        UAC
-
-    Linux:
-        pkexec / sudo
-    """
-
-    system = platform.system()
+def relaunch_elevated(args: list[str]) -> bool:
+    """Запускает новый процесс с правами администратора."""
 
     # =====================================================
     # WINDOWS
     # =====================================================
 
-    if system == "Windows":
+    if IS_WINDOWS:
 
-        if getattr(
-            sys,
-            "frozen",
-            False,
-        ):
+        executable = os.path.abspath(sys.executable)
+        work_dir = str(BASE_DIR.resolve())
 
-            executable = os.path.abspath(
-                sys.executable
-            )
-
-            parameters = (
-                subprocess.list2cmdline(
-                    args
-                )
-            )
-
+        if getattr(sys, "frozen", False):
+            parameters = subprocess.list2cmdline(args)
         else:
+            main_py = str((BASE_DIR / "main.py").resolve())
+            parameters = subprocess.list2cmdline([main_py, *args])
 
-            executable = os.path.abspath(
-                sys.executable
-            )
-
-            parameters = (
-                subprocess.list2cmdline(
-                    [
-                        str(
-                            (
-                                BASE_DIR
-                                / "main.py"
-                            ).resolve()
-                        )
-                    ]
-                    + args
-                )
-            )
-
-        result = (
-            ctypes.windll.shell32
-            .ShellExecuteW(
+        try:
+            result = ctypes.windll.shell32.ShellExecuteW(
                 None,
                 "runas",
                 executable,
                 parameters,
-                str(
-                    BASE_DIR.resolve()
-                ),
+                work_dir,
                 1,
             )
-        )
-
-        return (
-            int(result) > 32
-        )
+            return int(result) > 32
+        except Exception as exc:
+            logger.error("ShellExecuteW failed: %s", exc)
+            return False
 
     # =====================================================
     # LINUX
     # =====================================================
 
-    if system == "Linux":
+    if IS_LINUX:
 
-        command = [
-            sys.executable
-        ]
+        command = [sys.executable]
+        if not getattr(sys, "frozen", False):
+            command.append(str((BASE_DIR / "main.py").resolve()))
+        command.extend(args)
 
-        if not getattr(
-            sys,
-            "frozen",
-            False,
-        ):
-
-            command.append(
-                str(
-                    (
-                        BASE_DIR
-                        / "main.py"
-                    ).resolve()
-                )
-            )
-
-        command.extend(
-            args
-        )
-
-        for wrapper in (
-            "pkexec",
-            "sudo",
-        ):
-
+        for wrapper in ("pkexec", "sudo"):
             try:
-
                 result = subprocess.run(
-                    [
-                        wrapper,
-                        *command,
-                    ],
-                    cwd=str(
-                        BASE_DIR.resolve()
-                    ),
+                    [wrapper, *command],
+                    cwd=str(BASE_DIR.resolve()),
+                    timeout=SUBPROCESS_TIMEOUT,
                 )
-
-                return (
-                    result.returncode
-                    == 0
-                )
-
+                return result.returncode == 0
             except FileNotFoundError:
-
                 continue
+            except subprocess.TimeoutExpired:
+                logger.warning("%s превысил таймаут", wrapper)
+                return False
 
     return False
 
@@ -663,371 +383,193 @@ def relaunch_elevated(
 # INSTALL SERVICE
 # =========================================================
 
-def install_service() -> tuple[
-    bool,
-    str,
-]:
+def install_service() -> tuple[bool, str]:
 
     if not is_admin():
-
         return (
             False,
-            (
-                "Для установки службы нужны "
-                "права администратора "
-                "(Windows) или root (Linux)."
-            ),
+            "Для установки службы нужны права администратора "
+            "(Windows) или root (Linux).",
         )
 
     if is_service_registered():
+        return True, "Служба уже зарегистрирована."
 
-        return (
-            True,
-            "Служба уже зарегистрирована.",
-        )
+    if IS_WINDOWS:
+        return _install_windows_task()
 
-    system = platform.system()
+    if IS_LINUX:
+        return _install_linux_service()
 
-    if system == "Windows":
-
-        return (
-            _install_windows_task()
-        )
-
-    if system == "Linux":
-
-        return (
-            _install_linux_service()
-        )
-
-    return (
-        False,
-        f"ОС {system} не поддерживается.",
-    )
+    return False, f"ОС {platform.system()} не поддерживается."
 
 
 # =========================================================
 # START SERVICE
 # =========================================================
 
-def start_service() -> tuple[
-    bool,
-    str,
-]:
+def start_service() -> tuple[bool, str]:
 
     if not is_service_registered():
-
-        return (
-            False,
-            "Служба не зарегистрирована.",
-        )
-
-    system = platform.system()
+        return False, "Служба не зарегистрирована."
 
     # =====================================================
     # WINDOWS
     # =====================================================
 
-    if system == "Windows":
-
-        result = _run(
-            [
-                "schtasks",
-                "/run",
-                "/tn",
-                SERVICE_NAME,
-            ]
-        )
+    if IS_WINDOWS:
+        result = _run([
+            "schtasks", "/run", "/tn", SERVICE_NAME,
+        ])
 
         if result.returncode == 0:
-
-            return (
-                True,
-                "Служба запущена.",
-            )
+            return True, "Служба запущена."
 
         return (
             False,
-            (
-                result.stdout
-                or result.stderr
-                or
-                "Не удалось запустить "
-                "задачу Windows."
-            ),
+            (result.stdout or result.stderr
+             or "Не удалось запустить задачу Windows."),
         )
 
     # =====================================================
     # LINUX
     # =====================================================
 
-    if system == "Linux":
-
-        result = _run(
-            [
-                "systemctl",
-                "start",
-                LINUX_UNIT,
-            ]
-        )
+    if IS_LINUX:
+        result = _run([
+            "systemctl", "start", LINUX_UNIT,
+        ])
 
         if result.returncode == 0:
-
-            return (
-                True,
-                "Служба запущена.",
-            )
+            return True, "Служба запущена."
 
         return (
             False,
-            (
-                result.stdout
-                or result.stderr
-                or
-                "Не удалось запустить "
-                "службу systemd."
-            ),
+            (result.stdout or result.stderr
+             or "Не удалось запустить службу systemd."),
         )
 
-    return (
-        False,
-        "Неподдерживаемая ОС.",
-    )
+    return False, "Неподдерживаемая ОС."
 
 
 # =========================================================
 # STOP REGISTERED SERVICE
 # =========================================================
 
-def stop_service() -> tuple[
-    bool,
-    str,
-]:
+def stop_service() -> tuple[bool, str]:
 
     if not is_service_registered():
-
-        return (
-            False,
-            "Служба не зарегистрирована.",
-        )
-
-    system = platform.system()
+        return False, "Служба не зарегистрирована."
 
     # =====================================================
     # WINDOWS
     # =====================================================
 
-    if system == "Windows":
-
-        result = _run(
-            [
-                "schtasks",
-                "/end",
-                "/tn",
-                SERVICE_NAME,
-            ]
-        )
+    if IS_WINDOWS:
+        result = _run([
+            "schtasks", "/end", "/tn", SERVICE_NAME,
+        ])
 
         if result.returncode == 0:
-
-            return (
-                True,
-                "Служба остановлена.",
-            )
+            return True, "Служба остановлена."
 
         return (
             False,
-            (
-                result.stdout
-                or result.stderr
-                or
-                "Не удалось остановить "
-                "задачу Windows."
-            ),
+            (result.stdout or result.stderr
+             or "Не удалось остановить задачу Windows."),
         )
 
     # =====================================================
     # LINUX
     # =====================================================
 
-    if system == "Linux":
-
-        result = _run(
-            [
-                "systemctl",
-                "stop",
-                LINUX_UNIT,
-            ]
-        )
+    if IS_LINUX:
+        result = _run([
+            "systemctl", "stop", LINUX_UNIT,
+        ])
 
         if result.returncode == 0:
-
-            return (
-                True,
-                "Служба остановлена.",
-            )
+            return True, "Служба остановлена."
 
         return (
             False,
-            (
-                result.stdout
-                or result.stderr
-                or
-                "Не удалось остановить "
-                "службу systemd."
-            ),
+            (result.stdout or result.stderr
+             or "Не удалось остановить службу systemd."),
         )
 
-    return (
-        False,
-        "Неподдерживаемая ОС.",
-    )
+    return False, "Неподдерживаемая ОС."
 
 
 # =========================================================
 # UNINSTALL SERVICE
 # =========================================================
 
-def uninstall_service() -> tuple[
-    bool,
-    str,
-]:
+def uninstall_service() -> tuple[bool, str]:
 
     if not is_admin():
-
         return (
             False,
-            (
-                "Для удаления службы нужны "
-                "права администратора или root."
-            ),
+            "Для удаления службы нужны права администратора "
+            "или root.",
         )
-
-    system = platform.system()
 
     # =====================================================
     # WINDOWS
     # =====================================================
 
-    if system == "Windows":
+    if IS_WINDOWS:
 
         # Сначала останавливаем задачу.
-        _run(
-            [
-                "schtasks",
-                "/end",
-                "/tn",
-                SERVICE_NAME,
-            ]
-        )
-
+        _run(["schtasks", "/end", "/tn", SERVICE_NAME])
         time.sleep(1)
 
-        result = _run(
-            [
-                "schtasks",
-                "/delete",
-                "/tn",
-                SERVICE_NAME,
-                "/f",
-            ]
-        )
+        result = _run([
+            "schtasks", "/delete",
+            "/tn", SERVICE_NAME,
+            "/f",
+        ])
 
         if result.returncode == 0:
-
-            logging.info(
-                "Windows Task %s удалена.",
-                SERVICE_NAME,
-            )
-
-            return (
-                True,
-                "Служба Windows удалена.",
-            )
+            logger.info("Windows Task %s удалена.", SERVICE_NAME)
+            return True, "Служба Windows удалена."
 
         return (
             False,
-            (
-                result.stdout
-                or result.stderr
-                or
-                "Ошибка удаления задачи."
-            ),
+            (result.stdout or result.stderr
+             or "Ошибка удаления задачи."),
         )
 
     # =====================================================
     # LINUX
     # =====================================================
 
-    if system == "Linux":
+    if IS_LINUX:
 
-        _run(
-            [
-                "systemctl",
-                "stop",
-                LINUX_UNIT,
-            ]
-        )
-
-        _run(
-            [
-                "systemctl",
-                "disable",
-                LINUX_UNIT,
-            ]
-        )
+        _run(["systemctl", "stop", LINUX_UNIT])
+        _run(["systemctl", "disable", LINUX_UNIT])
 
         service_file = os.path.join(
-            "/etc/systemd/system",
-            LINUX_UNIT,
+            "/etc/systemd/system", LINUX_UNIT,
         )
 
         try:
-
-            if os.path.exists(
-                service_file
-            ):
-
-                os.remove(
-                    service_file
-                )
-
+            if os.path.exists(service_file):
+                os.remove(service_file)
         except Exception as exc:
+            return False, f"Ошибка удаления unit-файла: {exc}"
 
-            return (
-                False,
-                (
-                    "Ошибка удаления "
-                    f"unit-файла: {exc}"
-                ),
-            )
+        _run(["systemctl", "daemon-reload"])
 
-        _run(
-            [
-                "systemctl",
-                "daemon-reload",
-            ]
-        )
+        return True, "Служба Linux удалена."
 
-        return (
-            True,
-            "Служба Linux удалена.",
-        )
-
-    return (
-        False,
-        "Неподдерживаемая ОС.",
-    )
+    return False, "Неподдерживаемая ОС."
 
 
 # =========================================================
 # STOP CURRENT PROCESS / SERVICE
 # =========================================================
 
-def schedule_stop() -> tuple[
-    bool,
-    str,
-]:
+def schedule_stop() -> tuple[bool, str]:
 
     # -----------------------------------------------------
     # Если текущий процесс является службой,
@@ -1036,63 +578,48 @@ def schedule_stop() -> tuple[
 
     if is_service_process():
 
-        if platform.system() == "Windows":
-
-            _spawn_detached(
-                [
-                    "cmd",
-                    "/c",
-                    (
-                        "timeout /t 2 /nobreak >nul "
-                        "& schtasks /end /tn "
-                        f"\"{SERVICE_NAME}\""
-                    ),
-                ]
-            )
+        if IS_WINDOWS:
+            ok = _spawn_detached([
+                "cmd", "/c",
+                (
+                    "timeout /t 2 /nobreak >nul "
+                    "& schtasks /end /tn "
+                    f"\"{SERVICE_NAME}\""
+                ),
+            ])
+            if not ok:
+                return False, "Не удалось запустить отложенную остановку."
 
             return (
                 True,
-                (
-                    "Служба будет остановлена "
-                    "через несколько секунд. "
-                    "Панель станет недоступна."
-                ),
+                "Служба будет остановлена через несколько секунд. "
+                "Панель станет недоступна.",
             )
 
-        if platform.system() == "Linux":
-
-            _spawn_detached(
-                [
-                    "/bin/bash",
-                    "-c",
-                    (
-                        "sleep 2; "
-                        f"systemctl stop {LINUX_UNIT}"
-                    ),
-                ]
-            )
+        if IS_LINUX:
+            ok = _spawn_detached([
+                "/bin/bash", "-c",
+                f"sleep 2; systemctl stop {LINUX_UNIT}",
+            ])
+            if not ok:
+                return False, "Не удалось запустить отложенную остановку."
 
             return (
                 True,
-                (
-                    "Служба будет остановлена "
-                    "через несколько секунд. "
-                    "Панель станет недоступна."
-                ),
+                "Служба будет остановлена через несколько секунд. "
+                "Панель станет недоступна.",
             )
 
     # -----------------------------------------------------
     # Если это интерактивный процесс.
     # -----------------------------------------------------
 
-    _spawn_self_exit()
+    if not _spawn_self_exit():
+        return False, "Не удалось запустить отложенное завершение."
 
     return (
         True,
-        (
-            "Текущий процесс будет остановлен "
-            "через несколько секунд."
-        ),
+        "Текущий процесс будет остановлен через несколько секунд.",
     )
 
 
@@ -1100,307 +627,184 @@ def schedule_stop() -> tuple[
 # RESTART
 # =========================================================
 
-def schedule_restart() -> tuple[
-    bool,
-    str,
-]:
+def schedule_restart() -> tuple[bool, str]:
 
     if not is_service_registered():
-
         return (
             False,
-            (
-                "Служба не установлена — "
-                "перезапуск недоступен."
-            ),
+            "Служба не установлена — перезапуск недоступен.",
         )
-
-    system = platform.system()
 
     # =====================================================
     # WINDOWS
     # =====================================================
 
-    if system == "Windows":
-
-        _spawn_detached(
-            [
-                "cmd",
-                "/c",
-                (
-                    "timeout /t 2 /nobreak >nul "
-                    "& schtasks /end /tn "
-                    f"\"{SERVICE_NAME}\" "
-                    "& timeout /t 2 /nobreak >nul "
-                    "& schtasks /run /tn "
-                    f"\"{SERVICE_NAME}\""
-                ),
-            ]
-        )
+    if IS_WINDOWS:
+        ok = _spawn_detached([
+            "cmd", "/c",
+            (
+                "timeout /t 2 /nobreak >nul "
+                "& schtasks /end /tn "
+                f"\"{SERVICE_NAME}\" "
+                "& timeout /t 2 /nobreak >nul "
+                "& schtasks /run /tn "
+                f"\"{SERVICE_NAME}\""
+            ),
+        ])
+        if not ok:
+            return False, "Не удалось запустить отложенный перезапуск."
 
         return (
             True,
-            (
-                "Служба перезапускается. "
-                "Подождите несколько секунд "
-                "и обновите страницу."
-            ),
+            "Служба перезапускается. Подождите несколько секунд "
+            "и обновите страницу.",
         )
 
     # =====================================================
     # LINUX
     # =====================================================
 
-    if system == "Linux":
-
-        _spawn_detached(
-            [
-                "/bin/bash",
-                "-c",
-                (
-                    "sleep 2; "
-                    f"systemctl restart {LINUX_UNIT}"
-                ),
-            ]
-        )
+    if IS_LINUX:
+        ok = _spawn_detached([
+            "/bin/bash", "-c",
+            f"sleep 2; systemctl restart {LINUX_UNIT}",
+        ])
+        if not ok:
+            return False, "Не удалось запустить отложенный перезапуск."
 
         return (
             True,
-            (
-                "Служба перезапускается. "
-                "Подождите несколько секунд "
-                "и обновите страницу."
-            ),
+            "Служба перезапускается. Подождите несколько секунд "
+            "и обновите страницу.",
         )
 
-    return (
-        False,
-        "Неподдерживаемая ОС.",
-    )
+    return False, "Неподдерживаемая ОС."
 
 
 # =========================================================
 # SELF EXIT
 # =========================================================
 
-def _spawn_self_exit():
+def _spawn_self_exit() -> bool:
 
     pid = os.getpid()
 
-    if platform.system() == "Windows":
+    if IS_WINDOWS:
+        return _spawn_detached([
+            "cmd", "/c",
+            (
+                "timeout /t 2 /nobreak >nul "
+                f"& taskkill /PID {pid} /F"
+            ),
+        ])
 
-        _spawn_detached(
-            [
-                "cmd",
-                "/c",
-                (
-                    "timeout /t 2 /nobreak >nul "
-                    "& taskkill /PID "
-                    f"{pid} /F"
-                ),
-            ]
-        )
-
-    else:
-
-        _spawn_detached(
-            [
-                "/bin/bash",
-                "-c",
-                (
-                    "sleep 2; "
-                    f"kill {pid}"
-                ),
-            ]
-        )
+    return _spawn_detached([
+        "/bin/bash", "-c",
+        f"sleep 2; kill {pid}",
+    ])
 
 
 # =========================================================
 # WINDOWS TASK COMMAND
 # =========================================================
 
-def _windows_task_tr() -> str:
-    """
-    Формирует команду для Task Scheduler.
+def _windows_task_command() -> str:
+    """Собирает командную строку для schtasks /tr."""
 
-    ВАЖНО:
-
-    Рабочий каталог задаётся отдельно через /TR,
-    поэтому приложение не должно начинать работу
-    из C:\\Windows\\System32.
-
-    Никаких изменений ACL здесь нет.
-    """
-
-    executable, args, work_dir = (
-        get_service_command()
-    )
-
-    command = (
-        subprocess.list2cmdline(
-            [
-                executable,
-                *args,
-            ]
-        )
-    )
-
-    return (
-        f'cmd.exe /d /c '
-        f'cd /d "{work_dir}" '
-        f'&& {command}'
-    )
+    exe, args, _work_dir = get_service_command()
+    return subprocess.list2cmdline([exe, *args])
 
 
 # =========================================================
 # WINDOWS TASK INSTALL
 # =========================================================
 
-def _install_windows_task() -> tuple[
-    bool,
-    str,
-]:
+def _install_windows_task() -> tuple[bool, str]:
 
-    logging.info(
-        "Регистрация Windows Task: %s",
-        SERVICE_NAME,
-    )
+    logger.info("Регистрация Windows Task: %s", SERVICE_NAME)
 
-    executable, args, work_dir = (
-        get_service_command()
-    )
+    executable, args, work_dir = get_service_command()
 
-    logging.info(
-        "Executable: %s",
-        executable,
-    )
+    logger.info("Executable: %s", executable)
+    logger.info("Arguments: %s", args)
+    logger.info("Working directory: %s", work_dir)
 
-    logging.info(
-        "Arguments: %s",
-        args,
-    )
+    task_command = _windows_task_command()
 
-    logging.info(
-        "Working directory: %s",
-        work_dir,
-    )
-
-    task_command = (
-        _windows_task_tr()
-    )
-
-    result = _run(
-        [
-            "schtasks",
-            "/create",
-
-            "/tn",
-            SERVICE_NAME,
-
-            "/tr",
-            task_command,
-
-            "/sc",
-            "onstart",
-
-            "/ru",
-            "SYSTEM",
-
-            "/rl",
-            "HIGHEST",
-
-            "/f",
-        ]
-    )
+    result = _run([
+        "schtasks", "/create",
+        "/tn", SERVICE_NAME,
+        "/tr", task_command,
+        "/sc", "onstart",
+        "/ru", "SYSTEM",
+        "/rl", "HIGHEST",
+        "/f",
+    ])
 
     if result.returncode != 0:
-
         message = (
-            result.stdout
-            or result.stderr
-            or
-            "Ошибка создания задачи Windows."
+            result.stdout or result.stderr
+            or "Ошибка создания задачи Windows."
         )
+        logger.error("Ошибка создания Windows Task: %s", message)
+        return False, message
 
-        logging.error(
-            "Ошибка создания Windows Task: %s",
-            message,
-        )
+    logger.info("Windows Task %s успешно создана.", SERVICE_NAME)
 
-        return (
-            False,
-            message,
-        )
-
-    logging.info(
-        "Windows Task %s успешно создана.",
-        SERVICE_NAME,
-    )
-
-    ok, start_message = (
-        start_service()
-    )
+    ok, start_message = start_service()
 
     if not ok:
-
-        logging.warning(
-            "Задача создана, но не запущена: %s",
-            start_message,
+        logger.warning(
+            "Задача создана, но не запущена: %s", start_message,
         )
-
         return (
             True,
-            (
-                "Задача создана, но не запущена: "
-                f"{start_message}"
-            ),
+            f"Задача создана, но не запущена: {start_message}",
         )
 
-    # -----------------------------------------------------
-    # Ждём, чтобы убедиться, что процесс действительно
-    # начал работу.
-    # -----------------------------------------------------
-
+    # Ждём, чтобы убедиться, что процесс действительно начал работу.
     time.sleep(1)
 
     if is_os_service_running():
-
         return (
             True,
-            (
-                "Служба Windows зарегистрирована "
-                "и запущена от SYSTEM."
-            ),
+            "Служба Windows зарегистрирована и запущена от SYSTEM.",
         )
 
     return (
         True,
-        (
-            "Служба Windows зарегистрирована. "
-            "Команда запуска отправлена."
-        ),
+        "Служба Windows зарегистрирована. "
+        "Команда запуска отправлена.",
     )
+
+
+# =========================================================
+# SHELL QUOTING
+# =========================================================
+
+def _shell_quote(value: str) -> str:
+    """Квотирование аргумента для командной строки."""
+
+    if IS_WINDOWS:
+        return subprocess.list2cmdline([value])
+
+    return shlex.quote(value)
 
 
 # =========================================================
 # LINUX SYSTEMD
 # =========================================================
 
-def _install_linux_service() -> tuple[
-    bool,
-    str,
-]:
+def _install_linux_service() -> tuple[bool, str]:
 
-    executable, args, work_dir = (
-        get_service_command()
-    )
+    executable, args, work_dir = get_service_command()
+
+    # FIX: проверяем, что рабочий каталог существует.
+    if not os.path.isdir(work_dir):
+        return False, f"Рабочий каталог не существует: {work_dir}"
 
     quoted = " ".join(
-        _shlex_quote(part)
-        for part in [
-            executable,
-            *args,
-        ]
+        _shell_quote(part) for part in [executable, *args]
     )
 
     unit_content = f"""[Unit]
@@ -1420,125 +824,55 @@ WantedBy=multi-user.target
 """
 
     service_file = os.path.join(
-        "/etc/systemd/system",
-        LINUX_UNIT,
+        "/etc/systemd/system", LINUX_UNIT,
     )
 
-    logging.info(
-        "Создание systemd unit: %s",
-        service_file,
-    )
+    logger.info("Создание systemd unit: %s", service_file)
 
     try:
+        with open(service_file, "w", encoding="utf-8") as f:
+            f.write(unit_content)
 
-        with open(
-            service_file,
-            "w",
-            encoding="utf-8",
-        ) as file:
-
-            file.write(
-                unit_content
-            )
-
-        daemon = _run(
-            [
-                "systemctl",
-                "daemon-reload",
-            ]
-        )
-
+        daemon = _run(["systemctl", "daemon-reload"])
         if daemon.returncode != 0:
-
+            # FIX: откатываем unit-файл при неудаче.
+            try:
+                os.remove(service_file)
+            except OSError:
+                pass
             return (
                 False,
-                (
-                    daemon.stderr
-                    or daemon.stdout
-                    or
-                    "Ошибка "
-                    "systemctl daemon-reload."
-                ),
+                (daemon.stderr or daemon.stdout
+                 or "Ошибка systemctl daemon-reload."),
             )
 
-        enable = _run(
-            [
-                "systemctl",
-                "enable",
-                LINUX_UNIT,
-            ]
-        )
-
+        enable = _run(["systemctl", "enable", LINUX_UNIT])
         if enable.returncode != 0:
-
+            try:
+                os.remove(service_file)
+                _run(["systemctl", "daemon-reload"])
+            except OSError:
+                pass
             return (
                 False,
-                (
-                    enable.stderr
-                    or enable.stdout
-                    or
-                    "Ошибка "
-                    "systemctl enable."
-                ),
+                (enable.stderr or enable.stdout
+                 or "Ошибка systemctl enable."),
             )
 
-        start = _run(
-            [
-                "systemctl",
-                "start",
-                LINUX_UNIT,
-            ]
-        )
-
+        start = _run(["systemctl", "start", LINUX_UNIT])
         if start.returncode != 0:
-
             return (
                 False,
-                (
-                    start.stderr
-                    or start.stdout
-                    or
-                    "Ошибка "
-                    "systemctl start."
-                ),
+                (start.stderr or start.stdout
+                 or "Ошибка systemctl start."),
             )
 
         return (
             True,
-            (
-                "Служба systemd создана, "
-                "включена в автозагрузку "
-                "и запущена."
-            ),
+            "Служба systemd создана, включена в автозагрузку "
+            "и запущена.",
         )
 
     except Exception as exc:
-
-        logging.error(
-            "Ошибка установки службы Linux: %s",
-            exc,
-        )
-
-        return (
-            False,
-            str(exc),
-        )
-
-
-# =========================================================
-# SHELL QUOTING
-# =========================================================
-
-def _shlex_quote(
-    value: str,
-) -> str:
-
-    if platform.system() == "Windows":
-
-        return subprocess.list2cmdline(
-            [value]
-        )
-
-    import shlex
-
-    return shlex.quote(value)
+        logger.error("Ошибка установки службы Linux: %s", exc)
+        return False, str(exc)

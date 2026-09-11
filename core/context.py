@@ -1,17 +1,28 @@
+# =========================================================
+# core/context.py
+# =========================================================
+
 from pathlib import Path
 import json
-import sys
+import logging
+import os
 import shutil
+import sys
+import tempfile
+
+
+logger = logging.getLogger(__name__)
+
 
 # =========================================================
 # Определение корня приложения
 # =========================================================
 
 if getattr(sys, "frozen", False):
-    # Запуск из PyInstaller EXE
+    # Запуск из PyInstaller EXE — рядом с .exe
     BASE_DIR = Path(sys.executable).resolve().parent
 else:
-    # Запуск из исходников
+    # core/context.py → корень проекта
     BASE_DIR = Path(__file__).resolve().parent.parent
 
 
@@ -24,7 +35,6 @@ LOGS_DIR = BASE_DIR / "logs"
 BACKUPS_DIR = BASE_DIR / "backups"
 PLUGINS_DIR = BASE_DIR / "plugins"
 WEB_DIR = BASE_DIR / "web"
-
 
 
 # =========================================================
@@ -41,7 +51,7 @@ AUTH_FILE = DATA_DIR / "auth.json"
 # Создание каталогов
 # =========================================================
 
-def ensure_directories():
+def ensure_directories() -> None:
     """Создать необходимые каталоги при первом запуске."""
 
     for directory in [
@@ -49,115 +59,209 @@ def ensure_directories():
         LOGS_DIR,
         BACKUPS_DIR,
         PLUGINS_DIR,
+        WEB_DIR,
         WEB_DIR / "static",
         WEB_DIR / "templates",
     ]:
         directory.mkdir(parents=True, exist_ok=True)
 
 
-def ensure_web_files():
-    """Распаковать встроенные web-файлы рядом с EXE при первом запуске."""
+# =========================================================
+# Копирование встроенных web-файлов (только для EXE)
+# =========================================================
+
+def _copy_tree_missing(source: Path, target: Path) -> None:
+    """
+    Рекурсивно копирует файлы из source в target,
+    не перезатирая уже существующие.
+    """
+    if not source.exists():
+        return
+
+    for item in source.rglob("*"):
+        rel = item.relative_to(source)
+        dst = target / rel
+
+        if item.is_dir():
+            dst.mkdir(parents=True, exist_ok=True)
+            continue
+
+        dst.parent.mkdir(parents=True, exist_ok=True)
+
+        if not dst.exists():
+            try:
+                shutil.copy2(item, dst)
+            except OSError as exc:
+                logger.warning(
+                    "Не удалось скопировать %s → %s: %s",
+                    item, dst, exc,
+                )
+
+
+def ensure_web_files() -> None:
+    """
+    Распаковать встроенные web-файлы рядом с EXE при первом запуске.
+    В режиме исходников ничего не делает.
+    """
 
     if not getattr(sys, "frozen", False):
         return
 
-    source_web = Path(sys._MEIPASS) / "web"
-
-    if not source_web.exists():
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass is None:
+        logger.warning(
+            "sys._MEIPASS недоступен — web-файлы не будут скопированы."
+        )
         return
 
-    target_templates = WEB_DIR / "templates"
-    target_static = WEB_DIR / "static"
+    source_web = Path(meipass) / "web"
+    if not source_web.exists():
+        logger.warning("В бандле нет каталога web/: %s", source_web)
+        return
 
-    target_templates.mkdir(parents=True, exist_ok=True)
-    target_static.mkdir(parents=True, exist_ok=True)
+    _copy_tree_missing(
+        source_web / "templates",
+        WEB_DIR / "templates",
+    )
+    _copy_tree_missing(
+        source_web / "static",
+        WEB_DIR / "static",
+    )
 
-    # Копируем шаблоны, если файлов нет
-    for item in (source_web / "templates").glob("*"):
-        target = target_templates / item.name
-        if not target.exists():
-            shutil.copy2(item, target)
-
-    # Копируем статику
-    for item in (source_web / "static").glob("*"):
-        target = target_static / item.name
-        if not target.exists():
-            shutil.copy2(item, target)
 
 # =========================================================
 # Создание файлов по умолчанию
 # =========================================================
 
-def ensure_default_files():
+def _write_default_json(path: Path, data: dict) -> None:
+    if path.exists():
+        return
+    try:
+        path.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.warning(
+            "Не удалось создать %s: %s", path, exc
+        )
+
+
+def ensure_default_files() -> None:
     """Создать конфиги по умолчанию, если их ещё нет."""
 
-    if not CONFIG_FILE.exists():
-        CONFIG_FILE.write_text(
-            json.dumps(
-                {
-                    "host": "127.0.0.1",
-                    "port": 8080,
-                    "open_browser": True,
-                    "max_parallel_backups": 5,
-                    "backup_timeout_seconds": 300,
-                },
-                indent=2,
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
+    _write_default_json(CONFIG_FILE, {
+        "host": "127.0.0.1",
+        "port": 8080,
+        "open_browser": True,
+        "max_parallel_backups": 5,
+        "backup_timeout_seconds": 300,
+    })
 
-    if not SCHEDULER_FILE.exists():
-        SCHEDULER_FILE.write_text(
-            json.dumps(
-                {
-                    "enabled": False,
-                    "mode": "daily",
-                    "daily_time": "03:00",
-                    "interval_hours": 24,
-                    "last_run": None,
-                },
-                indent=2,
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
+    _write_default_json(SCHEDULER_FILE, {
+        "enabled": False,
+        "mode": "daily",
+        "daily_time": "03:00",
+        "interval_hours": 24,
+        "last_run": None,
+    })
 
-    if not STATE_FILE.exists():
-        STATE_FILE.write_text(
-            json.dumps({}, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+    _write_default_json(STATE_FILE, {})
 
 
 # =========================================================
 # Работа с JSON
 # =========================================================
 
-def load_json(path, default=None):
-    if default is None:
+_UNSET = object()
+
+
+def load_json(path: Path, default=_UNSET) -> dict:
+    """
+    Читает JSON-объект из файла.
+
+    При любой ошибке (нет файла, битый JSON, не словарь)
+    возвращает default (по умолчанию — пустой dict) и пишет
+    предупреждение в лог.
+    """
+
+    if default is _UNSET:
         default = {}
 
     try:
-        if path.exists():
-            return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        pass
+        text = Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return default
+    except OSError as exc:
+        logger.warning("Не удалось прочитать %s: %s", path, exc)
+        return default
 
-    return default
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        logger.warning("Повреждён JSON в %s: %s", path, exc)
+        return default
+
+    if not isinstance(data, dict):
+        logger.warning(
+            "Ожидался объект в %s, получено %s",
+            path, type(data).__name__,
+        )
+        return default
+
+    return data
 
 
-def save_json(path, data):
-    path.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False),
-        encoding="utf-8",
+def save_json(path: Path, data: dict) -> None:
+    """
+    Атомарно записывает JSON-объект в файл.
+    Сначала пишет во временный файл в том же каталоге,
+    затем переименовывает.
+    """
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    text = json.dumps(data, indent=2, ensure_ascii=False)
+
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=path.name + ".",
+        suffix=".tmp",
+        dir=str(path.parent),
     )
 
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+
+        os.replace(tmp_name, path)
+
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
 
 # =========================================================
-# Инициализация при импорте
+# Инициализация
 # =========================================================
-
-ensure_directories()
-ensure_web_files()
-ensure_default_files()
+#
+# FIX: побочные эффекты (создание каталогов, копирование web-файлов,
+# запись дефолтных конфигов) больше НЕ выполняются при импорте.
+#
+# Вызывайте явно из точки входа:
+#
+#     from core.context import (
+#         ensure_directories,
+#         ensure_web_files,
+#         ensure_default_files,
+#     )
+#     ensure_directories()
+#     ensure_web_files()
+#     ensure_default_files()
+#
+# =========================================================
