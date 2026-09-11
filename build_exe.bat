@@ -6,6 +6,25 @@ chcp 65001 >nul
 
 title NetworkBackupManager - Build
 
+REM ========================================================
+REM ЕДИНЫЙ ЛОГ
+REM ========================================================
+REM
+REM Весь вывод build.bat дублируется в build.log.
+REM Файл перезаписывается при каждом запуске.
+REM
+REM Для запуска без паузы передайте --no-pause.
+REM
+
+set "LOG_FILE=%~dp0build.log"
+
+REM Очищаем лог
+> "%LOG_FILE%" echo ========================================
+>>"%LOG_FILE%" echo   NetworkBackupManager BUILD LOG
+>>"%LOG_FILE%" echo   Started: %DATE% %TIME%
+>>"%LOG_FILE%" echo ========================================
+>>"%LOG_FILE%" echo.
+
 echo.
 echo ========================================
 echo   NetworkBackupManager EXE BUILD
@@ -18,6 +37,9 @@ echo Project directory:
 echo %CD%
 echo.
 
+>>"%LOG_FILE%" echo Project directory: %CD%
+>>"%LOG_FILE%" echo.
+
 
 REM ========================================================
 REM 0. SANITY CHECKS
@@ -26,42 +48,46 @@ REM ========================================================
 echo [0/8] Checking project files...
 
 if not exist "main.py" (
-    echo.
-    echo ERROR:
-    echo main.py not found in %CD%
-    echo.
+    echo ERROR: main.py not found in %CD%
+    >>"%LOG_FILE%" echo ERROR: main.py not found in %CD%
     pause
     exit /b 1
 )
 
 if not exist "web" (
-    echo.
-    echo ERROR:
-    echo web\ directory not found in %CD%
-    echo.
+    echo ERROR: web\ directory not found in %CD%
+    >>"%LOG_FILE%" echo ERROR: web\ directory not found in %CD%
     pause
     exit /b 1
 )
 
 if not exist "web\templates" (
     echo WARNING: web\templates not found - web UI may not work.
+    >>"%LOG_FILE%" echo WARNING: web\templates not found - web UI may not work.
 )
 
 if not exist "web\static" (
     echo WARNING: web\static not found - web UI may not work.
+    >>"%LOG_FILE%" echo WARNING: web\static not found - web UI may not work.
 )
 
 if not exist "core" (
-    echo.
-    echo ERROR:
-    echo core\ directory not found in %CD%
-    echo.
+    echo ERROR: core\ directory not found in %CD%
+    >>"%LOG_FILE%" echo ERROR: core\ directory not found in %CD%
     pause
     exit /b 1
 )
 
+if not exist "core\__init__.py" (
+    echo WARNING: core\__init__.py not found - creating empty file.
+    >>"%LOG_FILE%" echo WARNING: core\__init__.py not found - creating empty file.
+    type nul > "core\__init__.py"
+)
+
 echo OK.
 echo.
+>>"%LOG_FILE%" echo [OK] Project files checked.
+>>"%LOG_FILE%" echo.
 
 
 REM ========================================================
@@ -84,6 +110,8 @@ if exist NetworkBackupManager.spec (
 
 echo OK.
 echo.
+>>"%LOG_FILE%" echo [OK] Clean complete.
+>>"%LOG_FILE%" echo.
 
 
 REM ========================================================
@@ -94,22 +122,25 @@ echo [2/8] Checking Python...
 
 python --version
 if errorlevel 1 (
-    echo.
-    echo ERROR:
-    echo Python is not available in PATH.
-    echo.
+    echo ERROR: Python is not available in PATH.
+    >>"%LOG_FILE%" echo ERROR: Python is not available in PATH.
     pause
     exit /b 1
 )
 
-REM FIX: явно сообщаем архитектуру и разрядность - важно для целевой машины.
+REM FIX: убраны двойные кавычки внутри строки Python.
+REM cmd.exe не экранирует ''P'' так, как PowerShell.
 for /f "delims=" %%V in ('python -c "import sys; print(sys.version.split()[0])"') do set PY_VERSION=%%V
-for /f "delims=" %%B in ('python -c "import struct; print(struct.calcsize(''P'') * 8)"') do set PY_BITS=%%B
+for /f "delims=" %%B in ('python -c "import struct; print(struct.calcsize('P') * 8)"') do set PY_BITS=%%B
 
 echo Python version: !PY_VERSION!
 echo Python bits:    !PY_BITS!
-
 echo.
+
+>>"%LOG_FILE%" echo Python version: !PY_VERSION!
+>>"%LOG_FILE%" echo Python bits:    !PY_BITS!
+>>"%LOG_FILE%" echo.
+
 echo OK.
 echo.
 
@@ -120,32 +151,28 @@ REM ========================================================
 
 echo [3/8] Checking dependencies...
 
-REM FIX: явная проверка всех ключевых зависимостей.
-REM Если чего-то нет - сборка не имеет смысла.
 python -c "import fastapi, uvicorn, jinja2, paramiko, scp, nacl, cryptography, bcrypt" 2>nul
 if errorlevel 1 (
+    echo ERROR: Some Python dependencies are missing.
+    echo Run: pip install -r requirements.txt
     echo.
-    echo ERROR:
-    echo Some Python dependencies are missing.
-    echo.
-    echo Run:
-    echo     pip install -r requirements.txt
-    echo.
-    echo Or install manually:
-    echo     pip install fastapi uvicorn jinja2 paramiko scp pynacl cryptography bcrypt
-    echo.
+    >>"%LOG_FILE%" echo ERROR: Some Python dependencies are missing.
+    >>"%LOG_FILE%" echo Run: pip install -r requirements.txt
+    >>"%LOG_FILE%" echo.
     pause
     exit /b 1
 )
 
-REM FIX: проверяем tkinter отдельно - он нужен для --create-user.
 python -c "import tkinter" 2>nul
 if errorlevel 1 (
     echo WARNING: tkinter not available - --create-user will not work.
+    >>"%LOG_FILE%" echo WARNING: tkinter not available - --create-user will not work.
 )
 
 echo OK.
 echo.
+>>"%LOG_FILE%" echo [OK] Dependencies checked.
+>>"%LOG_FILE%" echo.
 
 
 REM ========================================================
@@ -154,17 +181,14 @@ REM ========================================================
 
 echo [4/8] Checking PyInstaller...
 
-REM FIX: используем "python -m PyInstaller" вместо "pyinstaller" -
-REM это работает в venv, где .exe может быть не в PATH.
 python -m PyInstaller --version >nul 2>&1
 if errorlevel 1 (
+    echo ERROR: PyInstaller is not available for this Python.
+    echo Install it with: pip install pyinstaller
     echo.
-    echo ERROR:
-    echo PyInstaller is not available for this Python.
-    echo.
-    echo Install it with:
-    echo     pip install pyinstaller
-    echo.
+    >>"%LOG_FILE%" echo ERROR: PyInstaller is not available for this Python.
+    >>"%LOG_FILE%" echo Install it with: pip install pyinstaller
+    >>"%LOG_FILE%" echo.
     pause
     exit /b 1
 )
@@ -172,6 +196,10 @@ if errorlevel 1 (
 for /f "delims=" %%V in ('python -m PyInstaller --version') do set PYI_VERSION=%%V
 echo PyInstaller version: !PYI_VERSION!
 echo.
+
+>>"%LOG_FILE%" echo PyInstaller version: !PYI_VERSION!
+>>"%LOG_FILE%" echo.
+
 echo OK.
 echo.
 
@@ -183,17 +211,15 @@ REM ========================================================
 echo [5/8] Building NetworkBackupManager.exe...
 echo.
 
-REM FIX: убран --add-data "core;core" (дублировал код, бесполезен).
-REM FIX: убраны избыточные --hidden-import core* (PyInstaller видит импорты).
-REM FIX: --collect-all cryptography заменён на точечные ключи.
-REM FIX: --collect-all nacl оставлен, но проверяется на этапе 3.
-REM NEW: добавлена поддержка иконки и version-info, если файлы есть.
+>>"%LOG_FILE%" echo [5/8] Building NetworkBackupManager.exe...
+>>"%LOG_FILE%" echo.
 
 set ICON_ARG=
 if exist "assets\icon.ico" (
     set ICON_ARG=--icon "assets\icon.ico"
 ) else (
     echo NOTE: assets\icon.ico not found - building without icon.
+    >>"%LOG_FILE%" echo NOTE: assets\icon.ico not found - building without icon.
 )
 
 set VERSION_ARG=
@@ -201,9 +227,16 @@ if exist "assets\version_info.txt" (
     set VERSION_ARG=--version-file "assets\version_info.txt"
 ) else (
     echo NOTE: assets\version_info.txt not found - building without version info.
+    >>"%LOG_FILE%" echo NOTE: assets\version_info.txt not found - building without version info.
 )
 
 echo.
+
+REM FIX: PyInstaller пишет много вывода в stdout/stderr.
+REM Дублируем его и в консоль, и в лог через временный файл.
+REM Используем "2>&1" чтобы захватить и stderr.
+
+set "PYI_TEMP=%TEMP%\nbm_pyi_output.txt"
 
 python -m PyInstaller ^
   --noconfirm ^
@@ -214,6 +247,15 @@ python -m PyInstaller ^
   %ICON_ARG% ^
   %VERSION_ARG% ^
   --add-data "web;web" ^
+  --hidden-import core ^
+  --hidden-import core.context ^
+  --hidden-import core.service_installer ^
+  --hidden-import core.plugin_manager ^
+  --hidden-import core.secure_storage ^
+  --hidden-import core.scheduler ^
+  --hidden-import core.logger ^
+  --hidden-import web ^
+  --hidden-import web.server ^
   --hidden-import fastapi ^
   --hidden-import fastapi.templating ^
   --hidden-import fastapi.staticfiles ^
@@ -231,16 +273,32 @@ python -m PyInstaller ^
   --collect-all paramiko ^
   --collect-all bcrypt ^
   --collect-all nacl ^
-  main.py
+  --collect-all scp ^
+  main.py > "%PYI_TEMP%" 2>&1
 
-if errorlevel 1 (
+set "PYI_EXIT=%ERRORLEVEL%"
+
+REM Показываем вывод PyInstaller в консоли
+type "%PYI_TEMP%"
+
+REM И пишем его в лог
+>>"%LOG_FILE%" echo --- PyInstaller output begin ---
+type "%PYI_TEMP%" >> "%LOG_FILE%"
+>>"%LOG_FILE%" echo --- PyInstaller output end ---
+>>"%LOG_FILE%" echo.
+
+del /f /q "%PYI_TEMP%" 2>nul
+
+if not "%PYI_EXIT%"=="0" (
     echo.
     echo ========================================
     echo   BUILD FAILED
     echo ========================================
     echo.
-    echo Check the error above.
-    echo.
+    >>"%LOG_FILE%" echo ========================================
+    >>"%LOG_FILE%" echo   BUILD FAILED
+    >>"%LOG_FILE%" echo ========================================
+    >>"%LOG_FILE%" echo.
     pause
     exit /b 1
 )
@@ -248,6 +306,8 @@ if errorlevel 1 (
 echo.
 echo EXE created successfully.
 echo.
+>>"%LOG_FILE%" echo [OK] EXE created successfully.
+>>"%LOG_FILE%" echo.
 
 
 REM ========================================================
@@ -257,10 +317,8 @@ REM ========================================================
 echo [6/8] Checking executable...
 
 if not exist "dist\NetworkBackupManager.exe" (
-    echo.
-    echo ERROR:
-    echo NetworkBackupManager.exe was not created.
-    echo.
+    echo ERROR: NetworkBackupManager.exe was not created.
+    >>"%LOG_FILE%" echo ERROR: NetworkBackupManager.exe was not created.
     pause
     exit /b 1
 )
@@ -268,13 +326,15 @@ if not exist "dist\NetworkBackupManager.exe" (
 for %%F in (
     "dist\NetworkBackupManager.exe"
 ) do (
-    echo EXE size:
-    echo %%~zF bytes
+    echo EXE size: %%~zF bytes
+    >>"%LOG_FILE%" echo EXE size: %%~zF bytes
 )
 
 echo.
 echo OK.
 echo.
+>>"%LOG_FILE%" echo [OK] Executable checked.
+>>"%LOG_FILE%" echo.
 
 
 REM ========================================================
@@ -282,11 +342,6 @@ REM 7. CREATE EXTERNAL DIRECTORIES
 REM ========================================================
 
 echo [7/8] Preparing external directories...
-
-REM FIX: используем "if not exist ... mkdir" вместо "mkdir ... 2>nul" -
-REM это идемпотентно и не портит errorlevel.
-REM FIX: "Backups" приведён к нижнему регистру ("backups"),
-REM чтобы совпадать с BACKUPS_DIR в core/context.py.
 
 if not exist "dist\data"              mkdir "dist\data"
 if not exist "dist\plugins"           mkdir "dist\plugins"
@@ -297,6 +352,8 @@ if not exist "dist\logs"              mkdir "dist\logs"
 
 echo OK.
 echo.
+>>"%LOG_FILE%" echo [OK] External directories prepared.
+>>"%LOG_FILE%" echo.
 
 
 REM ========================================================
@@ -316,13 +373,16 @@ if exist "plugins\Mikrotik\plugin.py" (
 
     if errorlevel 1 (
         echo ERROR copying Mikrotik plugin.py
+        >>"%LOG_FILE%" echo ERROR copying Mikrotik plugin.py
         pause
         exit /b 1
     )
 
     echo   [OK] plugins\Mikrotik\plugin.py
+    >>"%LOG_FILE%" echo   [OK] plugins\Mikrotik\plugin.py
 ) else (
     echo   [WARNING] plugins\Mikrotik\plugin.py not found - plugin will be skipped
+    >>"%LOG_FILE%" echo   [WARNING] plugins\Mikrotik\plugin.py not found - plugin will be skipped
 )
 
 
@@ -337,19 +397,26 @@ if exist "plugins\Pfsense\plugin.py" (
 
     if errorlevel 1 (
         echo ERROR copying Pfsense plugin.py
+        >>"%LOG_FILE%" echo ERROR copying Pfsense plugin.py
         pause
         exit /b 1
     )
 
     echo   [OK] plugins\Pfsense\plugin.py
+    >>"%LOG_FILE%" echo   [OK] plugins\Pfsense\plugin.py
 ) else (
     echo   [WARNING] plugins\Pfsense\plugin.py not found - plugin will be skipped
+    >>"%LOG_FILE%" echo   [WARNING] plugins\Pfsense\plugin.py not found - plugin will be skipped
 )
 
 echo.
 echo Only plugin.py files were copied.
 echo routers.json and SSH keys were NOT copied.
 echo.
+>>"%LOG_FILE%" echo.
+>>"%LOG_FILE%" echo Only plugin.py files were copied.
+>>"%LOG_FILE%" echo routers.json and SSH keys were NOT copied.
+>>"%LOG_FILE%" echo.
 
 
 REM ========================================================
@@ -357,10 +424,6 @@ REM REMOVE PYTHON CACHE
 REM ========================================================
 
 echo Removing Python cache files...
-
-REM FIX: чистим __pycache__ и .pyc в исходных plugins перед копированием
-REM (на всякий случай - если они уже там), и в dist после.
-REM Основная чистка идёт в dist\plugins, но проверяем оба места.
 
 for /r "dist\plugins" %%F in (*.pyc) do (
     del /f /q "%%F" >nul 2>&1
@@ -372,31 +435,27 @@ for /d /r "dist\plugins" %%D in (__pycache__) do (
 
 echo OK.
 echo.
+>>"%LOG_FILE%" echo [OK] Python cache removed.
+>>"%LOG_FILE%" echo.
 
 
 REM ========================================================
 REM DO NOT COPY CONFIG / AUTH / KEYS
 REM ========================================================
 
-echo.
-echo IMPORTANT:
-echo.
-echo The following files are NOT copied from source plugins:
-echo.
-echo   routers.json
-echo   id_rsa.key
-echo   *.key
-echo   *.pem
-echo   *.ppk
-echo   any other plugin files
-echo.
-echo data\auth.json is intentionally NOT copied.
-echo.
-echo On a new computer create the user with:
-echo.
-echo   NetworkBackupManager.exe --create-user
-echo.
-echo.
+>>"%LOG_FILE%" echo.
+>>"%LOG_FILE%" echo IMPORTANT:
+>>"%LOG_FILE%" echo The following files are NOT copied from source plugins:
+>>"%LOG_FILE%" echo   routers.json
+>>"%LOG_FILE%" echo   id_rsa.key
+>>"%LOG_FILE%" echo   *.key
+>>"%LOG_FILE%" echo   *.pem
+>>"%LOG_FILE%" echo   *.ppk
+>>"%LOG_FILE%" echo data\auth.json is intentionally NOT copied.
+>>"%LOG_FILE%" echo.
+>>"%LOG_FILE%" echo On a new computer create the user with:
+>>"%LOG_FILE%" echo   NetworkBackupManager.exe --create-user
+>>"%LOG_FILE%" echo.
 
 
 REM ========================================================
@@ -407,6 +466,10 @@ echo ========================================
 echo   BUILD SUCCESSFUL
 echo ========================================
 echo.
+>>"%LOG_FILE%" echo ========================================
+>>"%LOG_FILE%" echo   BUILD SUCCESSFUL
+>>"%LOG_FILE%" echo ========================================
+>>"%LOG_FILE%" echo.
 
 echo Distribution:
 echo.
@@ -426,6 +489,15 @@ echo   +-- backups\
 echo   +-- logs\
 echo.
 
+>>"%LOG_FILE%" echo Distribution:
+>>"%LOG_FILE%" echo   dist\
+>>"%LOG_FILE%" echo   +-- NetworkBackupManager.exe
+>>"%LOG_FILE%" echo   +-- plugins\
+>>"%LOG_FILE%" echo   +-- data\
+>>"%LOG_FILE%" echo   +-- backups\
+>>"%LOG_FILE%" echo   +-- logs\
+>>"%LOG_FILE%" echo.
+
 echo ========================================
 echo.
 echo SSH KEY POLICY:
@@ -443,8 +515,27 @@ echo.
 echo ========================================
 echo.
 
-REM FIX: pause только при интерактивном запуске (двойной клик).
-REM Если передан --no-pause (например, из CI) - выходим сразу.
+>>"%LOG_FILE%" echo SSH KEY POLICY:
+>>"%LOG_FILE%" echo * SSH keys are NOT included in EXE.
+>>"%LOG_FILE%" echo * SSH keys are NOT copied to dist.
+>>"%LOG_FILE%" echo * routers.json files are NOT copied to dist.
+>>"%LOG_FILE%" echo * SSH keys remain external files.
+>>"%LOG_FILE%" echo * No icacls.
+>>"%LOG_FILE%" echo * No chmod.
+>>"%LOG_FILE%" echo * No takeown.
+>>"%LOG_FILE%" echo.
+
+REM Финализация лога
+>>"%LOG_FILE%" echo ========================================
+>>"%LOG_FILE%" echo   BUILD COMPLETE
+>>"%LOG_FILE%" echo   Finished: %DATE% %TIME%
+>>"%LOG_FILE%" echo ========================================
+
+echo Лог сохранён в:
+echo   %LOG_FILE%
+echo.
+
+REM pause только при интерактивном запуске (двойной клик).
 if /i "%~1"=="--no-pause" (
     exit /b 0
 )

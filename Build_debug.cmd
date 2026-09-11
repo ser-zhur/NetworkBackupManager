@@ -1,0 +1,21 @@
+python -m PyInstaller ^
+  --noconfirm ^
+  --clean ^
+  --onefile ^
+  --console ^
+  --name NetworkBackupManagerDebug ^
+  --add-data "web;web" ^
+  --hidden-import core ^
+  --hidden-import core.context ^
+  --hidden-import core.service_installer ^
+  --hidden-import core.plugin_manager ^
+  --hidden-import core.secure_storage ^
+  --hidden-import core.scheduler ^
+  --hidden-import core.logger ^
+  --hidden-import web ^
+  --hidden-import web.server ^
+  --hidden-import scp ^
+  --collect-all paramiko ^
+  --collect-all bcrypt ^
+  --collect-all nacl ^
+  main.py

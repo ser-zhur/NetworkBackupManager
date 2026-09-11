@@ -104,6 +104,7 @@ from core.context import (
     CONFIG_FILE,
     ensure_directories,
     ensure_default_files,
+    ensure_web_files,
     load_json,
 )
 
@@ -658,6 +659,7 @@ def run_web_server() -> None:
 def run_application(skip_service_install: bool = False) -> int:
 
     ensure_directories()
+    ensure_web_files() 
     ensure_default_files()
 
     # -----------------------------------------------------
@@ -746,6 +748,7 @@ def run_application(skip_service_install: bool = False) -> int:
 # FIX: список известных CLI-флагов, чтобы предупреждать о неизвестных.
 _KNOWN_FLAGS = {
     "--create-user",
+    "--service",
     "--install-service",
     "--uninstall-service",
     "--stop-service",

@@ -6,7 +6,7 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = [('web', 'web')]
 binaries = []
-hiddenimports = ['fastapi', 'fastapi.templating', 'fastapi.staticfiles', 'starlette.templating', 'starlette.staticfiles', 'jinja2', 'uvicorn', 'uvicorn.logging', 'uvicorn.loops.auto', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets.auto']
+hiddenimports = ['core', 'core.context', 'core.service_installer', 'core.plugin_manager', 'core.secure_storage', 'core.scheduler', 'core.logger', 'web', 'web.server', 'fastapi', 'fastapi.templating', 'fastapi.staticfiles', 'starlette.templating', 'starlette.staticfiles', 'jinja2', 'uvicorn', 'uvicorn.logging', 'uvicorn.loops.auto', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets.auto']
 datas += collect_data_files('cryptography')
 binaries += collect_dynamic_libs('cryptography')
 hiddenimports += collect_submodules('cryptography')
@@ -15,6 +15,8 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('bcrypt')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('nacl')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('scp')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
