@@ -4,9 +4,9 @@ from PyInstaller.utils.hooks import collect_dynamic_libs
 from PyInstaller.utils.hooks import collect_submodules
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('web', 'web')]
+datas = [('web', 'web'), ('bin', 'bin')]
 binaries = []
-hiddenimports = ['core', 'core.context', 'core.service_installer', 'core.plugin_manager', 'core.secure_storage', 'core.scheduler', 'core.logger', 'web', 'web.server', 'fastapi', 'fastapi.templating', 'fastapi.staticfiles', 'starlette.templating', 'starlette.staticfiles', 'jinja2', 'uvicorn', 'uvicorn.logging', 'uvicorn.loops.auto', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets.auto']
+hiddenimports = ['core', 'core.context', 'core.service_installer', 'core.plugin_manager', 'core.secure_storage', 'core.scheduler', 'web', 'web.server', 'fastapi', 'fastapi.templating', 'fastapi.staticfiles', 'starlette.templating', 'starlette.staticfiles', 'jinja2', 'uvicorn', 'uvicorn.logging', 'uvicorn.loops.auto', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets.auto']
 datas += collect_data_files('cryptography')
 binaries += collect_dynamic_libs('cryptography')
 hiddenimports += collect_submodules('cryptography')
@@ -38,20 +38,26 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='NetworkBackupManager',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+)
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='NetworkBackupManager',
 )

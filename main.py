@@ -870,9 +870,11 @@ if __name__ == "__main__":
         try:
             ensure_console()
 
+            import traceback
+
             print()
             print("КРИТИЧЕСКАЯ ОШИБКА:")
-            print(exc)
+            print(traceback.format_exc())
             print()
 
             input("Нажмите Enter...")

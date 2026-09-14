@@ -151,13 +151,13 @@
                 <div class="flex justify-between items-center">
 
                     <span class="text-gray-500">
-                        Состояние задачи:
+                        Состояние службы:
                     </span>
 
                     <span class="font-semibold text-gray-700">
 
                         {% if service.task_state == "running" %}
-                            выполняется
+                            работает
                         {% elif service.task_state == "ready" %}
                             готова
                         {% elif service.task_state == "disabled" %}
@@ -165,9 +165,16 @@
                         {% elif service.task_state == "not_found" %}
                             не найдена
                         {% elif service.task_state == "active" %}
-                            active
+                            активна
                         {% elif service.task_state == "installed" %}
                             установлена
+                            
+                        {% elif service.task_state == "stopped" %}
+                            остановлена
+                        {% elif service.task_state == "startpending" %}
+                            запускается
+                        {% elif service.task_state == "stoppending" %}
+                            останавливается
                         {% else %}
                             неизвестно
                         {% endif %}
@@ -257,7 +264,7 @@
                 <div class="flex justify-between items-center">
 
                     <span class="text-gray-500">
-                        Имя задачи:
+                        Имя службы:
                     </span>
 
                     <code class="font-mono text-xs bg-gray-200 px-2 py-1 rounded">
@@ -447,14 +454,20 @@
 
                 <li>
                     • В Windows приложение регистрируется
-                    в <strong>Планировщике заданий</strong>
-                    как
+                    как <strong>служба Windows</strong>
+                    через <strong>NSSM</strong> с именем
                     <strong>NetworkBackupManager</strong>.
                 </li>
 
                 <li>
-                    • Задача запускается от учётной записи
-                    <strong>SYSTEM</strong>.
+                    • Служба автоматически стартует
+                    при загрузке системы
+                    (<code class="font-mono bg-blue-100 px-1 rounded">SERVICE_AUTO_START</code>).
+                </li>
+
+                <li>
+                    • При падении процесса служба
+                    автоматически перезапускается через 5 секунд.
                 </li>
 
                 <li>
@@ -473,19 +486,11 @@
 
                 <li>
                     • Благодаря этому
-                    <code class="font-mono bg-blue-100 px-1 rounded">
-                        data
-                    </code>,
-                    <code class="font-mono bg-blue-100 px-1 rounded">
-                        Backups
-                    </code>,
-                    <code class="font-mono bg-blue-100 px-1 rounded">
-                        plugins
-                    </code>
+                    <code class="font-mono bg-blue-100 px-1 rounded">data</code>,
+                    <code class="font-mono bg-blue-100 px-1 rounded">backups</code>,
+                    <code class="font-mono bg-blue-100 px-1 rounded">plugins</code>
                     и
-                    <code class="font-mono bg-blue-100 px-1 rounded">
-                        logs
-                    </code>
+                    <code class="font-mono bg-blue-100 px-1 rounded">logs</code>
                     используются относительно каталога приложения,
                     а не
                     <code class="font-mono bg-blue-100 px-1 rounded">
@@ -494,17 +499,18 @@
                 </li>
 
                 <li>
-                    • Инсталлятор службы
-                    <strong>не изменяет права SSH-ключей</strong>.
+                    • Логи stdout/stderr службы пишутся в
+                    <code class="font-mono bg-blue-100 px-1 rounded">logs\service_stdout.log</code>
+                    и
+                    <code class="font-mono bg-blue-100 px-1 rounded">logs\service_stderr.log</code>
+                    с авто-ротацией при 10 МБ.
                 </li>
 
                 <li>
-                    • Файлы
-                    <code class="font-mono bg-blue-100 px-1 rounded">
-                        id_rsa.key
-                    </code>
-                    не изменяются,
-                    не копируются и не получают новые ACL.
+                    • Инсталлятор службы
+                    <strong>не изменяет права SSH-ключей</strong>.
+                    Файлы <code class="font-mono bg-blue-100 px-1 rounded">id_rsa.key</code>
+                    не изменяются, не копируются и не получают новые ACL.
                 </li>
 
                 <li>

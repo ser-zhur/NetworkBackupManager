@@ -8,17 +8,22 @@ import logging
 import os
 import platform
 import shlex
+import shutil
+import sys
 import socket
 import subprocess
-import sys
+import threading
 import time
 
+from pathlib import Path
 from core.context import (
     BASE_DIR,
     CONFIG_FILE,
+    LOGS_DIR,
     load_json,
 )
 
+NSSM_LOCAL_PATH = BASE_DIR / "bin" / "nssm.exe"
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +87,85 @@ def get_service_command() -> tuple[str, list[str], str]:
     main_py = str((BASE_DIR / "main.py").resolve())
     return executable, [main_py, "--service"], work_dir
 
+
+# =========================================================
+# NSSM
+# =========================================================
+
+def _ensure_nssm() -> Path | None:
+    """
+    Возвращает путь к постоянному nssm.exe.
+
+    Порядок поиска:
+
+      1. BASE_DIR/bin/nssm.exe — если уже извлечён.
+      2. sys._MEIPASS/bin/nssm.exe — если приложение заморожено,
+         копируем в BASE_DIR/bin/nssm.exe и возвращаем путь.
+      3. nssm в PATH — fallback для разработки.
+
+    Возвращает None, если nssm.exe найти не удалось.
+    """
+
+    if NSSM_LOCAL_PATH.exists():
+        return NSSM_LOCAL_PATH
+
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            bundled = Path(meipass) / "bin" / "nssm.exe"
+            if bundled.exists():
+                try:
+                    NSSM_LOCAL_PATH.parent.mkdir(
+                        parents=True,
+                        exist_ok=True,
+                    )
+                    shutil.copy2(bundled, NSSM_LOCAL_PATH)
+                    logger.info(
+                        "nssm.exe извлечён: %s",
+                        NSSM_LOCAL_PATH,
+                    )
+                    return NSSM_LOCAL_PATH
+                except Exception as exc:
+                    logger.error(
+                        "Не удалось извлечь nssm.exe: %s",
+                        exc,
+                    )
+                    return None
+
+    which = shutil.which("nssm")
+    if which:
+        return Path(which)
+
+    return None
+
+
+def _run_nssm(args: list[str]) -> subprocess.CompletedProcess:
+    """
+    Вызывает nssm.exe с указанными аргументами.
+
+    Использует ту же кодировку, что и _run, и подавляет окно
+    консоли через _windows_flags.
+    """
+
+    nssm = _ensure_nssm()
+
+    if nssm is None:
+        raise RuntimeError(
+            "nssm.exe не найден. "
+            "Положите его в bin/nssm.exe рядом с приложением."
+        )
+
+    logger.debug("nssm: %r", [str(nssm), *args])
+
+    return subprocess.run(
+        [str(nssm), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=SUBPROCESS_TIMEOUT,
+        creationflags=_windows_flags(),
+    )
 
 # =========================================================
 # SUBPROCESS
@@ -149,7 +233,7 @@ def _run_powershell(script: str) -> subprocess.CompletedProcess:
     строке. На выходе форсируем UTF-8, чтобы не зависеть от
     OEM-кодировки консоли (cp866 на русской Windows и т.п.).
 
-    Требуется Windows 8+ / Server 2012+ (модуль ScheduledTasks).
+    Требуется Windows 8+ / Server 2012+.
     """
     if not IS_WINDOWS:
         raise RuntimeError("PowerShell доступен только на Windows")
@@ -204,6 +288,58 @@ def _spawn_powershell_detached(script: str) -> bool:
         "-EncodedCommand",
         encoded,
     ])
+
+def _spawn_independent(script: str) -> bool:
+    """
+    Запускает PowerShell-скрипт через WMI (Win32_Process.Create),
+    чтобы созданный процесс был дочерним по отношению к
+    WmiPrvSE.exe, а не к нам.
+
+    Такой процесс переживает остановку нашей службы: NSSM убивает
+    только дерево процессов приложения, а WMI-процесс к нему не
+    относится.
+
+    Используется для schedule_uninstall, где нужно выполнить
+    действия ПОСЛЕ остановки службы.
+    """
+    if not IS_WINDOWS:
+        return False
+
+    encoded = base64.b64encode(
+        script.encode("utf-16-le")
+    ).decode("ascii")
+
+    powershell_cmd = subprocess.list2cmdline([
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy", "Bypass",
+        "-EncodedCommand",
+        encoded,
+    ])
+
+    wmi_script = (
+        f"$r = Invoke-CimMethod -ClassName Win32_Process "
+        f"-MethodName Create -Arguments @{{ "
+        f"CommandLine = {_ps_quote(powershell_cmd)} "
+        f"}}; "
+        f"if ($r.ReturnValue -ne 0) {{ exit $r.ReturnValue }}"
+    )
+
+    try:
+        result = _run_powershell(wmi_script)
+        if result.returncode != 0:
+            logger.error(
+                "WMI spawn вернул %s: %s",
+                result.returncode,
+                (result.stderr or result.stdout or "")[:500],
+            )
+            return False
+        return True
+    except Exception as exc:
+        logger.error("WMI spawn failed: %s", exc)
+        return False
+
 
 def _windows_flags() -> int:
     """
@@ -293,24 +429,24 @@ def is_http_up() -> bool:
 # WINDOWS TASK STATE
 # =========================================================
 
-def _get_windows_task_state() -> str:
+def _get_windows_service_state() -> str:
     """
-    Возвращает состояние задачи Windows.
+    Возвращает состояние службы Windows.
 
     Возможные значения:
-        running, ready, disabled, not_found, unknown
+        running, stopped, startpending, stoppending,
+        not_found, unknown
 
-    Использует PowerShell: TaskState отдаёт стабильные
-    английские значения (Running/Ready/Disabled/Queued)
-    независимо от языка системы.
+    Использует PowerShell: Get-Service возвращает стабильные
+    английские значения Status независимо от локали.
     """
 
     if not IS_WINDOWS:
         return "unknown"
 
     result = _run_powershell(
-        f"(Get-ScheduledTask -TaskName {_ps_quote(SERVICE_NAME)} "
-        f"-ErrorAction SilentlyContinue).State"
+        f"(Get-Service -Name {_ps_quote(SERVICE_NAME)} "
+        f"-ErrorAction SilentlyContinue).Status"
     )
 
     if result.returncode != 0:
@@ -321,15 +457,7 @@ def _get_windows_task_state() -> str:
     if not state:
         return "not_found"
 
-    if state in ("running", "queued"):
-        return "running"
-    if state == "ready":
-        return "ready"
-    if state == "disabled":
-        return "disabled"
-
-    return "unknown"
-
+    return state
 
 # =========================================================
 # SERVICE STATUS
@@ -338,12 +466,7 @@ def _get_windows_task_state() -> str:
 def is_service_registered() -> bool:
 
     if IS_WINDOWS:
-        result = _run_powershell(
-            f"if (-not (Get-ScheduledTask "
-            f"-TaskName {_ps_quote(SERVICE_NAME)} "
-            f"-ErrorAction SilentlyContinue)) {{ exit 1 }}"
-        )
-        return result.returncode == 0
+        return _get_windows_service_state() != "not_found"
 
     if IS_LINUX:
         return os.path.exists(
@@ -356,7 +479,7 @@ def is_service_registered() -> bool:
 def is_os_service_running() -> bool:
 
     if IS_WINDOWS:
-        return _get_windows_task_state() == "running"
+        return _get_windows_service_state() == "running"
 
     if IS_LINUX:
         result = _run(["systemctl", "is-active", LINUX_UNIT])
@@ -371,9 +494,8 @@ def get_status() -> dict:
     registered = is_service_registered()
     running = is_os_service_running() if registered else False
 
-    # FIX: task_state вычисляем один раз.
     if IS_WINDOWS:
-        task_state = _get_windows_task_state()
+        task_state = _get_windows_service_state()
     else:
         if running:
             task_state = "active"
@@ -381,7 +503,7 @@ def get_status() -> dict:
             task_state = "installed"
         else:
             task_state = "not_found"
-
+            
     return {
         "registered": registered,
         "os_running": running,
@@ -480,7 +602,7 @@ def install_service() -> tuple[bool, str]:
         return True, "Служба уже зарегистрирована."
 
     if IS_WINDOWS:
-        return _install_windows_task()
+        return _install_windows_service()
 
     if IS_LINUX:
         return _install_linux_service()
@@ -503,8 +625,7 @@ def start_service() -> tuple[bool, str]:
 
     if IS_WINDOWS:
         result = _run_powershell(
-            f"Start-ScheduledTask "
-            f"-TaskName {_ps_quote(SERVICE_NAME)}"
+            f"Start-Service -Name {_ps_quote(SERVICE_NAME)}"
         )
         if result.returncode == 0:
             return True, "Служба запущена."
@@ -512,7 +633,7 @@ def start_service() -> tuple[bool, str]:
         return (
             False,
             (result.stdout or result.stderr
-             or "Не удалось запустить задачу Windows."),
+             or "Не удалось запустить службу."),
         )
 
     # =====================================================
@@ -551,8 +672,7 @@ def stop_service() -> tuple[bool, str]:
 
     if IS_WINDOWS:
         result = _run_powershell(
-            f"Stop-ScheduledTask "
-            f"-TaskName {_ps_quote(SERVICE_NAME)}"
+            f"Stop-Service -Name {_ps_quote(SERVICE_NAME)} -Force"
         )
 
         if result.returncode == 0:
@@ -561,7 +681,7 @@ def stop_service() -> tuple[bool, str]:
         return (
             False,
             (result.stdout or result.stderr
-             or "Не удалось остановить задачу Windows."),
+             or "Не удалось остановить службу."),
         )
 
     # =====================================================
@@ -601,34 +721,31 @@ def uninstall_service() -> tuple[bool, str]:
     # =====================================================
     # WINDOWS
     # =====================================================
-
+    
     if IS_WINDOWS:
 
-        # Останавливаем задачу (может уже быть остановлена —
-        # -ErrorAction SilentlyContinue подавляет ошибку).
+        # Останавливаем службу, если запущена.
         _run_powershell(
-            f"Stop-ScheduledTask "
-            f"-TaskName {_ps_quote(SERVICE_NAME)} "
-            f"-ErrorAction SilentlyContinue"
+            f"Stop-Service -Name {_ps_quote(SERVICE_NAME)} "
+            f"-Force -ErrorAction SilentlyContinue"
         )
         time.sleep(1)
 
-        result = _run_powershell(
-            f"Unregister-ScheduledTask "
-            f"-TaskName {_ps_quote(SERVICE_NAME)} "
-            f"-Confirm:$false"
-        )
+        try:
+            result = _run_nssm(["remove", SERVICE_NAME, "confirm"])
+        except RuntimeError as exc:
+            return False, str(exc)
 
         if result.returncode == 0:
-            logger.info("Windows Task %s удалена.", SERVICE_NAME)
+            logger.info("Служба %s удалена.", SERVICE_NAME)
             return True, "Служба Windows удалена."
 
         return (
             False,
             (result.stdout or result.stderr
-             or "Ошибка удаления задачи."),
+             or "Ошибка удаления службы."),
         )
-
+    
     # =====================================================
     # LINUX
     # =====================================================
@@ -658,25 +775,31 @@ def uninstall_service() -> tuple[bool, str]:
 # =========================================================
 # STOP CURRENT PROCESS / SERVICE
 # =========================================================
-
 def schedule_stop() -> tuple[bool, str]:
 
     # -----------------------------------------------------
-    # Если текущий процесс является службой,
-    # останавливаем именно задачу.
+    # Если текущий процесс — служба, останавливаем службу.
     # -----------------------------------------------------
 
     if is_service_process():
 
         if IS_WINDOWS:
-            ok = _spawn_powershell_detached(
-                f"Start-Sleep -Seconds 2; "
-                f"Stop-ScheduledTask "
-                f"-TaskName {_ps_quote(SERVICE_NAME)}"
-            )
-            
-            if not ok:
-                return False, "Не удалось запустить отложенную остановку."
+            # Завершаем процесс с кодом 0. NSSM видит код 0
+            # и, по правилу AppExit 0 Exit, останавливает службу.
+            # Никаких Restart-Service из detached-процесса —
+            # этот процесс был бы убит вместе с деревом службы.
+            def _exit_for_stop():
+                time.sleep(2)
+                logging.info(
+                    "Остановка службы через NSSM (exit code 0)"
+                )
+                logging.shutdown()
+                os._exit(0)
+
+            threading.Thread(
+                target=_exit_for_stop,
+                daemon=True,
+            ).start()
 
             return (
                 True,
@@ -699,17 +822,18 @@ def schedule_stop() -> tuple[bool, str]:
             )
 
     # -----------------------------------------------------
-    # Если это интерактивный процесс.
+    # Интерактивный процесс не может остановить службу напрямую.
+    # server.py в этом случае должен идти через UAC.
     # -----------------------------------------------------
 
-    if not _spawn_self_exit():
-        return False, "Не удалось запустить отложенное завершение."
+    if is_service_registered():
+        return (
+            False,
+            "Остановка службы доступна только из режима службы "
+            "или с повышенными правами.",
+        )
 
-    return (
-        True,
-        "Текущий процесс будет остановлен через несколько секунд.",
-    )
-
+    return False, "Служба не зарегистрирована."
 
 # =========================================================
 # RESTART
@@ -728,15 +852,50 @@ def schedule_restart() -> tuple[bool, str]:
     # =====================================================
 
     if IS_WINDOWS:
+
+        # -------------------------------------------------
+        # Мы сами служба. Restart-Service из процесса службы
+        # не работает: NSSM убьёт дерево процессов до того,
+        # как Start-Service успеет выполниться.
+        #
+        # Вместо этого завершаем процесс с кодом 1.
+        # NSSM по правилу AppExit Default Restart сам
+        # перезапустит приложение, а служба останется Running.
+        # -------------------------------------------------
+
+        if is_service_process():
+
+            def _exit_for_restart():
+                time.sleep(2)
+                logging.info(
+                    "Перезапуск службы через NSSM (exit code 1)"
+                )
+                logging.shutdown()
+                os._exit(1)
+
+            threading.Thread(
+                target=_exit_for_restart,
+                daemon=True,
+            ).start()
+
+            return (
+                True,
+                "Служба перезапускается. Подождите несколько секунд "
+                "и обновите страницу.",
+            )
+
+        # -------------------------------------------------
+        # Мы внешний процесс (например, UAC-копия).
+        # Можем спокойно вызвать Restart-Service — нас
+        # при остановке службы никто не тронет.
+        # -------------------------------------------------
+
         ok = _spawn_powershell_detached(
             f"Start-Sleep -Seconds 2; "
-            f"Stop-ScheduledTask "
-            f"-TaskName {_ps_quote(SERVICE_NAME)}; "
-            f"Start-Sleep -Seconds 2; "
-            f"Start-ScheduledTask "
-            f"-TaskName {_ps_quote(SERVICE_NAME)}"
+            f"Restart-Service "
+            f"-Name {_ps_quote(SERVICE_NAME)} -Force"
         )
-        
+
         if not ok:
             return False, "Не удалось запустить отложенный перезапуск."
 
@@ -788,14 +947,21 @@ def schedule_uninstall() -> tuple[bool, str]:
     # =====================================================
 
     if IS_WINDOWS:
-        ok = _spawn_powershell_detached(
+        nssm = _ensure_nssm()
+
+        if nssm is None:
+            return False, "nssm.exe не найден."
+
+        # Используем WMI, потому что остановка службы убьёт всё
+        # дерево процессов приложения. Обычный detached-PowerShell
+        # до команды `nssm remove` дожить не успеет.
+        ok = _spawn_independent(
+            f"Start-Sleep -Seconds 3; "
+            f"Stop-Service "
+            f"-Name {_ps_quote(SERVICE_NAME)} "
+            f"-Force -ErrorAction SilentlyContinue; "
             f"Start-Sleep -Seconds 2; "
-            f"Stop-ScheduledTask "
-            f"-TaskName {_ps_quote(SERVICE_NAME)}; "
-            f"Start-Sleep -Seconds 2; "
-            f"Unregister-ScheduledTask "
-            f"-TaskName {_ps_quote(SERVICE_NAME)} "
-            f"-Confirm:$false"
+            f"& '{str(nssm)}' remove {SERVICE_NAME} confirm"
         )
         if not ok:
             return False, "Не удалось запустить отложенное удаление."
@@ -805,7 +971,6 @@ def schedule_uninstall() -> tuple[bool, str]:
             "Служба будет удалена через несколько секунд. "
             "Панель станет недоступна.",
         )
-
     # =====================================================
     # LINUX
     # =====================================================
@@ -833,99 +998,117 @@ def schedule_uninstall() -> tuple[bool, str]:
     return False, "Неподдерживаемая ОС."
 
 # =========================================================
-# SELF EXIT
+# WINDOWS SERVICE INSTALL (NSSM)
 # =========================================================
 
-def _spawn_self_exit() -> bool:
+def _install_windows_service() -> tuple[bool, str]:
 
-    pid = os.getpid()
+    nssm = _ensure_nssm()
 
-    if IS_WINDOWS:
-        return _spawn_powershell_detached(
-            f"Start-Sleep -Seconds 2; "
-            f"Stop-Process -Id {pid} -Force"
+    if nssm is None:
+        return False, (
+            "nssm.exe не найден. "
+            "Положите его в bin/nssm.exe рядом с приложением."
         )
-
-    return _spawn_detached([
-        "/bin/bash", "-c",
-        f"sleep 2; kill {pid}",
-    ])
-
-
-# =========================================================
-# WINDOWS TASK INSTALL
-# =========================================================
-
-def _install_windows_task() -> tuple[bool, str]:
-    """
-    Регистрирует задачу через Register-ScheduledTask.
-    относительные пути внутри процесса
-    службы будут резолвиться от каталога приложения, а не от
-    C:\\Windows\\System32.
-    """
-
-    logger.info("Регистрация Windows Task: %s", SERVICE_NAME)
 
     executable, args, work_dir = get_service_command()
 
-    logger.info("Executable: %s", executable)
+    logger.info("Установка службы через NSSM: %s", executable)
     logger.info("Arguments: %s", args)
     logger.info("Working directory: %s", work_dir)
 
-    exe_q = _ps_quote(executable)
-    wd_q = _ps_quote(work_dir)
-    name_q = _ps_quote(SERVICE_NAME)
+    # -----------------------------------------------------
+    # Регистрация службы
+    # -----------------------------------------------------
 
-    if args:
-        arg_str = subprocess.list2cmdline(args)
-        arg_part = f"-Argument {_ps_quote(arg_str)} "
-    else:
-        arg_part = ""
+    try:
+        r = _run_nssm([
+            "install",
+            SERVICE_NAME,
+            str(executable),
+            *args,
+        ])
+    except RuntimeError as exc:
+        return False, str(exc)
 
-    script = (
-        f"$action = New-ScheduledTaskAction "
-        f"-Execute {exe_q} {arg_part}"
-        f"-WorkingDirectory {wd_q}; "
-        f"$trigger = New-ScheduledTaskTrigger -AtStartup; "
-        f"$principal = New-ScheduledTaskPrincipal "
-        f"-UserId 'SYSTEM' "
-        f"-LogonType ServiceAccount "
-        f"-RunLevel Highest; "
-        f"$settings = New-ScheduledTaskSettingsSet "
-        f"-AllowStartIfOnBatteries "
-        f"-DontStopIfGoingOnBatteries "
-        f"-StartWhenAvailable "
-        f"-ExecutionTimeLimit ([TimeSpan]::Zero); "
-        f"Register-ScheduledTask "
-        f"-TaskName {name_q} "
-        f"-Action $action "
-        f"-Trigger $trigger "
-        f"-Principal $principal "
-        f"-Settings $settings "
-        f"-Force | Out-Null"
-    )
-
-    result = _run_powershell(script)
-
-    if result.returncode != 0:
+    if r.returncode != 0:
         message = (
-            (result.stderr or result.stdout or "").strip()
-            or "Ошибка создания задачи Windows."
+            (r.stderr or r.stdout or "").strip()
+            or "nssm install failed"
         )
-        logger.error("Ошибка создания Windows Task: %s", message)
+        logger.error("Ошибка nssm install: %s", message)
         return False, message
 
-    logger.info("Windows Task %s успешно создана.", SERVICE_NAME)
+    # -----------------------------------------------------
+    # Настройка параметров службы
+    # -----------------------------------------------------
+
+    logs_dir = str(LOGS_DIR.resolve())
+
+    # Критичные параметры: если не удалось — откатываем регистрацию.
+    critical_settings = [
+        ("AppDirectory", work_dir),
+        ("Start", "SERVICE_AUTO_START"),
+        # Exit code 0 = нормальное завершение, служба останавливается.
+        ("AppExit", "0", "Exit"),
+        # Любой другой exit code = перезапустить приложение.
+        ("AppExit", "Default", "Restart"),
+    ]
+
+    # Некритичные: только предупреждение.
+    optional_settings = [
+        ("Description", DESCRIPTION),
+        ("AppRestartDelay", "5000"),
+        ("AppThrottle", "1500"),
+        ("AppStdout", os.path.join(logs_dir, "service_stdout.log")),
+        ("AppStderr", os.path.join(logs_dir, "service_stderr.log")),
+        ("AppRotateFiles", "1"),
+        ("AppRotateBytes", str(10 * 1024 * 1024)),
+        ("AppRotateOnline", "1"),
+    ]
+
+    for entry in critical_settings:
+        try:
+            rr = _run_nssm(["set", SERVICE_NAME, *entry])
+        except RuntimeError as exc:
+            _run_nssm(["remove", SERVICE_NAME, "confirm"])
+            return False, f"nssm set {entry[0]}: {exc}"
+
+        if rr.returncode != 0:
+            _run_nssm(["remove", SERVICE_NAME, "confirm"])
+            return False, (
+                f"nssm set {entry[0]}: "
+                + (rr.stderr or rr.stdout or "").strip()
+            )
+
+    for entry in optional_settings:
+        try:
+            rr = _run_nssm(["set", SERVICE_NAME, *entry])
+        except RuntimeError as exc:
+            logger.warning("nssm set %s: %s", entry[0], exc)
+            continue
+
+        if rr.returncode != 0:
+            logger.warning(
+                "nssm set %s: %s",
+                entry[0],
+                (rr.stderr or rr.stdout or "").strip(),
+            )
+
+    # -----------------------------------------------------
+    # Запуск службы
+    # -----------------------------------------------------
 
     ok, start_message = start_service()
 
     if not ok:
         logger.warning(
-            "Задача создана, но не запущена: %s", start_message,
+            "Служба создана, но не запущена: %s",
+            start_message,
         )
         return (
             True,
-            f"Задача создана, но не запущена: {start_message}",
+            f"Служба создана, но не запущена: {start_message}",
         )
 
     time.sleep(1)
@@ -933,7 +1116,7 @@ def _install_windows_task() -> tuple[bool, str]:
     if is_os_service_running():
         return (
             True,
-            "Служба Windows зарегистрирована и запущена от SYSTEM.",
+            "Служба Windows зарегистрирована и запущена.",
         )
 
     return (

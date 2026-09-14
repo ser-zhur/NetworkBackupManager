@@ -1,24 +1,24 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
-REM FIX: переключаем консоль в UTF-8, чтобы кириллица не превращалась в кракозябры.
+REM РџРµСЂРµРєР»СЋС‡Р°РµРј РєРѕРЅСЃРѕР»СЊ РІ UTF-8, С‡С‚РѕР±С‹ РєРёСЂРёР»Р»РёС†Р° РЅРµ РїСЂРµРІСЂР°С‰Р°Р»Р°СЃСЊ РІ РєСЂР°РєРѕР·СЏР±СЂС‹.
 chcp 65001 >nul
 
 title NetworkBackupManager - Build
 
 REM ========================================================
-REM ЕДИНЫЙ ЛОГ
+REM Р•Р”РРќР«Р™ Р›РћР“
 REM ========================================================
 REM
-REM Весь вывод build.bat дублируется в build.log.
-REM Файл перезаписывается при каждом запуске.
+REM Р’РµСЃСЊ РІС‹РІРѕРґ build.bat РґСѓР±Р»РёСЂСѓРµС‚СЃСЏ РІ build.log.
+REM Р¤Р°Р№Р» РїРµСЂРµР·Р°РїРёСЃС‹РІР°РµС‚СЃСЏ РїСЂРё РєР°Р¶РґРѕРј Р·Р°РїСѓСЃРєРµ.
 REM
-REM Для запуска без паузы передайте --no-pause.
+REM Р”Р»СЏ Р·Р°РїСѓСЃРєР° Р±РµР· РїР°СѓР·С‹ РїРµСЂРµРґР°Р№С‚Рµ --no-pause.
 REM
 
 set "LOG_FILE=%~dp0build.log"
 
-REM Очищаем лог
+REM РћС‡РёС‰Р°РµРј Р»РѕРі
 > "%LOG_FILE%" echo ========================================
 >>"%LOG_FILE%" echo   NetworkBackupManager BUILD LOG
 >>"%LOG_FILE%" echo   Started: %DATE% %TIME%
@@ -84,6 +84,18 @@ if not exist "core\__init__.py" (
     type nul > "core\__init__.py"
 )
 
+REM NSSM РѕР±СЏР·Р°С‚РµР»РµРЅ РґР»СЏ СѓСЃС‚Р°РЅРѕРІРєРё СЃР»СѓР¶Р±С‹ Windows.
+if not exist "bin\nssm.exe" (
+    echo ERROR: bin\nssm.exe not found.
+    echo        NSSM is required for Windows service installation.
+    echo        Download from https://nssm.cc/download and place
+    echo        nssm.exe [win64] into bin\nssm.exe.
+    >>"%LOG_FILE%" echo ERROR: bin\nssm.exe not found.
+    >>"%LOG_FILE%" echo NSSM is required for Windows service installation.
+    pause
+    exit /b 1
+)
+
 echo OK.
 echo.
 >>"%LOG_FILE%" echo [OK] Project files checked.
@@ -128,8 +140,8 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM FIX: убраны двойные кавычки внутри строки Python.
-REM cmd.exe не экранирует ''P'' так, как PowerShell.
+REM РЈР±РёСЂР°РµРј РґРІРѕР№РЅС‹Рµ РєР°РІС‹С‡РєРё РІРЅСѓС‚СЂРё СЃС‚СЂРѕРєРё Python.
+REM cmd.exe РЅРµ СЌРєСЂР°РЅРёСЂСѓРµС‚ ''P'' С‚Р°Рє, РєР°Рє PowerShell.
 for /f "delims=" %%V in ('python -c "import sys; print(sys.version.split()[0])"') do set PY_VERSION=%%V
 for /f "delims=" %%B in ('python -c "import struct; print(struct.calcsize('P') * 8)"') do set PY_BITS=%%B
 
@@ -208,10 +220,10 @@ REM ========================================================
 REM 5. BUILD EXE
 REM ========================================================
 
-echo [5/8] Building NetworkBackupManager.exe...
+echo [5/8] Building NetworkBackupManager...
 echo.
 
->>"%LOG_FILE%" echo [5/8] Building NetworkBackupManager.exe...
+>>"%LOG_FILE%" echo [5/8] Building NetworkBackupManager...
 >>"%LOG_FILE%" echo.
 
 set ICON_ARG=
@@ -232,28 +244,32 @@ if exist "assets\version_info.txt" (
 
 echo.
 
-REM FIX: PyInstaller пишет много вывода в stdout/stderr.
-REM Дублируем его и в консоль, и в лог через временный файл.
-REM Используем "2>&1" чтобы захватить и stderr.
+REM PyInstaller РїРёС€РµС‚ РјРЅРѕРіРѕ РІС‹РІРѕРґР° РІ stdout/stderr.
+REM Р”СѓР±Р»РёСЂСѓРµРј РµРіРѕ Рё РІ РєРѕРЅСЃРѕР»СЊ, Рё РІ Р»РѕРі С‡РµСЂРµР· РІСЂРµРјРµРЅРЅС‹Р№ С„Р°Р№Р».
+REM РСЃРїРѕР»СЊР·СѓРµРј "2>&1" С‡С‚РѕР±С‹ Р·Р°С…РІР°С‚РёС‚СЊ Рё stderr.
 
 set "PYI_TEMP=%TEMP%\nbm_pyi_output.txt"
 
+REM --onedir РІС‹Р±СЂР°РЅ РѕСЃРѕР·РЅР°РЅРЅРѕ:
+REM РґР»СЏ СЃР»СѓР¶Р±С‹ Windows С‡РµСЂРµР· NSSM РЅРµР»СЊР·СЏ РёСЃРїРѕР»СЊР·РѕРІР°С‚СЊ --onefile,
+REM РїРѕС‚РѕРјСѓ С‡С‚Рѕ bootloader-СЂРѕРґРёС‚РµР»СЊ Р»РѕРјР°РµС‚ СѓРїСЂР°РІР»РµРЅРёРµ РїСЂРѕС†РµСЃСЃР°РјРё
+REM С‡РµСЂРµР· SCM (Stop-Service СѓР±РёРІР°РµС‚ СЂРѕРґРёС‚РµР»СЏ, СЂРµР±С‘РЅРѕРє РѕСЃС‚Р°С‘С‚СЃСЏ).
 python -m PyInstaller ^
   --noconfirm ^
   --clean ^
-  --onefile ^
+  --onedir ^
   --noconsole ^
   --name NetworkBackupManager ^
   %ICON_ARG% ^
   %VERSION_ARG% ^
   --add-data "web;web" ^
+  --add-data "bin;bin" ^
   --hidden-import core ^
   --hidden-import core.context ^
   --hidden-import core.service_installer ^
   --hidden-import core.plugin_manager ^
   --hidden-import core.secure_storage ^
   --hidden-import core.scheduler ^
-  --hidden-import core.logger ^
   --hidden-import web ^
   --hidden-import web.server ^
   --hidden-import fastapi ^
@@ -278,10 +294,10 @@ python -m PyInstaller ^
 
 set "PYI_EXIT=%ERRORLEVEL%"
 
-REM Показываем вывод PyInstaller в консоли
+REM РџРѕРєР°Р·С‹РІР°РµРј РІС‹РІРѕРґ PyInstaller РІ РєРѕРЅСЃРѕР»Рё
 type "%PYI_TEMP%"
 
-REM И пишем его в лог
+REM Р РїРёС€РµРј РµРіРѕ РІ Р»РѕРі
 >>"%LOG_FILE%" echo --- PyInstaller output begin ---
 type "%PYI_TEMP%" >> "%LOG_FILE%"
 >>"%LOG_FILE%" echo --- PyInstaller output end ---
@@ -316,7 +332,8 @@ REM ========================================================
 
 echo [6/8] Checking executable...
 
-if not exist "dist\NetworkBackupManager.exe" (
+REM РџСЂРё --onedir EXE Р»РµР¶РёС‚ РІ РїРѕРґРєР°С‚Р°Р»РѕРіРµ dist\NetworkBackupManager\.
+if not exist "dist\NetworkBackupManager\NetworkBackupManager.exe" (
     echo ERROR: NetworkBackupManager.exe was not created.
     >>"%LOG_FILE%" echo ERROR: NetworkBackupManager.exe was not created.
     pause
@@ -324,10 +341,18 @@ if not exist "dist\NetworkBackupManager.exe" (
 )
 
 for %%F in (
-    "dist\NetworkBackupManager.exe"
+    "dist\NetworkBackupManager\NetworkBackupManager.exe"
 ) do (
     echo EXE size: %%~zF bytes
     >>"%LOG_FILE%" echo EXE size: %%~zF bytes
+)
+
+REM РџСЂРѕРІРµСЂСЏРµРј, С‡С‚Рѕ nssm.exe РїРѕРїР°Р» РІ Р±Р°РЅРґР».
+if not exist "dist\NetworkBackupManager\_internal\bin\nssm.exe" (
+    if not exist "dist\NetworkBackupManager\bin\nssm.exe" (
+        echo WARNING: nssm.exe not found in dist - service install may fail.
+        >>"%LOG_FILE%" echo WARNING: nssm.exe not found in dist - service install may fail.
+    )
 )
 
 echo.
@@ -343,12 +368,12 @@ REM ========================================================
 
 echo [7/8] Preparing external directories...
 
-if not exist "dist\data"              mkdir "dist\data"
-if not exist "dist\plugins"           mkdir "dist\plugins"
-if not exist "dist\plugins\Mikrotik"  mkdir "dist\plugins\Mikrotik"
-if not exist "dist\plugins\Pfsense"   mkdir "dist\plugins\Pfsense"
-if not exist "dist\backups"           mkdir "dist\backups"
-if not exist "dist\logs"              mkdir "dist\logs"
+if not exist "dist\NetworkBackupManager\data"              mkdir "dist\NetworkBackupManager\data"
+if not exist "dist\NetworkBackupManager\plugins"           mkdir "dist\NetworkBackupManager\plugins"
+if not exist "dist\NetworkBackupManager\plugins\Mikrotik"  mkdir "dist\NetworkBackupManager\plugins\Mikrotik"
+if not exist "dist\NetworkBackupManager\plugins\Pfsense"   mkdir "dist\NetworkBackupManager\plugins\Pfsense"
+if not exist "dist\NetworkBackupManager\backups"           mkdir "dist\NetworkBackupManager\backups"
+if not exist "dist\NetworkBackupManager\logs"              mkdir "dist\NetworkBackupManager\logs"
 
 echo OK.
 echo.
@@ -369,7 +394,7 @@ REM --------------------------------------------------------
 if exist "plugins\Mikrotik\plugin.py" (
     copy /Y ^
         "plugins\Mikrotik\plugin.py" ^
-        "dist\plugins\Mikrotik\plugin.py" >nul 2>&1
+        "dist\NetworkBackupManager\plugins\Mikrotik\plugin.py" >nul 2>&1
 
     if errorlevel 1 (
         echo ERROR copying Mikrotik plugin.py
@@ -393,7 +418,7 @@ REM --------------------------------------------------------
 if exist "plugins\Pfsense\plugin.py" (
     copy /Y ^
         "plugins\Pfsense\plugin.py" ^
-        "dist\plugins\Pfsense\plugin.py" >nul 2>&1
+        "dist\NetworkBackupManager\plugins\Pfsense\plugin.py" >nul 2>&1
 
     if errorlevel 1 (
         echo ERROR copying Pfsense plugin.py
@@ -425,11 +450,12 @@ REM ========================================================
 
 echo Removing Python cache files...
 
-for /r "dist\plugins" %%F in (*.pyc) do (
+REM РџСЂРё --onedir РїР»Р°РіРёРЅС‹ Р»РµР¶Р°С‚ РІ dist\NetworkBackupManager\plugins.
+for /r "dist\NetworkBackupManager\plugins" %%F in (*.pyc) do (
     del /f /q "%%F" >nul 2>&1
 )
 
-for /d /r "dist\plugins" %%D in (__pycache__) do (
+for /d /r "dist\NetworkBackupManager\plugins" %%D in (__pycache__) do (
     rmdir /s /q "%%D" >nul 2>&1
 )
 
@@ -475,27 +501,32 @@ echo Distribution:
 echo.
 echo   dist\
 echo   ^|
-echo   +-- NetworkBackupManager.exe
-echo   ^|
-echo   +-- plugins\
-echo   ^|   +-- Mikrotik\
-echo   ^|   ^|   +-- plugin.py
-echo   ^|   ^|
-echo   ^|   +-- Pfsense\
-echo   ^|       +-- plugin.py
-echo   ^|
-echo   +-- data\
-echo   +-- backups\
-echo   +-- logs\
+echo   +-- NetworkBackupManager\
+echo       ^|
+echo       +-- NetworkBackupManager.exe
+echo       +-- _internal\        (Python runtime + nssm.exe)
+echo       ^|
+echo       +-- plugins\
+echo       ^|   +-- Mikrotik\
+echo       ^|   ^|   +-- plugin.py
+echo       ^|   ^|
+echo       ^|   +-- Pfsense\
+echo       ^|       +-- plugin.py
+echo       ^|
+echo       +-- data\
+echo       +-- backups\
+echo       +-- logs\
 echo.
 
 >>"%LOG_FILE%" echo Distribution:
 >>"%LOG_FILE%" echo   dist\
->>"%LOG_FILE%" echo   +-- NetworkBackupManager.exe
->>"%LOG_FILE%" echo   +-- plugins\
->>"%LOG_FILE%" echo   +-- data\
->>"%LOG_FILE%" echo   +-- backups\
->>"%LOG_FILE%" echo   +-- logs\
+>>"%LOG_FILE%" echo   +-- NetworkBackupManager\
+>>"%LOG_FILE%" echo       +-- NetworkBackupManager.exe
+>>"%LOG_FILE%" echo       +-- _internal\
+>>"%LOG_FILE%" echo       +-- plugins\
+>>"%LOG_FILE%" echo       +-- data\
+>>"%LOG_FILE%" echo       +-- backups\
+>>"%LOG_FILE%" echo       +-- logs\
 >>"%LOG_FILE%" echo.
 
 echo ========================================
@@ -525,17 +556,17 @@ echo.
 >>"%LOG_FILE%" echo * No takeown.
 >>"%LOG_FILE%" echo.
 
-REM Финализация лога
+REM Р¤РёРЅР°Р»РёР·Р°С†РёСЏ Р»РѕРіР°
 >>"%LOG_FILE%" echo ========================================
 >>"%LOG_FILE%" echo   BUILD COMPLETE
 >>"%LOG_FILE%" echo   Finished: %DATE% %TIME%
 >>"%LOG_FILE%" echo ========================================
 
-echo Лог сохранён в:
+echo Р›РѕРі СЃРѕС…СЂР°РЅС‘РЅ РІ:
 echo   %LOG_FILE%
 echo.
 
-REM pause только при интерактивном запуске (двойной клик).
+REM pause С‚РѕР»СЊРєРѕ РїСЂРё РёРЅС‚РµСЂР°РєС‚РёРІРЅРѕРј Р·Р°РїСѓСЃРєРµ (РґРІРѕР№РЅРѕР№ РєР»РёРє).
 if /i "%~1"=="--no-pause" (
     exit /b 0
 )
