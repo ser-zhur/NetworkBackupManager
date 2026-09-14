@@ -3,6 +3,7 @@
 # =========================================================
 
 import ctypes
+import base64
 import logging
 import os
 import platform
@@ -124,6 +125,85 @@ def _run(cmd, **kwargs) -> subprocess.CompletedProcess:
 
     return result
 
+# =========================================================
+# POWERSHELL
+# =========================================================
+
+def _ps_quote(value: str) -> str:
+    """
+    Экранирует строку для встраивания в PowerShell-литерал
+    в одинарных кавычках.
+
+    В PowerShell внутри '...' единственная спецпоследовательность —
+    это '' (двойная одинарная кавычка), которая даёт одну '.
+    """
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _run_powershell(script: str) -> subprocess.CompletedProcess:
+    """
+    Выполняет PowerShell-скрипт через -EncodedCommand.
+
+    -EncodedCommand принимает base64 от UTF-16LE, это полностью
+    устраняет проблемы с кавычками и экранированием в командной
+    строке. На выходе форсируем UTF-8, чтобы не зависеть от
+    OEM-кодировки консоли (cp866 на русской Windows и т.п.).
+
+    Требуется Windows 8+ / Server 2012+ (модуль ScheduledTasks).
+    """
+    if not IS_WINDOWS:
+        raise RuntimeError("PowerShell доступен только на Windows")
+
+    preamble = (
+        "$ErrorActionPreference = 'Stop'; "
+        "[Console]::OutputEncoding = "
+        "[System.Text.Encoding]::UTF8; "
+    )
+
+    encoded = base64.b64encode(
+        (preamble + script).encode("utf-16-le")
+    ).decode("ascii")
+
+    logger.debug("powershell: %s", script)
+
+    return subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy", "Bypass",
+            "-EncodedCommand",
+            encoded,
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=SUBPROCESS_TIMEOUT,
+        creationflags=_windows_flags(),
+    )
+
+
+def _spawn_powershell_detached(script: str) -> bool:
+    """
+    Запускает PowerShell-скрипт в отдельном процессе,
+    не привязываясь к текущему. Вывод не читается.
+    """
+    if not IS_WINDOWS:
+        return False
+
+    encoded = base64.b64encode(
+        script.encode("utf-16-le")
+    ).decode("ascii")
+
+    return _spawn_detached([
+        "powershell.exe",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy", "Bypass",
+        "-EncodedCommand",
+        encoded,
+    ])
 
 def _windows_flags() -> int:
     """
@@ -219,33 +299,33 @@ def _get_windows_task_state() -> str:
 
     Возможные значения:
         running, ready, disabled, not_found, unknown
+
+    Использует PowerShell: TaskState отдаёт стабильные
+    английские значения (Running/Ready/Disabled/Queued)
+    независимо от языка системы.
     """
 
     if not IS_WINDOWS:
         return "unknown"
 
-    # FIX: используем CSV-вывод и парсим колонку Status,
-    # а не ищем подстроки в локализованном тексте.
-    result = _run([
-        "schtasks", "/query", "/tn", SERVICE_NAME,
-        "/fo", "CSV", "/nh", "/v",
-    ])
+    result = _run_powershell(
+        f"(Get-ScheduledTask -TaskName {_ps_quote(SERVICE_NAME)} "
+        f"-ErrorAction SilentlyContinue).State"
+    )
 
     if result.returncode != 0:
-        return "not_found"
-
-    text = (result.stdout or "").strip()
-    if not text:
         return "unknown"
 
-    lowered = text.lower()
+    state = (result.stdout or "").strip().lower()
 
-    # FIX: устойчивые маркеры, не зависящие от локали.
-    if "running" in lowered or "выполняется" in lowered:
+    if not state:
+        return "not_found"
+
+    if state in ("running", "queued"):
         return "running"
-    if "ready" in lowered or "готова" in lowered:
+    if state == "ready":
         return "ready"
-    if "disabled" in lowered or "отключена" in lowered:
+    if state == "disabled":
         return "disabled"
 
     return "unknown"
@@ -258,7 +338,11 @@ def _get_windows_task_state() -> str:
 def is_service_registered() -> bool:
 
     if IS_WINDOWS:
-        result = _run(["schtasks", "/query", "/tn", SERVICE_NAME])
+        result = _run_powershell(
+            f"if (-not (Get-ScheduledTask "
+            f"-TaskName {_ps_quote(SERVICE_NAME)} "
+            f"-ErrorAction SilentlyContinue)) {{ exit 1 }}"
+        )
         return result.returncode == 0
 
     if IS_LINUX:
@@ -418,10 +502,10 @@ def start_service() -> tuple[bool, str]:
     # =====================================================
 
     if IS_WINDOWS:
-        result = _run([
-            "schtasks", "/run", "/tn", SERVICE_NAME,
-        ])
-
+        result = _run_powershell(
+            f"Start-ScheduledTask "
+            f"-TaskName {_ps_quote(SERVICE_NAME)}"
+        )
         if result.returncode == 0:
             return True, "Служба запущена."
 
@@ -466,9 +550,10 @@ def stop_service() -> tuple[bool, str]:
     # =====================================================
 
     if IS_WINDOWS:
-        result = _run([
-            "schtasks", "/end", "/tn", SERVICE_NAME,
-        ])
+        result = _run_powershell(
+            f"Stop-ScheduledTask "
+            f"-TaskName {_ps_quote(SERVICE_NAME)}"
+        )
 
         if result.returncode == 0:
             return True, "Служба остановлена."
@@ -519,15 +604,20 @@ def uninstall_service() -> tuple[bool, str]:
 
     if IS_WINDOWS:
 
-        # Сначала останавливаем задачу.
-        _run(["schtasks", "/end", "/tn", SERVICE_NAME])
+        # Останавливаем задачу (может уже быть остановлена —
+        # -ErrorAction SilentlyContinue подавляет ошибку).
+        _run_powershell(
+            f"Stop-ScheduledTask "
+            f"-TaskName {_ps_quote(SERVICE_NAME)} "
+            f"-ErrorAction SilentlyContinue"
+        )
         time.sleep(1)
 
-        result = _run([
-            "schtasks", "/delete",
-            "/tn", SERVICE_NAME,
-            "/f",
-        ])
+        result = _run_powershell(
+            f"Unregister-ScheduledTask "
+            f"-TaskName {_ps_quote(SERVICE_NAME)} "
+            f"-Confirm:$false"
+        )
 
         if result.returncode == 0:
             logger.info("Windows Task %s удалена.", SERVICE_NAME)
@@ -579,14 +669,12 @@ def schedule_stop() -> tuple[bool, str]:
     if is_service_process():
 
         if IS_WINDOWS:
-            ok = _spawn_detached([
-                "cmd", "/c",
-                (
-                    "timeout /t 2 /nobreak >nul "
-                    "& schtasks /end /tn "
-                    f"\"{SERVICE_NAME}\""
-                ),
-            ])
+            ok = _spawn_powershell_detached(
+                f"Start-Sleep -Seconds 2; "
+                f"Stop-ScheduledTask "
+                f"-TaskName {_ps_quote(SERVICE_NAME)}"
+            )
+            
             if not ok:
                 return False, "Не удалось запустить отложенную остановку."
 
@@ -640,17 +728,15 @@ def schedule_restart() -> tuple[bool, str]:
     # =====================================================
 
     if IS_WINDOWS:
-        ok = _spawn_detached([
-            "cmd", "/c",
-            (
-                "timeout /t 2 /nobreak >nul "
-                "& schtasks /end /tn "
-                f"\"{SERVICE_NAME}\" "
-                "& timeout /t 2 /nobreak >nul "
-                "& schtasks /run /tn "
-                f"\"{SERVICE_NAME}\""
-            ),
-        ])
+        ok = _spawn_powershell_detached(
+            f"Start-Sleep -Seconds 2; "
+            f"Stop-ScheduledTask "
+            f"-TaskName {_ps_quote(SERVICE_NAME)}; "
+            f"Start-Sleep -Seconds 2; "
+            f"Start-ScheduledTask "
+            f"-TaskName {_ps_quote(SERVICE_NAME)}"
+        )
+        
         if not ok:
             return False, "Не удалось запустить отложенный перезапуск."
 
@@ -702,17 +788,15 @@ def schedule_uninstall() -> tuple[bool, str]:
     # =====================================================
 
     if IS_WINDOWS:
-        ok = _spawn_detached([
-            "cmd", "/c",
-            (
-                "timeout /t 2 /nobreak >nul "
-                "& schtasks /end /tn "
-                f"\"{SERVICE_NAME}\" "
-                "& timeout /t 2 /nobreak >nul "
-                "& schtasks /delete /tn "
-                f"\"{SERVICE_NAME}\" /f"
-            ),
-        ])
+        ok = _spawn_powershell_detached(
+            f"Start-Sleep -Seconds 2; "
+            f"Stop-ScheduledTask "
+            f"-TaskName {_ps_quote(SERVICE_NAME)}; "
+            f"Start-Sleep -Seconds 2; "
+            f"Unregister-ScheduledTask "
+            f"-TaskName {_ps_quote(SERVICE_NAME)} "
+            f"-Confirm:$false"
+        )
         if not ok:
             return False, "Не удалось запустить отложенное удаление."
 
@@ -757,13 +841,10 @@ def _spawn_self_exit() -> bool:
     pid = os.getpid()
 
     if IS_WINDOWS:
-        return _spawn_detached([
-            "cmd", "/c",
-            (
-                "timeout /t 2 /nobreak >nul "
-                f"& taskkill /PID {pid} /F"
-            ),
-        ])
+        return _spawn_powershell_detached(
+            f"Start-Sleep -Seconds 2; "
+            f"Stop-Process -Id {pid} -Force"
+        )
 
     return _spawn_detached([
         "/bin/bash", "-c",
@@ -772,21 +853,16 @@ def _spawn_self_exit() -> bool:
 
 
 # =========================================================
-# WINDOWS TASK COMMAND
-# =========================================================
-
-def _windows_task_command() -> str:
-    """Собирает командную строку для schtasks /tr."""
-
-    exe, args, _work_dir = get_service_command()
-    return subprocess.list2cmdline([exe, *args])
-
-
-# =========================================================
 # WINDOWS TASK INSTALL
 # =========================================================
 
 def _install_windows_task() -> tuple[bool, str]:
+    """
+    Регистрирует задачу через Register-ScheduledTask.
+    относительные пути внутри процесса
+    службы будут резолвиться от каталога приложения, а не от
+    C:\\Windows\\System32.
+    """
 
     logger.info("Регистрация Windows Task: %s", SERVICE_NAME)
 
@@ -796,21 +872,44 @@ def _install_windows_task() -> tuple[bool, str]:
     logger.info("Arguments: %s", args)
     logger.info("Working directory: %s", work_dir)
 
-    task_command = _windows_task_command()
+    exe_q = _ps_quote(executable)
+    wd_q = _ps_quote(work_dir)
+    name_q = _ps_quote(SERVICE_NAME)
 
-    result = _run([
-        "schtasks", "/create",
-        "/tn", SERVICE_NAME,
-        "/tr", task_command,
-        "/sc", "onstart",
-        "/ru", "SYSTEM",
-        "/rl", "HIGHEST",
-        "/f",
-    ])
+    if args:
+        arg_str = subprocess.list2cmdline(args)
+        arg_part = f"-Argument {_ps_quote(arg_str)} "
+    else:
+        arg_part = ""
+
+    script = (
+        f"$action = New-ScheduledTaskAction "
+        f"-Execute {exe_q} {arg_part}"
+        f"-WorkingDirectory {wd_q}; "
+        f"$trigger = New-ScheduledTaskTrigger -AtStartup; "
+        f"$principal = New-ScheduledTaskPrincipal "
+        f"-UserId 'SYSTEM' "
+        f"-LogonType ServiceAccount "
+        f"-RunLevel Highest; "
+        f"$settings = New-ScheduledTaskSettingsSet "
+        f"-AllowStartIfOnBatteries "
+        f"-DontStopIfGoingOnBatteries "
+        f"-StartWhenAvailable "
+        f"-ExecutionTimeLimit ([TimeSpan]::Zero); "
+        f"Register-ScheduledTask "
+        f"-TaskName {name_q} "
+        f"-Action $action "
+        f"-Trigger $trigger "
+        f"-Principal $principal "
+        f"-Settings $settings "
+        f"-Force | Out-Null"
+    )
+
+    result = _run_powershell(script)
 
     if result.returncode != 0:
         message = (
-            result.stdout or result.stderr
+            (result.stderr or result.stdout or "").strip()
             or "Ошибка создания задачи Windows."
         )
         logger.error("Ошибка создания Windows Task: %s", message)
@@ -829,7 +928,6 @@ def _install_windows_task() -> tuple[bool, str]:
             f"Задача создана, но не запущена: {start_message}",
         )
 
-    # Ждём, чтобы убедиться, что процесс действительно начал работу.
     time.sleep(1)
 
     if is_os_service_running():
@@ -843,7 +941,6 @@ def _install_windows_task() -> tuple[bool, str]:
         "Служба Windows зарегистрирована. "
         "Команда запуска отправлена.",
     )
-
 
 # =========================================================
 # SHELL QUOTING
