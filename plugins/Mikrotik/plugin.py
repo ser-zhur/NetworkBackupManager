@@ -54,24 +54,65 @@ def _get_key_path(router):
     """
     Возвращает абсолютный путь к приватному SSH-ключу.
 
+    Логика выбора пути:
+
+      1. ssh_key из JSON, иначе
+      2. private_key из JSON, иначе
+      3. литерал "id_rsa.key"
+
+    Относительный путь резолвится относительно каталога плагина,
+    абсолютный — используется как есть.
+
+    Дополнительно проверяется существование файла и права на чтение.
+
     ВАЖНО:
-    Здесь НЕ выполняется никаких изменений прав файла.
-    Права должны быть настроены пользователем заранее.
+    Права файла здесь НЕ изменяются.
+    Пользователь настраивает их заранее.
     """
 
-    key_filename = router.get("private_key", "id_rsa.key")
+    key_filename = router.get(
+        "ssh_key",
+        router.get(
+            "private_key",
+            "id_rsa.key",
+        ),
+    )
 
     current_plugin_dir = os.path.dirname(
         os.path.abspath(__file__)
     )
 
     if os.path.isabs(key_filename):
-        return key_filename
+        key_path = key_filename
+    else:
+        key_path = os.path.join(
+            current_plugin_dir,
+            key_filename,
+        )
 
-    return os.path.join(
-        current_plugin_dir,
-        key_filename,
-    )
+    key_path = os.path.abspath(key_path)
+
+    if not os.path.exists(key_path):
+        raise FileNotFoundError(
+            f"SSH-ключ не найден: {key_path}. "
+            f"Проверьте параметр 'ssh_key' или "
+            f"'private_key' в конфиге роутера "
+            f"(host={router.get('host')})."
+        )
+
+    if not os.path.isfile(key_path):
+        raise IsADirectoryError(
+            f"Путь к SSH-ключу указывает на каталог, "
+            f"а не на файл: {key_path}"
+        )
+
+    if not os.access(key_path, os.R_OK):
+        raise PermissionError(
+            f"Нет прав на чтение SSH-ключа: {key_path}. "
+            f"Проверьте права файла (например, chmod 600)."
+        )
+
+    return key_path
 
 
 # =========================================================
@@ -733,9 +774,21 @@ def backup_router(router):
 
     backup_path = router["backup_path"]
 
-    today = datetime.now().strftime(
-        "%Y-%m-%d"
-    )
+    # Если путь относительный — привязываем его к каталогу плагина
+
+    if not os.path.isabs(backup_path):
+        current_plugin_dir = os.path.dirname(
+            os.path.abspath(__file__)
+        )
+        backup_path = os.path.join(
+            current_plugin_dir,
+            backup_path,
+        )
+
+    # Нормализуем (убираем ./ ../ и т.п.)
+    backup_path = os.path.abspath(backup_path)
+
+    today = datetime.now().strftime("%Y-%m-%d")
 
     local_dir = os.path.join(
         backup_path,

@@ -115,6 +115,7 @@ from core.service_installer import (
     install_service,
     uninstall_service,
     start_service,
+    stop_service,
     schedule_stop,
     schedule_restart,
     relaunch_elevated,
@@ -511,6 +512,28 @@ def uninstall_service_cli() -> int:
 
 
 # =========================================================
+# START SERVICE CLI
+# =========================================================
+
+def start_service_cli() -> int:
+
+    ensure_console()
+
+    if not is_admin():
+        print("Для запуска службы нужны права администратора.")
+        return 1
+
+    if not is_service_registered():
+        print("Служба не зарегистрирована.")
+        return 1
+
+    ok, message = start_service()
+    print(message)
+
+    return 0 if ok else 1
+
+
+# =========================================================
 # STOP SERVICE CLI
 # =========================================================
 
@@ -526,7 +549,7 @@ def stop_service_cli() -> int:
         print("Служба не зарегистрирована.")
         return 1
 
-    ok, message = schedule_stop()
+    ok, message = stop_service()
     print(message)
 
     return 0 if ok else 1
@@ -752,6 +775,7 @@ _KNOWN_FLAGS = {
     "--install-service",
     "--uninstall-service",
     "--stop-service",
+    "--start-service",
     "--restart-service",
     "--skip-service-install",
 }
@@ -813,6 +837,13 @@ def main() -> int:
     if "--restart-service" in args:
         return restart_service_cli()
 
+    # -----------------------------------------------------
+    # START SERVICE
+    # -----------------------------------------------------
+
+    if "--start-service" in args:
+        return start_service_cli()
+    
     # -----------------------------------------------------
     # SKIP SERVICE INSTALL
     # -----------------------------------------------------

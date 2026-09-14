@@ -11,10 +11,33 @@ def backup_pfsense_ssh(router):
     
     current_plugin_dir = os.path.dirname(os.path.abspath(__file__))
     key_filename = router.get("ssh_key", router.get("private_key", "id_rsa.key"))
-    if not os.path.isabs(key_filename):
-        key_path = os.path.join(current_plugin_dir, key_filename)
-    else:
+
+    if os.path.isabs(key_filename):
         key_path = key_filename
+    else:
+        key_path = os.path.join(current_plugin_dir, key_filename)
+
+    key_path = os.path.abspath(key_path)
+
+    if not os.path.exists(key_path):
+        raise FileNotFoundError(
+            f"SSH-ключ не найден: {key_path}. "
+            f"Проверьте параметр 'ssh_key' или "
+            f"'private_key' в конфиге роутера "
+            f"(host={router.get('host')})."
+        )
+
+    if not os.path.isfile(key_path):
+        raise IsADirectoryError(
+            f"Путь к SSH-ключу указывает на каталог, "
+            f"а не на файл: {key_path}"
+        )
+
+    if not os.access(key_path, os.R_OK):
+        raise PermissionError(
+            f"Нет прав на чтение SSH-ключа: {key_path}. "
+            f"Проверьте права файла (например, chmod 600)."
+        )
 
     backup_path = router["backup_path"]
 

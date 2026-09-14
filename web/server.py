@@ -7,6 +7,7 @@ import threading
 import secrets
 import hashlib
 import base64
+import time
 
 from pathlib import Path
 from datetime import datetime
@@ -57,9 +58,12 @@ from core.service_installer import (
     schedule_stop,
     install_service,
     uninstall_service,
+    schedule_uninstall,
     start_service,
+    stop_service,
     is_admin,
     is_service_registered,
+    is_service_process,
     relaunch_elevated,
 )
 
@@ -421,6 +425,51 @@ def require_auth(
 
     return credentials.username
 
+
+# =========================================================
+# SERVICE ACTION HELPERS
+# =========================================================
+
+def _render_service_action(
+    request: Request,
+    title: str,
+    message: str,
+    ok: bool,
+):
+    """
+    Рендер страницы результата действия со службой.
+    Убирает дублирование TemplateResponse в каждом endpoint’е.
+    """
+    return templates.TemplateResponse(
+        request,
+        "service_action.html",
+        {
+            "title": title,
+            "message": message,
+            "ok": ok,
+        },
+    )
+
+
+def _schedule_self_exit(delay: float = 5.0) -> None:
+    """
+    Откладывает завершение текущего процесса.
+
+    Нужно после запроса UAC на install: пока новая служба
+    стартует, интерактивная копия должна освободить порт
+    8080, иначе служба не сможет забиндиться.
+    """
+    def _exit():
+        time.sleep(delay)
+        try:
+            os._exit(0)
+        except Exception:
+            pass
+
+    threading.Thread(
+        target=_exit,
+        daemon=True,
+    ).start()
 
 # =========================================================
 # LOG READER
@@ -873,146 +922,92 @@ def service_page(
 # =========================================================
 # SERVICE INSTALL
 # =========================================================
-
 @app.post(
     "/service/install",
     response_class=HTMLResponse,
 )
 def service_install_endpoint(
     request: Request,
-    user: str = Depends(
-        require_auth
-    ),
+    user: str = Depends(require_auth),
 ):
+    # -----------------------------------------------------
+    # 1. Precondition — уже зарегистрирована
+    # -----------------------------------------------------
 
     if is_service_registered():
-
-        return templates.TemplateResponse(
+        return _render_service_action(
             request,
-            "service_action.html",
-            {
-                "title":
-                    "Регистрация службы",
-
-                "message":
-                    "Служба уже зарегистрирована.",
-
-                "ok":
-                    True,
-            },
+            "Регистрация службы",
+            "Служба уже зарегистрирована.",
+            ok=True,
         )
 
     # -----------------------------------------------------
-    # Уже администратор
+    # 2. Защита от нонсенса: процесс в режиме службы,
+    #    но служба не зарегистрирована.
+    # -----------------------------------------------------
+
+    if is_service_process():
+        return _render_service_action(
+            request,
+            "Регистрация службы",
+            "Процесс уже запущен в режиме службы. "
+            "Регистрация не требуется.",
+            ok=False,
+        )
+
+    # -----------------------------------------------------
+    # 3. Админ — устанавливаем напрямую
     # -----------------------------------------------------
 
     if is_admin():
-
-        ok, message = (
-            install_service()
-        )
+        ok, message = install_service()
 
         logging.info(
-            "Регистрация службы "
-            "пользователем %s: %s",
+            "Регистрация службы пользователем %s: %s",
             user,
             message,
         )
 
-        return templates.TemplateResponse(
+        return _render_service_action(
             request,
-            "service_action.html",
-            {
-                "title":
-                    "Регистрация службы",
-
-                "message":
-                    message,
-
-                "ok":
-                    ok,
-            },
+            "Регистрация службы",
+            message,
+            ok=ok,
         )
 
     # -----------------------------------------------------
-    # Запрашиваем UAC
+    # 4. Не админ — UAC
     # -----------------------------------------------------
 
-    ok = relaunch_elevated(
-        [
-            "--install-service"
-        ]
-    )
+    ok = relaunch_elevated(["--install-service"])
 
     if not ok:
-
-        return templates.TemplateResponse(
+        return _render_service_action(
             request,
-            "service_action.html",
-            {
-                "title":
-                    "Регистрация службы",
-
-                "message":
-                    (
-                        "Не удалось запросить "
-                        "права администратора."
-                    ),
-
-                "ok":
-                    False,
-            },
+            "Регистрация службы",
+            "Не удалось запросить права администратора.",
+            ok=False,
         )
 
-    # -----------------------------------------------------
-    # Интерактивный процесс после UAC
-    # -----------------------------------------------------
+    # Освобождаем порт: после UAC служба стартует и будет
+    # биндиться на тот же host:port.
+    _schedule_self_exit()
 
-    if not get_status().get(
-        "service_mode",
-        False,
-    ):
-
-        def delayed_exit():
-
-            import time
-            import os
-
-            time.sleep(5)
-
-            try:
-
-                os._exit(0)
-
-            except Exception:
-
-                pass
-
-        threading.Thread(
-            target=delayed_exit,
-            daemon=True,
-        ).start()
-
-    return templates.TemplateResponse(
-        request,
-        "service_action.html",
-        {
-            "title":
-                "Регистрация службы",
-
-            "message":
-                (
-                    "Запрошена регистрация службы "
-                    "с правами администратора. "
-                    "После подтверждения UAC служба "
-                    "будет зарегистрирована и запущена."
-                ),
-
-            "ok":
-                True,
-        },
+    logging.info(
+        "Запрошена регистрация службы через UAC "
+        "пользователем %s",
+        user,
     )
 
+    return _render_service_action(
+        request,
+        "Регистрация службы",
+        "Запрошена регистрация службы с правами администратора. "
+        "После подтверждения UAC служба будет зарегистрирована "
+        "и запущена.",
+        ok=True,
+    )
 
 # =========================================================
 # SERVICE START
@@ -1106,218 +1101,293 @@ def service_start_endpoint(
 # =========================================================
 # SERVICE RESTART
 # =========================================================
-
-@app.post(
-    "/service/restart",
-    response_class=HTMLResponse,
-)
+@app.post("/service/restart", response_class=HTMLResponse)
 def service_restart_endpoint(
     request: Request,
-    user: str = Depends(
-        require_auth
-    ),
+    user: str = Depends(require_auth),
 ):
-
     if not is_service_registered():
+        return templates.TemplateResponse(
+            request,
+            "service_action.html",
+            {
+                "title": "Перезапуск службы",
+                "message": "Служба не зарегистрирована.",
+                "ok": False,
+            },
+        )
+
+    # -----------------------------------------------------
+    # Если мы сами служба — отложенный перезапуск,
+    # чтобы успеть отдать ответ клиенту.
+    # -----------------------------------------------------
+
+    if get_status().get("service_mode", False):
+        ok, message = schedule_restart()
+
+        logging.info(
+            "Перезапуск службы (из службы) "
+            "пользователем %s: %s",
+            user, message,
+        )
 
         return templates.TemplateResponse(
             request,
             "service_action.html",
             {
-                "title":
-                    "Перезапуск службы",
-
-                "message":
-                    "Служба не зарегистрирована.",
-
-                "ok":
-                    False,
+                "title": "Перезапуск службы",
+                "message": message,
+                "ok": ok,
             },
         )
 
-    ok, message = (
-        schedule_restart()
-    )
+    # -----------------------------------------------------
+    # Интерактивная копия. Если админ — schedule_restart()
+    # сам разберётся (он отложенный и безопасный).
+    # -----------------------------------------------------
+
+    if is_admin():
+        ok, message = schedule_restart()
+
+        logging.info(
+            "Перезапуск службы пользователем %s: %s",
+            user, message,
+        )
+
+        return templates.TemplateResponse(
+            request,
+            "service_action.html",
+            {
+                "title": "Перезапуск службы",
+                "message": message,
+                "ok": ok,
+            },
+        )
+
+    # -----------------------------------------------------
+    # Не админ — UAC. Дочерний процесс вызовет
+    # --restart-service.
+    # -----------------------------------------------------
+
+    ok = relaunch_elevated(["--restart-service"])
 
     logging.info(
-        "Перезапуск службы "
-        "запрошен пользователем %s: %s",
-        user,
-        message,
+        "Запрошен перезапуск службы через UAC "
+        "пользователем %s: %s",
+        user, ok,
     )
 
     return templates.TemplateResponse(
         request,
         "service_action.html",
         {
-            "title":
-                "Перезапуск службы",
-
-            "message":
-                message,
-
-            "ok":
-                ok,
+            "title": "Перезапуск службы",
+            "message": (
+                "Запрошен перезапуск службы с правами "
+                "администратора. После подтверждения UAC "
+                "служба будет перезапущена."
+                if ok
+                else
+                "Не удалось запросить права администратора."
+            ),
+            "ok": ok,
         },
     )
-
-
+    
 # =========================================================
 # SERVICE STOP
 # =========================================================
 
-@app.post(
-    "/service/stop",
-    response_class=HTMLResponse,
-)
+@app.post("/service/stop", response_class=HTMLResponse)
 def service_stop_endpoint(
     request: Request,
-    user: str = Depends(
-        require_auth
-    ),
+    user: str = Depends(require_auth),
 ):
+    # -----------------------------------------------------
+    # Если служба не зарегистрирована — останавливать нечего.
+    # -----------------------------------------------------
 
-    ok, message = (
-        schedule_stop()
-    )
+    if not is_service_registered():
+        return templates.TemplateResponse(
+            request,
+            "service_action.html",
+            {
+                "title": "Остановка службы",
+                "message": "Служба не зарегистрирована.",
+                "ok": False,
+            },
+        )
+
+    # -----------------------------------------------------
+    # Мы сами — служба. Нельзя гасить задачу напрямую,
+    # иначе web-процесс умрёт до отправки ответа.
+    # Используем отложенную остановку.
+    # -----------------------------------------------------
+
+    if get_status().get("service_mode", False):
+        ok, message = schedule_stop()
+
+        logging.info(
+            "Остановка службы (из службы) "
+            "пользователем %s: %s",
+            user, message,
+        )
+
+        return templates.TemplateResponse(
+            request,
+            "service_action.html",
+            {
+                "title": "Остановка службы",
+                "message": message,
+                "ok": ok,
+            },
+        )
+
+    # -----------------------------------------------------
+    # Мы интерактивная копия и админ — можно гасить задачу
+    # напрямую, текущий процесс не пострадает.
+    # -----------------------------------------------------
+
+    if is_admin():
+        ok, message = stop_service()
+
+        logging.info(
+            "Остановка службы пользователем %s: %s",
+            user, message,
+        )
+
+        return templates.TemplateResponse(
+            request,
+            "service_action.html",
+            {
+                "title": "Остановка службы",
+                "message": message,
+                "ok": ok,
+            },
+        )
+
+    # -----------------------------------------------------
+    # Не админ — запрашиваем UAC. Дочерний процесс вызовет
+    # --stop-service и корректно остановит задачу.
+    # -----------------------------------------------------
+
+    ok = relaunch_elevated(["--stop-service"])
 
     logging.info(
-        "Остановка службы "
-        "запрошена пользователем %s: %s",
-        user,
-        message,
+        "Запрошена остановка службы через UAC "
+        "пользователем %s: %s",
+        user, ok,
     )
 
     return templates.TemplateResponse(
         request,
         "service_action.html",
         {
-            "title":
-                "Остановка службы",
-
-            "message":
-                message,
-
-            "ok":
-                ok,
+            "title": "Остановка службы",
+            "message": (
+                "Запрошена остановка службы с правами "
+                "администратора. После подтверждения UAC "
+                "служба будет остановлена."
+                if ok
+                else
+                "Не удалось запросить права администратора."
+            ),
+            "ok": ok,
         },
     )
-
 
 # =========================================================
 # SERVICE UNINSTALL
 # =========================================================
-
 @app.post(
     "/service/uninstall",
     response_class=HTMLResponse,
 )
 def service_uninstall_endpoint(
     request: Request,
-    user: str = Depends(
-        require_auth
-    ),
+    user: str = Depends(require_auth),
 ):
+    # -----------------------------------------------------
+    # 1. Precondition — нечего удалять
+    # -----------------------------------------------------
 
     if not is_service_registered():
-
-        return templates.TemplateResponse(
+        return _render_service_action(
             request,
-            "service_action.html",
-            {
-                "title":
-                    "Удаление службы",
-
-                "message":
-                    "Служба не зарегистрирована.",
-
-                "ok":
-                    True,
-            },
+            "Удаление службы",
+            "Служба не зарегистрирована.",
+            ok=True,
         )
 
     # -----------------------------------------------------
-    # Уже администратор
+    # 2. Мы сами — служба. Прямое удаление убьёт наш процесс
+    #    до отправки ответа, поэтому — отложенно.
     # -----------------------------------------------------
 
-    if is_admin():
-
-        ok, message = (
-            uninstall_service()
-        )
+    if is_service_process():
+        ok, message = schedule_uninstall()
 
         logging.info(
-            "Удаление службы "
+            "Удаление службы (из службы) "
             "пользователем %s: %s",
             user,
             message,
         )
 
-        return templates.TemplateResponse(
+        return _render_service_action(
             request,
-            "service_action.html",
-            {
-                "title":
-                    "Удаление службы",
-
-                "message":
-                    message,
-
-                "ok":
-                    ok,
-            },
+            "Удаление службы",
+            message,
+            ok=ok,
         )
 
     # -----------------------------------------------------
-    # UAC
+    # 3. Админ — удаляем напрямую (мы не служба, нас не убьёт)
     # -----------------------------------------------------
 
-    ok = relaunch_elevated(
-        [
-            "--uninstall-service"
-        ]
-    )
+    if is_admin():
+        ok, message = uninstall_service()
+
+        logging.info(
+            "Удаление службы пользователем %s: %s",
+            user,
+            message,
+        )
+
+        return _render_service_action(
+            request,
+            "Удаление службы",
+            message,
+            ok=ok,
+        )
+
+    # -----------------------------------------------------
+    # 4. Не админ — UAC
+    # -----------------------------------------------------
+
+    ok = relaunch_elevated(["--uninstall-service"])
 
     if not ok:
-
-        return templates.TemplateResponse(
+        return _render_service_action(
             request,
-            "service_action.html",
-            {
-                "title":
-                    "Удаление службы",
-
-                "message":
-                    (
-                        "Не удалось запросить "
-                        "права администратора."
-                    ),
-
-                "ok":
-                    False,
-            },
+            "Удаление службы",
+            "Не удалось запросить права администратора.",
+            ok=False,
         )
 
-    return templates.TemplateResponse(
-        request,
-        "service_action.html",
-        {
-            "title":
-                "Удаление службы",
-
-            "message":
-                (
-                    "Запрошено удаление службы "
-                    "с правами администратора. "
-                    "После подтверждения UAC "
-                    "служба будет удалена."
-                ),
-
-            "ok":
-                True,
-        },
+    logging.info(
+        "Запрошено удаление службы через UAC "
+        "пользователем %s",
+        user,
     )
 
+    return _render_service_action(
+        request,
+        "Удаление службы",
+        "Запрошено удаление службы с правами администратора. "
+        "После подтверждения UAC служба будет удалена.",
+        ok=True,
+    )
 
 # =========================================================
 # ADD ROUTER
