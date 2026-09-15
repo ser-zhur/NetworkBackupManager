@@ -85,12 +85,18 @@
             }
         }
 
-        // Автоматический опрос сервера каждые 2 секунды без перезагрузки всей страницы
         setInterval(() => {
             if (autoRefresh) {
                 const isAtBottom = container.scrollHeight - container.clientHeight <= container.scrollTop + 60;
-                
-                fetch(window.location.pathname + '?limit={{ limit }}&raw=true')
+
+                // Сохраняем существующие query-параметры
+                // (например, stream=stdout для /logs/service)
+                // и накладываем поверх limit/raw.
+                const params = new URLSearchParams(window.location.search);
+                params.set('limit', '{{ limit }}');
+                params.set('raw', 'true');
+
+                fetch(window.location.pathname + '?' + params.toString())
                     .then(res => res.text())
                     .then(text => {
                         if (container.textContent !== text) {

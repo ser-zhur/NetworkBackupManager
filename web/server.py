@@ -2319,59 +2319,9 @@ def edit_router(
             "<h3>Устройство не найдено</h3>",
             status_code=404,
         )
-
     router = copy.deepcopy(
         plugin["routers"][index]
     )
-
-    if (
-        "ssh_pass" in router
-        and router["ssh_pass"]
-    ):
-
-        router[
-            "ssh_pass_decrypted"
-        ] = storage.decrypt(
-            router["ssh_pass"]
-        )
-
-    else:
-
-        router[
-            "ssh_pass_decrypted"
-        ] = ""
-
-    if (
-        "ftp" in router
-        and isinstance(
-            router["ftp"],
-            dict,
-        )
-    ):
-
-        if (
-            "pass"
-            in router["ftp"]
-            and router["ftp"]["pass"]
-        ):
-
-            router[
-                "ftp"
-            ][
-                "pass_decrypted"
-            ] = storage.decrypt(
-                router[
-                    "ftp"
-                ]["pass"]
-            )
-
-        else:
-
-            router[
-                "ftp"
-            ][
-                "pass_decrypted"
-            ] = ""
 
     return templates.TemplateResponse(
         request,
@@ -2451,6 +2401,15 @@ async def update_router(
             detail="Устройство не найдено",
         )
 
+    # Сохраняем старый роутер — из него берём пароли,
+    # если пользователь не ввёл новые (оставил поле пустым).
+    old_router = routers_list[index]
+
+    if ssh_pass:
+        ssh_pass_encrypted = storage.encrypt(ssh_pass)
+    else:
+        ssh_pass_encrypted = old_router.get("ssh_pass", "")
+
     updated_router = {
         "host":
             ip,
@@ -2462,11 +2421,7 @@ async def update_router(
             username,
 
         "ssh_pass":
-            storage.encrypt(
-                ssh_pass
-            )
-            if ssh_pass
-            else "",
+            ssh_pass_encrypted,
 
         "backup_path":
             backup_path,
@@ -2514,9 +2469,14 @@ async def update_router(
 
     if ftp_host:
 
-        updated_router[
-            "ftp"
-        ] = {
+        # Если новый FTP-пароль не введён — оставляем старый.
+        if ftp_pass:
+            ftp_pass_encrypted = storage.encrypt(ftp_pass)
+        else:
+            old_ftp = old_router.get("ftp") or {}
+            ftp_pass_encrypted = old_ftp.get("pass", "")
+
+        updated_router["ftp"] = {
             "host":
                 ftp_host,
 
@@ -2530,11 +2490,7 @@ async def update_router(
                 ftp_user,
 
             "pass":
-                storage.encrypt(
-                    ftp_pass
-                )
-                if ftp_pass
-                else "",
+                ftp_pass_encrypted,
         }
 
     routers_list[
