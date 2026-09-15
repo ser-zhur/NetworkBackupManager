@@ -115,44 +115,83 @@ class BackupScheduler:
             # ожидание с возможностью мгновенной остановки
             self._stop_event.wait(30)
 
+
     def _should_run(self) -> bool:
-        """Проверка условия наступления времени бэкапа"""
+        """Проверка условия наступления времени бэкапа."""
 
         now = datetime.now()
         last_run_str = self.config.get("last_run")
         mode = self.config.get("mode", "daily")
 
-        # Если бэкап ещё ни разу не запускался
-        if not last_run_str:
-            if mode == "daily":
-                return now.strftime("%H:%M") == self.config.get(
-                    "daily_time",
-                    "03:00",
+        # ---- Разбор last_run ----
+        last_run = None
+        if last_run_str:
+            try:
+                last_run = datetime.strptime(
+                    last_run_str,
+                    "%Y-%m-%d %H:%M:%S",
                 )
-            return True
+            except ValueError:
+                logging.warning(
+                    "Некорректный last_run в scheduler.json: %r; "
+                    "считаем, что бэкапов ещё не было",
+                    last_run_str,
+                )
+                last_run = None
 
-        try:
-            last_run = datetime.strptime(last_run_str, "%Y-%m-%d %H:%M:%S")
-        except ValueError:
-            return True
-
+        # ---- ЕЖЕДНЕВНЫЙ РЕЖИМ ----
         if mode == "daily":
 
-            target_time = self.config.get("daily_time", "03:00")
+            target_time_str = self.config.get("daily_time", "03:00")
 
-            # Сегодня ещё не запускали и время совпало
-            if (
-                last_run.date() < now.date()
-                and now.strftime("%H:%M") == target_time
-            ):
+            try:
+                target_time = datetime.strptime(
+                    target_time_str,
+                    "%H:%M",
+                ).time()
+            except ValueError:
+                logging.warning(
+                    "Некорректный daily_time в scheduler.json: %r; "
+                    "использую 03:00",
+                    target_time_str,
+                )
+                target_time = datetime.strptime("03:00", "%H:%M").time()
+
+            target_dt = datetime.combine(now.date(), target_time)
+
+            # Пока цель не наступила — не запускаем.
+            if now < target_dt:
+                return False
+
+            # Первый запуск: цель наступила, last_run ещё нет.
+            if last_run is None:
                 return True
 
-        elif mode == "interval":
+            # Догоняющий запуск: если приложение было выключено
+            # в момент цели (или было занято), бэкап отработает
+            # при первой возможности, а не пропустится до завтра.
+            return last_run < target_dt
 
-            interval_h = int(self.config.get("interval_hours", 24))
+        # ---- ИНТЕРВАЛЬНЫЙ РЕЖИМ ----
+        if mode == "interval":
 
-            if now - last_run >= timedelta(hours=interval_h):
+            try:
+                interval_h = int(self.config.get("interval_hours", 24))
+            except (TypeError, ValueError):
+                logging.warning(
+                    "Некорректный interval_hours в scheduler.json: %r; "
+                    "использую 24",
+                    self.config.get("interval_hours"),
+                )
+                interval_h = 24
+
+            if interval_h < 1:
+                interval_h = 1
+
+            if last_run is None:
                 return True
+
+            return (now - last_run) >= timedelta(hours=interval_h)
 
         return False
 

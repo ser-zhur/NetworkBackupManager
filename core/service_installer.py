@@ -460,6 +460,43 @@ def _get_windows_service_state() -> str:
     return state
 
 # =========================================================
+# SERVICE STATE SNAPSHOT
+# =========================================================
+#
+# На Windows get_status() раньше делал три PowerShell-вызова
+# подряд: is_service_registered + is_os_service_running +
+# _get_windows_service_state. Собираем всё за один вызов.
+# =========================================================
+
+def _get_service_state_snapshot() -> tuple[bool, bool, str]:
+    """
+    Возвращает (registered, running, task_state) за один опрос.
+
+    task_state: running, stopped, startpending, stoppending,
+                not_found, unknown, active, installed
+    """
+    if IS_WINDOWS:
+        state = _get_windows_service_state()
+        return (
+            state != "not_found",
+            state == "running",
+            state,
+        )
+
+    if IS_LINUX:
+        registered = os.path.exists(
+            os.path.join("/etc/systemd/system", LINUX_UNIT)
+        )
+        if not registered:
+            return (False, False, "not_found")
+
+        result = _run(["systemctl", "is-active", LINUX_UNIT])
+        active = (result.stdout or "").strip() == "active"
+        return (True, active, "active" if active else "installed")
+
+    return (False, False, "unknown")
+
+# =========================================================
 # SERVICE STATUS
 # =========================================================
 
@@ -487,24 +524,62 @@ def is_os_service_running() -> bool:
 
     return False
 
+# =========================================================
+# STATUS CACHE
+# =========================================================
+#
+# get_status() вызывается на каждой отрисовке главной и
+# /service (которая ещё и перезагружается каждые 10 секунд).
+# Кэшируем на STATUS_CACHE_TTL секунд — этого достаточно,
+# чтобы убрать основную часть вызовов, и при этом
+# пользователь не видит устаревших данных.
+# =========================================================
 
-def get_status() -> dict:
-    """Полный статус службы для web-интерфейса."""
+STATUS_CACHE_TTL = 3.0
 
-    registered = is_service_registered()
-    running = is_os_service_running() if registered else False
+_status_cache_lock = threading.Lock()
+_status_cache_value: dict | None = None
+_status_cache_time: float = 0.0
 
-    if IS_WINDOWS:
-        task_state = _get_windows_service_state()
-    else:
-        if running:
-            task_state = "active"
-        elif registered:
-            task_state = "installed"
-        else:
-            task_state = "not_found"
-            
-    return {
+
+def invalidate_status_cache() -> None:
+    """
+    Сбросить кэш статуса службы.
+
+    Вызывайте после действий, меняющих состояние службы
+    (install/start/stop/restart/uninstall), чтобы UI сразу
+    увидел свежие данные, а не ждал STATUS_CACHE_TTL.
+    """
+    global _status_cache_value, _status_cache_time
+
+    with _status_cache_lock:
+        _status_cache_value = None
+        _status_cache_time = 0.0
+
+
+def get_status(use_cache: bool = True) -> dict:
+    """Полный статус службы для web-интерфейса.
+
+    Результат кэшируется на STATUS_CACHE_TTL секунд.
+    use_cache=False — получить свежие данные принудительно.
+    """
+
+    global _status_cache_value, _status_cache_time
+
+    now = time.time()
+
+    if use_cache:
+        with _status_cache_lock:
+            if (
+                _status_cache_value is not None
+                and (now - _status_cache_time) < STATUS_CACHE_TTL
+            ):
+                return _status_cache_value
+
+    # ---- один опрос вместо трёх ----
+    registered, running, task_state = _get_service_state_snapshot()
+
+    result = {
         "registered": registered,
         "os_running": running,
         "http_up": is_http_up(),
@@ -520,7 +595,11 @@ def get_status() -> dict:
         "base_dir": str(BASE_DIR.resolve()),
     }
 
+    with _status_cache_lock:
+        _status_cache_value = result
+        _status_cache_time = now
 
+    return result
 # =========================================================
 # ELEVATION
 # =========================================================

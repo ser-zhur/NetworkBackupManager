@@ -64,6 +64,7 @@ from core.service_installer import (
     is_service_registered,
     is_service_process,
     relaunch_elevated,
+    invalidate_status_cache,
 )
 
 from core.context import (
@@ -183,6 +184,8 @@ async def lifespan(
     logging.info(
         "🚀 Запуск планировщика..."
     )
+    
+    invalidate_status_cache()
 
     scheduler.start()
 
@@ -195,7 +198,8 @@ async def lifespan(
         logging.info(
             "🛑 Остановка планировщика..."
         )
-
+        
+        invalidate_status_cache()
         scheduler.stop()
 
 
@@ -650,6 +654,8 @@ def execute_device_backup_task(
         )
 
         logging.info("🚀 [Фон] Запуск бэкапа: %s", ip_disp)
+        
+        invalidate_status_cache()
 
         created_files = backup_func(secure_router)
 
@@ -660,6 +666,8 @@ def execute_device_backup_task(
             )
 
         logging.info("✅ [Фон] Бэкап успешно завершен для %s", ip_disp)
+        
+        invalidate_status_cache()
 
     except Exception as exc:
         logging.error("❌ [Фон] Ошибка при бэкапе: %s", exc)
@@ -908,6 +916,8 @@ def service_install_endpoint(
             user,
             message,
         )
+        
+        invalidate_status_cache()
 
         return _render_service_action(
             request,
@@ -939,6 +949,8 @@ def service_install_endpoint(
         "пользователем %s",
         user,
     )
+    
+    invalidate_status_cache()
 
     return _render_service_action(
         request,
@@ -993,6 +1005,8 @@ def service_start_endpoint(
             user,
             message,
         )
+        
+        invalidate_status_cache()
 
         return templates.TemplateResponse(
             request,
@@ -1070,6 +1084,8 @@ def service_restart_endpoint(
             "пользователем %s: %s",
             user, message,
         )
+        
+        invalidate_status_cache()
 
         return templates.TemplateResponse(
             request,
@@ -1093,6 +1109,8 @@ def service_restart_endpoint(
             "Перезапуск службы пользователем %s: %s",
             user, message,
         )
+        
+        invalidate_status_cache()
 
         return templates.TemplateResponse(
             request,
@@ -1116,6 +1134,8 @@ def service_restart_endpoint(
         "пользователем %s: %s",
         user, ok,
     )
+    
+    invalidate_status_cache()
 
     return templates.TemplateResponse(
         request,
@@ -1172,6 +1192,8 @@ def service_stop_endpoint(
             "пользователем %s: %s",
             user, message,
         )
+        
+        invalidate_status_cache()
 
         return templates.TemplateResponse(
             request,
@@ -1195,6 +1217,8 @@ def service_stop_endpoint(
             "Остановка службы пользователем %s: %s",
             user, message,
         )
+        
+        invalidate_status_cache()
 
         return templates.TemplateResponse(
             request,
@@ -1218,6 +1242,8 @@ def service_stop_endpoint(
         "пользователем %s: %s",
         user, ok,
     )
+    
+    invalidate_status_cache()
 
     return templates.TemplateResponse(
         request,
@@ -1273,6 +1299,8 @@ def service_uninstall_endpoint(
             user,
             message,
         )
+        
+        invalidate_status_cache()
 
         return _render_service_action(
             request,
@@ -1293,6 +1321,8 @@ def service_uninstall_endpoint(
             user,
             message,
         )
+        
+        invalidate_status_cache()
 
         return _render_service_action(
             request,
@@ -1320,6 +1350,8 @@ def service_uninstall_endpoint(
         "пользователем %s",
         user,
     )
+    
+    invalidate_status_cache()
 
     return _render_service_action(
         request,
@@ -1538,6 +1570,8 @@ async def save_router_endpoint(
         device_type,
         ip,
     )
+    
+    invalidate_status_cache()
 
     return RedirectResponse(
         url="/",
@@ -1908,6 +1942,8 @@ async def save_scheduler_config(
         "планировщика: %s",
         scheduler.get_status_text(),
     )
+    
+    invalidate_status_cache()
 
     return RedirectResponse(
         url="/",
@@ -2539,6 +2575,8 @@ async def update_router(
         index,
         ip,
     )
+    
+    invalidate_status_cache()
 
     return RedirectResponse(
         url="/",
