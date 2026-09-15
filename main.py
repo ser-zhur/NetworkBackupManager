@@ -22,6 +22,7 @@ import webbrowser
 import threading
 from pathlib import Path
 
+logger = logging.getLogger("nbm.main")
 
 # =========================================================
 # ОСНОВНЫЕ ПУТИ
@@ -87,7 +88,7 @@ def ensure_console() -> bool:
 
     except Exception:
         # FIX: не глотаем молча — оставляем след в логе.
-        logging.debug(
+        logger.debug(
             "ensure_console: не удалось создать консоль",
             exc_info=True,
         )
@@ -107,6 +108,19 @@ from core.context import (
     ensure_web_files,
     load_json,
 )
+
+# =========================================================
+# ЛОГИРОВАНИЕ
+# =========================================================
+# Все логгеры в проекте пишут в logs/app.log с форматом:
+# время [УРОВЕНЬ] [device] имя_логгера: сообщение
+#
+# =========================================================
+
+from core.logger import setup_logging
+
+setup_logging()
+
 
 from core.service_installer import (
     is_admin,
@@ -591,7 +605,7 @@ def get_web_config() -> tuple[str, int]:
     # host
     host = config.get("host", DEFAULT_HOST)
     if not isinstance(host, str) or not host.strip():
-        logging.warning(
+        logger.warning(
             "Некорректный host в конфиге (%r), использую %s",
             host,
             DEFAULT_HOST,
@@ -605,7 +619,7 @@ def get_web_config() -> tuple[str, int]:
         if not (1 <= port <= 65535):
             raise ValueError("порт вне диапазона 1..65535")
     except (TypeError, ValueError) as exc:
-        logging.warning(
+        logger.warning(
             "Некорректный port в конфиге (%r): %s; использую %s",
             raw_port,
             exc,
@@ -624,7 +638,7 @@ def open_browser_when_ready() -> None:
 
     try:
         if not wait_for_http(20):
-            logging.warning(
+            logger.warning(
                 "Веб-сервер не ответил за 20 секунд — браузер не открыт."
             )
             return
@@ -632,11 +646,11 @@ def open_browser_when_ready() -> None:
         host, port = get_web_config()
         url = f"http://{host}:{port}"
 
-        logging.info("Открытие браузера: %s", url)
+        logger.info("Открытие браузера: %s", url)
         webbrowser.open(url, new=2)
 
     except Exception as exc:
-        logging.error("Не удалось открыть браузер: %s", exc)
+        logger.error("Не удалось открыть браузер: %s", exc)
 
 
 def start_browser_thread() -> None:
@@ -660,7 +674,7 @@ def run_web_server() -> None:
 
     host, port = get_web_config()
 
-    logging.info(
+    logger.info(
         "Запуск NetworkBackupManager на %s:%s",
         host,
         port,
@@ -690,7 +704,7 @@ def run_application(skip_service_install: bool = False) -> int:
     # -----------------------------------------------------
 
     if is_service_process():
-        logging.info("Приложение запущено в режиме службы.")
+        logger.info("Приложение запущено в режиме службы.")
         run_web_server()
         return 0
 
@@ -699,7 +713,7 @@ def run_application(skip_service_install: bool = False) -> int:
     # -----------------------------------------------------
 
     if skip_service_install:
-        logging.info(
+        logger.info(
             "Запуск без установки службы (--skip-service-install)."
         )
         start_browser_thread()
@@ -711,7 +725,7 @@ def run_application(skip_service_install: bool = False) -> int:
     # -----------------------------------------------------
 
     if not is_service_registered():
-        logging.info("Служба не зарегистрирована.")
+        logger.info("Служба не зарегистрирована.")
 
         if not is_admin():
             print("Для первого запуска требуются права администратора.")
@@ -722,7 +736,7 @@ def run_application(skip_service_install: bool = False) -> int:
                 print("Не удалось получить права администратора.")
                 return 1
 
-            logging.info(
+            logger.info(
                 "Launcher завершает работу: запущена "
                 "копия с повышенными правами."
             )
@@ -734,7 +748,7 @@ def run_application(skip_service_install: bool = False) -> int:
             print(message)
             return 1
 
-        logging.info("Служба установлена: %s", message)
+        logger.info("Служба установлена: %s", message)
 
     else:
         # -------------------------------------------------
@@ -746,13 +760,13 @@ def run_application(skip_service_install: bool = False) -> int:
             from core.service_installer import is_os_service_running
 
             if not is_os_service_running():
-                logging.info(
+                logger.info(
                     "Служба зарегистрирована, но не запущена."
                 )
                 start_service()
 
         except Exception as exc:
-            logging.error("Ошибка запуска службы: %s", exc)
+            logger.error("Ошибка запуска службы: %s", exc)
 
     # -----------------------------------------------------
     # После установки/запуска службы открываем браузер.
@@ -866,6 +880,10 @@ if __name__ == "__main__":
         sys.exit(130)
 
     except Exception as exc:
+
+        # FIX: теперь критичная ошибка гарантированно попадает
+        # в app.log с полным traceback.
+        logger.exception("Критическая ошибка в main()")
 
         try:
             ensure_console()

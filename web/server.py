@@ -12,7 +12,6 @@ import time
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
-from logging.handlers import RotatingFileHandler
 from contextlib import asynccontextmanager
 
 from fastapi import (
@@ -78,50 +77,17 @@ from core.context import (
     load_json,
 )
 
+from core.logger import (
+    setup_logging,
+    set_device_context,
+    clear_device_context,
+)
 
 # =========================================================
 # LOGGING
 # =========================================================
 
-LOGS_DIR.mkdir(
-    parents=True,
-    exist_ok=True,
-)
-
-file_handler = RotatingFileHandler(
-    LOGS_DIR / "app.log",
-    maxBytes=2 * 1024 * 1024,
-    backupCount=3,
-    encoding="utf-8",
-)
-
-file_handler.setFormatter(
-    logging.Formatter(
-        "%(asctime)s "
-        "[%(levelname)s] "
-        "%(message)s"
-    )
-)
-
-logging.basicConfig(
-    level=logging.INFO,
-    handlers=[
-        file_handler,
-        logging.StreamHandler(),
-    ],
-    force=True,
-)
-
-# Отключаем запись access-логов uvicorn в app.log
-for _name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
-    _lg = logging.getLogger(_name)
-    _lg.propagate = False
-    if not _lg.handlers:
-        _console = logging.StreamHandler()
-        _console.setFormatter(logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-        ))
-        _lg.addHandler(_console)
+setup_logging()
 
 # =========================================================
 # BACKUP STATE
@@ -471,6 +437,25 @@ def _schedule_self_exit(delay: float = 5.0) -> None:
         daemon=True,
     ).start()
 
+def _device_filter_tag(device_type: str, index: int) -> str | None:
+    """
+    Возвращает тег вида '<device_type>/<host>' для фильтрации
+    строк app.log, или None, если устройство не найдено.
+    """
+    if not plugin_manager or device_type not in plugin_manager._plugins:
+        return None
+
+    routers = plugin_manager._plugins[device_type].get("routers", [])
+    if not (0 <= index < len(routers)):
+        return None
+
+    router = routers[index]
+    host = router.get("host") or router.get("ip") or router.get("address")
+    if not host:
+        return None
+
+    return f"{device_type}/{host}"
+
 # =========================================================
 # LOG READER
 # =========================================================
@@ -478,10 +463,16 @@ def _schedule_self_exit(delay: float = 5.0) -> None:
 def read_log_tail(
     file_path: Path,
     limit: str = "100",
+    filter_tag: str | None = None,
 ):
+    """
+    Читает хвост файла логов.
+
+    Если filter_tag задан — оставляет только строки,
+    содержащие подстроку '[filter_tag]' (маркер устройства).
+    """
 
     if not file_path.exists():
-
         return (
             "Лог-файл пока отсутствует...",
             0,
@@ -489,56 +480,36 @@ def read_log_tail(
         )
 
     try:
-
         with open(
             file_path,
             "r",
             encoding="utf-8",
             errors="ignore",
         ) as f:
-
             lines = f.readlines()
-
-        total_lines = len(lines)
-
-        if limit == "all":
-
-            return (
-                "".join(lines),
-                total_lines,
-                False,
-            )
-
-        max_l = (
-            int(limit)
-            if limit.isdigit()
-            else 100
-        )
-
-        if total_lines > max_l:
-
-            tail = lines[-max_l:]
-
-            return (
-                "".join(tail),
-                len(tail),
-                True,
-            )
-
-        return (
-            "".join(lines),
-            total_lines,
-            False,
-        )
-
     except Exception as exc:
-
         return (
             f"Ошибка чтения файла логов: {exc}",
             0,
             False,
         )
 
+    if filter_tag:
+        needle = f"[{filter_tag}]"
+        lines = [ln for ln in lines if needle in ln]
+
+    total_lines = len(lines)
+
+    if limit == "all":
+        return ("".join(lines), total_lines, False)
+
+    max_l = int(limit) if limit.isdigit() else 100
+
+    if total_lines > max_l:
+        tail = lines[-max_l:]
+        return ("".join(tail), len(tail), True)
+
+    return ("".join(lines), total_lines, False)
 
 # =========================================================
 # BACKUP INFO
@@ -651,26 +622,25 @@ def execute_device_backup_task(
     index: int,
     secure_router: dict,
 ):
+    host = (
+        secure_router.get("host")
+        or secure_router.get("ip")
+        or f"#{index}"
+    )
+
+    set_device_context(f"{device_type}/{host}")
 
     backup_started()
-
     try:
-
         plugin = (
-            plugin_manager
-            ._plugins
-            .get(device_type)
-            if plugin_manager
-            else None
+            plugin_manager._plugins.get(device_type)
+            if plugin_manager else None
         )
 
         if not plugin:
             return
 
-        backup_func = plugin.get(
-            "func"
-        )
-
+        backup_func = plugin.get("func")
         if not backup_func:
             return
 
@@ -679,54 +649,24 @@ def execute_device_backup_task(
             or secure_router.get("ip")
         )
 
-        logging.info(
-            "🚀 [Фон] Запуск бэкапа: "
-            "%s / %s",
-            device_type,
-            ip_disp,
-        )
+        logging.info("🚀 [Фон] Запуск бэкапа: %s", ip_disp)
 
-        created_files = (
-            backup_func(
-                secure_router
-            )
-        )
+        created_files = backup_func(secure_router)
 
-        if (
-            created_files
-            and hasattr(
-                plugin_manager,
-                "_rotate_local",
-            )
-        ):
-
+        if created_files and hasattr(plugin_manager, "_rotate_local"):
             plugin_manager._rotate_local(
-                secure_router.get(
-                    "backup_path"
-                ),
-                secure_router.get(
-                    "max_backups",
-                    7,
-                ),
+                secure_router.get("backup_path"),
+                secure_router.get("max_backups", 7),
             )
 
-        logging.info(
-            "✅ [Фон] Бэкап успешно "
-            "завершен для %s",
-            ip_disp,
-        )
+        logging.info("✅ [Фон] Бэкап успешно завершен для %s", ip_disp)
 
     except Exception as exc:
-
-        logging.error(
-            "❌ [Фон] Ошибка при бэкапе: %s",
-            exc,
-        )
+        logging.error("❌ [Фон] Ошибка при бэкапе: %s", exc)
 
     finally:
-
         backup_finished()
-
+        clear_device_context()
 
 def execute_all_backups_task():
 
@@ -2190,6 +2130,51 @@ def logs_global_endpoint(
         },
     )
 
+# =========================================================
+# SERVICE LOGS (stdout/stderr NSSM)
+# =========================================================
+
+@app.get(
+    "/logs/service",
+    response_class=HTMLResponse,
+)
+def logs_service_endpoint(
+    request: Request,
+    stream: str = "stderr",
+    limit: str = "100",
+    raw: bool = False,
+    user: str = Depends(require_auth),
+):
+    filename = (
+        "service_stdout.log"
+        if stream == "stdout"
+        else "service_stderr.log"
+    )
+
+    log_file = LOGS_DIR / filename
+
+    content, lines_shown, has_more = read_log_tail(log_file, limit)
+
+    if raw:
+        return HTMLResponse(content, media_type="text/plain")
+
+    label = (
+        "Service stdout (NSSM)"
+        if stream == "stdout"
+        else "Service stderr (NSSM)"
+    )
+
+    return templates.TemplateResponse(
+        request,
+        "logs.html",
+        {
+            "log_type": label,
+            "content": content,
+            "lines_shown": int(lines_shown),
+            "has_more": has_more,
+            "limit": limit,
+        },
+    )
 
 # =========================================================
 # DEVICE LOG
@@ -2252,10 +2237,16 @@ def device_logs(
         / "app.log"
     )
 
+    filter_tag = _device_filter_tag(
+        device_type,
+        index,
+    )
+
     content, lines_shown, has_more = (
         read_log_tail(
             log_file,
             limit,
+            filter_tag=filter_tag,
         )
     )
 

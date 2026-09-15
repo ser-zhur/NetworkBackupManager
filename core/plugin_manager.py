@@ -350,52 +350,48 @@ class PluginManager:
         failed = 0
 
         def worker(task):
+            # Импорт локальный — чтобы не создавать цикл на этапе импорта модуля.
+            from core.logger import (
+                set_device_context,
+                clear_device_context,
+            )
 
             device_type = task["device_type"]
             plugin_func = task["plugin_func"]
             router = task["router"]
 
             ip = router.get("ip", router.get("host", "Unknown"))
-            max_backups = router.get("max_backups", 7)
-            backup_path = router["backup_path"]
-            ftp_config = router.get("ftp")
 
-            secure_router = copy.deepcopy(router)
+            set_device_context(f"{device_type}/{ip}")
 
-            if "ssh_pass" in secure_router:
-                secure_router["ssh_pass"] = self.storage.decrypt(
-                    secure_router["ssh_pass"]
-                )
+            try:
+                max_backups = router.get("max_backups", 7)
+                backup_path = router["backup_path"]
+                ftp_config = router.get("ftp")
 
-            logging.info(
-                "🔄 [%s] Старт бэкапа: %s",
-                device_type,
-                ip,
-            )
+                secure_router = copy.deepcopy(router)
 
-            created_files = plugin_func(secure_router)
+                if "ssh_pass" in secure_router:
+                    secure_router["ssh_pass"] = self.storage.decrypt(
+                        secure_router["ssh_pass"]
+                    )
 
-            if created_files:
+                logging.info("🔄 Старт бэкапа: %s", ip)
 
-                self._rotate_local(backup_path, max_backups)
+                created_files = plugin_func(secure_router)
 
-                if ftp_config:
-                    self._upload_to_ftp(ftp_config, created_files)
+                if created_files:
+                    self._rotate_local(backup_path, max_backups)
+                    if ftp_config:
+                        self._upload_to_ftp(ftp_config, created_files)
+                    logging.info("✅ Успешно: %s", ip)
+                else:
+                    logging.warning("⚠ Файлы не созданы: %s", ip)
 
-                logging.info(
-                    "✅ [%s] Успешно: %s",
-                    device_type,
-                    ip,
-                )
+                return ip
 
-            else:
-                logging.warning(
-                    "⚠ [%s] Файлы не созданы: %s",
-                    device_type,
-                    ip,
-                )
-
-            return ip
+            finally:
+                clear_device_context()
 
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
 
