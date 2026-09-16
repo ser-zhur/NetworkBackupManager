@@ -1,75 +1,110 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Архивы {{ device_type }}</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    {% include "_base_head.html" %}
+    <title>Архивы {{ device_type }} — Network Backup Manager</title>
 </head>
-<body class="bg-gray-100 p-6 min-h-screen text-gray-800">
-    <div class="max-w-4xl mx-auto bg-white rounded-xl shadow p-6">
-        
-        <!-- Шапка -->
-        <div class="flex items-center justify-between mb-6 border-b border-gray-200 pb-4">
-            <div>
-                <h1 class="text-2xl font-bold flex items-center gap-2 text-gray-900">
-                    📁 Архивы бэкапов: <span class="text-blue-600">{{ router.host or router.ip }}</span>
-                </h1>
-                <p class="text-xs text-gray-500 font-mono mt-1">
-                    Тип: <span class="font-semibold text-gray-700">{{ device_type }}</span> | Каталог: {{ backup_path }}
-                </p>
-            </div>
+<body class="bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-slate-100 transition-colors min-h-screen">
 
-            <a href="/" class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-4 py-2 rounded-lg text-sm font-medium transition shadow-sm">
-                ← Назад
-            </a>
+{% with header_subtitle = "Архивы бэкапов" %}
+    {% include "_header.html" %}
+{% endwith %}
+
+<main class="max-w-5xl mx-auto px-5 py-8">
+
+    <!-- Заголовок -->
+    <div class="flex flex-wrap items-start justify-between gap-4 mb-6">
+        <div class="min-w-0">
+            <h1 class="text-2xl font-bold text-gray-900 dark:text-slate-100 flex items-center gap-2">
+                📁 Архивы:
+                <span class="font-mono text-brand-600 dark:text-brand-400">
+                    {{ router.host or router.ip }}
+                </span>
+            </h1>
+            <p class="text-xs text-gray-500 dark:text-slate-400 font-mono mt-1 flex flex-wrap items-center gap-2">
+                <span class="px-1.5 py-0.5 rounded bg-brand-100 dark:bg-brand-900/60 text-brand-700 dark:text-brand-300 font-semibold uppercase">{{ device_type }}</span>
+                <span>·</span>
+                <span>Каталог: {{ backup_path }}</span>
+            </p>
         </div>
 
-        <!-- Список каталогов/дат -->
-        {% if grouped_backups %}
-            <div class="space-y-6">
-                {% for date_folder, files in grouped_backups.items() %}
-                    <div class="bg-gray-50 border border-gray-200 rounded-xl overflow-hidden shadow-sm">
-                        <!-- Заголовок папки/даты -->
-                        <div class="bg-gray-200/70 border-b border-gray-200 px-4 py-2.5 font-bold text-sm text-gray-700 flex items-center justify-between">
-                            <span class="flex items-center gap-2">
-                                📅 Каталог: <span class="font-mono text-blue-900">{{ date_folder }}</span>
-                            </span>
-                            <span class="text-xs font-normal text-gray-600 bg-white px-2 py-0.5 rounded border border-gray-300">
-                                Файлов: {{ files | length }}
-                            </span>
-                        </div>
+        <div class="flex items-center gap-2">
+            <a href="/?selected={{ device_type }}/{{ index }}"
+               class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+                      bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                      border border-gray-200 dark:border-slate-700 transition">
+                ← К устройству
+            </a>
+            <a href="/"
+               class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+                      bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                      border border-gray-200 dark:border-slate-700 transition">
+                🏠 Главная
+            </a>
+        </div>
+    </div>
 
-                        <!-- Список файлов папки -->
-                        <ul class="divide-y divide-gray-200">
-                            {% for f in files %}
-                                <li class="px-4 py-3 flex items-center justify-between hover:bg-white transition">
-                                    <div class="flex items-center gap-3">
-                                        <span class="text-xl">📄</span>
-                                        <div>
-                                            <div class="font-mono text-sm font-medium text-gray-900">{{ f.name }}</div>
-                                            <div class="text-xs text-gray-500 font-mono mt-0.5">Размер: {{ f.size }}</div>
+    {% if grouped_backups %}
+        <div class="space-y-5">
+            {% for date_folder, files in grouped_backups.items() %}
+                <div class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm overflow-hidden">
+
+                    <!-- Заголовок папки -->
+                    <div class="px-5 py-3 border-b border-gray-100 dark:border-slate-800 flex items-center justify-between
+                                bg-gray-50 dark:bg-slate-800/40">
+                        <div class="flex items-center gap-2 text-sm font-semibold">
+                            📅
+                            <span class="font-mono text-brand-700 dark:text-brand-300">{{ date_folder }}</span>
+                        </div>
+                        <span class="text-[11px] font-medium text-gray-600 dark:text-slate-400
+                                     bg-white dark:bg-slate-800 px-2 py-0.5 rounded border border-gray-200 dark:border-slate-700">
+                            Файлов: {{ files | length }}
+                        </span>
+                    </div>
+
+                    <!-- Список файлов -->
+                    <ul class="divide-y divide-gray-100 dark:divide-slate-800">
+                        {% for f in files %}
+                            <li class="px-5 py-3 flex items-center justify-between gap-3
+                                       hover:bg-gray-50 dark:hover:bg-slate-800/40 transition">
+                                <div class="flex items-center gap-3 min-w-0">
+                                    <span class="text-lg shrink-0">📄</span>
+                                    <div class="min-w-0">
+                                        <div class="font-mono text-sm font-medium truncate">{{ f.name }}</div>
+                                        <div class="text-[11px] text-gray-500 dark:text-slate-400 font-mono mt-0.5">
+                                            Размер: {{ f.size }}
                                         </div>
                                     </div>
+                                </div>
 
-                                    <!-- Кнопка скачивания -->
-                                    <a href="/download-backup/{{ device_type }}/{{ index }}/{{ f.rel_path }}" 
-                                       class="bg-blue-600 hover:bg-blue-700 text-white text-xs px-3.5 py-1.5 rounded-lg transition shadow-sm flex items-center gap-1.5 font-medium">
-                                        ⬇ Скачать
-                                    </a>
-                                </li>
-                            {% endfor %}
-                        </ul>
-                    </div>
-                {% endfor %}
-            </div>
-        {% else %}
-            <div class="text-center py-12 bg-gray-50 rounded-xl border border-dashed border-gray-300">
-                <p class="text-gray-400 text-base">
-                    📦 Файлы бэкапов в локальном хранилище отсутствуют.
-                </p>
-            </div>
-        {% endif %}
-    </div>
+                                <a href="/download-backup/{{ device_type }}/{{ index }}/{{ f.rel_path }}"
+                                   class="shrink-0 text-xs px-3 py-1.5 rounded-lg font-medium
+                                          bg-brand-600 hover:bg-brand-700 text-white shadow-sm transition">
+                                    ⬇ Скачать
+                                </a>
+                            </li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="bg-white dark:bg-slate-900 rounded-2xl border border-dashed border-gray-300 dark:border-slate-700 py-16 text-center">
+            <div class="text-5xl mb-4">📦</div>
+            <h2 class="text-lg font-semibold mb-2">Файлы бэкапов отсутствуют</h2>
+            <p class="text-sm text-gray-500 dark:text-slate-400 mb-5">
+                В каталоге <code class="font-mono text-xs px-1.5 py-0.5 rounded bg-gray-100 dark:bg-slate-800">{{ backup_path }}</code>
+                нет датированных подкаталогов с файлами.
+            </p>
+            <a href="/?selected={{ device_type }}/{{ index }}"
+               class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+                      bg-brand-600 hover:bg-brand-700 text-white shadow-sm transition">
+                ← Вернуться к устройству
+            </a>
+        </div>
+    {% endif %}
+
+</main>
+
 </body>
 </html>

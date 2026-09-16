@@ -1,560 +1,216 @@
 <!DOCTYPE html>
 <html lang="ru">
-
 <head>
-
-    <meta charset="UTF-8">
-
-    <meta
-        name="viewport"
-        content="width=device-width, initial-scale=1.0"
-    >
-
-    <meta
-        http-equiv="Cache-Control"
-        content="no-cache, no-store, must-revalidate"
-    >
-
-    <title>Управление службой</title>
-
-    <script src="https://cdn.tailwindcss.com"></script>
-
-    <link
-        rel="icon"
-        href="/static/favicon.ico"
-    >
-
+    {% include "_base_head.html" %}
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <title>Управление службой — Network Backup Manager</title>
 </head>
+<body class="bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-slate-100 transition-colors min-h-screen">
 
+{% with header_subtitle = "Управление службой" %}
+    {% include "_header.html" %}
+{% endwith %}
 
-<body class="bg-gray-100 min-h-screen text-gray-800">
+<main class="max-w-3xl mx-auto px-5 py-8">
 
-
-<div class="container mx-auto px-4 py-10 max-w-3xl">
-
-    <div class="bg-white rounded-xl shadow p-8">
-
-
-        <!-- ================================================= -->
-        <!-- HEADER -->
-        <!-- ================================================= -->
-
-        <div class="flex items-center justify-between mb-8">
-
-            <div>
-
-                <h1 class="text-2xl font-bold text-gray-900">
-                    ⚙ Управление службой
-                </h1>
-
-                <p class="text-sm text-gray-500 mt-1">
-                    Network Backup Manager
-                </p>
-
-            </div>
-
-
-            <a
-                href="/"
-                class="bg-gray-200 hover:bg-gray-300 text-gray-800 font-medium px-4 py-2 rounded-lg text-sm"
-            >
-                ← На главную
-            </a>
-
+    <div class="flex items-center justify-between mb-6">
+        <div>
+            <h1 class="text-2xl font-bold text-gray-900 dark:text-slate-100 flex items-center gap-2">
+                ⚙ Управление службой
+            </h1>
+            <p class="text-sm text-gray-500 dark:text-slate-400 mt-1">Network Backup Manager</p>
         </div>
-
-
-        <!-- ================================================= -->
-        <!-- STATUS -->
-        <!-- ================================================= -->
-
-        <div class="bg-gray-50 border border-gray-200 rounded-xl p-5 mb-8">
-
-            <div class="flex items-center justify-between mb-4">
-
-                <h2 class="font-semibold text-gray-800">
-                    Состояние службы
-                </h2>
-
-                <button
-                    type="button"
-                    onclick="location.reload()"
-                    class="text-xs bg-white border border-gray-300 hover:bg-gray-100 px-3 py-1.5 rounded-lg"
-                >
-                    ↻ Обновить
-                </button>
-
-            </div>
-
-
-            <div class="space-y-3 text-sm">
-
-
-                <!-- REGISTERED -->
-
-                <div class="flex justify-between items-center">
-
-                    <span class="text-gray-500">
-                        Регистрация:
-                    </span>
-
-                    {% if service.registered %}
-
-                    <span class="font-semibold text-emerald-700">
-                        ✓ установлена
-                    </span>
-
-                    {% else %}
-
-                    <span class="font-semibold text-amber-700">
-                        ✗ не установлена
-                    </span>
-
-                    {% endif %}
-
-                </div>
-
-
-                <!-- RUNNING -->
-
-                <div class="flex justify-between items-center">
-
-                    <span class="text-gray-500">
-                        Состояние:
-                    </span>
-
-                    {% if service.os_running %}
-
-                    <span class="font-semibold text-emerald-700">
-                        ● работает
-                    </span>
-
-                    {% elif service.registered %}
-
-                    <span class="font-semibold text-amber-700">
-                        ● остановлена
-                    </span>
-
-                    {% else %}
-
-                    <span class="font-semibold text-gray-500">
-                        —
-                    </span>
-
-                    {% endif %}
-
-                </div>
-
-
-                <!-- TASK STATE -->
-
-                <div class="flex justify-between items-center">
-
-                    <span class="text-gray-500">
-                        Состояние службы:
-                    </span>
-
-                    <span class="font-semibold text-gray-700">
-
-                        {% if service.task_state == "running" %}
-                            работает
-                        {% elif service.task_state == "ready" %}
-                            готова
-                        {% elif service.task_state == "disabled" %}
-                            отключена
-                        {% elif service.task_state == "not_found" %}
-                            не найдена
-                        {% elif service.task_state == "active" %}
-                            активна
-                        {% elif service.task_state == "installed" %}
-                            установлена
-                            
-                        {% elif service.task_state == "stopped" %}
-                            остановлена
-                        {% elif service.task_state == "startpending" %}
-                            запускается
-                        {% elif service.task_state == "stoppending" %}
-                            останавливается
-                        {% else %}
-                            неизвестно
-                        {% endif %}
-
-                    </span>
-
-                </div>
-
-
-                <!-- PROCESS MODE -->
-
-                <div class="flex justify-between items-center">
-
-                    <span class="text-gray-500">
-                        Режим текущего процесса:
-                    </span>
-
-                    {% if service.service_mode %}
-
-                    <span class="font-semibold text-blue-700">
-                        служба
-                    </span>
-
-                    {% else %}
-
-                    <span class="font-semibold text-gray-700">
-                        интерактивный запуск
-                    </span>
-
-                    {% endif %}
-
-                </div>
-
-
-                <!-- ADMIN -->
-
-                <div class="flex justify-between items-center">
-
-                    <span class="text-gray-500">
-                        Административные права:
-                    </span>
-
-                    {% if service.is_admin %}
-
-                    <span class="font-semibold text-emerald-700">
-                        ✓ есть
-                    </span>
-
-                    {% else %}
-
-                    <span class="font-semibold text-amber-700">
-                        ✗ нет
-                    </span>
-
-                    {% endif %}
-
-                </div>
-
-
-                <!-- HTTP -->
-
-                <div class="flex justify-between items-center">
-
-                    <span class="text-gray-500">
-                        Web-сервер:
-                    </span>
-
-                    {% if service.http_up %}
-
-                    <span class="font-semibold text-emerald-700">
-                        ✓ доступен
-                    </span>
-
-                    {% else %}
-
-                    <span class="font-semibold text-gray-500">
-                        ✗ недоступен
-                    </span>
-
-                    {% endif %}
-
-                </div>
-
-
-                <!-- SERVICE NAME -->
-
-                <div class="flex justify-between items-center">
-
-                    <span class="text-gray-500">
-                        Имя службы:
-                    </span>
-
-                    <code class="font-mono text-xs bg-gray-200 px-2 py-1 rounded">
-                        {{ service.service_name }}
-                    </code>
-
-                </div>
-
-
-            </div>
-
-        </div>
-
-
-        <!-- ================================================= -->
-        <!-- ACTIONS -->
-        <!-- ================================================= -->
-
-        <div class="space-y-4">
-
-
-            <!-- ================================================= -->
-            <!-- INSTALL -->
-            <!-- ================================================= -->
-
-            {% if not service.registered %}
-
-            <form
-                action="/service/install"
-                method="POST"
-                onsubmit="return confirm('Зарегистрировать Network Backup Manager как службу Windows?');"
-            >
-
-                <button
-                    type="submit"
-                    class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-medium px-5 py-3 rounded-lg transition shadow"
-                >
-                    ✓ Зарегистрировать службу
-                </button>
-
-            </form>
-
-
-            {% if not service.is_admin %}
-
-            <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
-
-                Для регистрации службы нужны
-                административные права.
-
-                При нажатии кнопки Windows
-                покажет запрос UAC.
-
-            </p>
-
-            {% endif %}
-
-            {% endif %}
-
-
-            <!-- ================================================= -->
-            <!-- START -->
-            <!-- ================================================= -->
-
-            {% if service.registered and not service.os_running %}
-
-            <form
-                action="/service/start"
-                method="POST"
-                onsubmit="return confirm('Запустить службу?');"
-            >
-
-                <button
-                    type="submit"
-                    class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-medium px-5 py-3 rounded-lg transition shadow"
-                >
-                    ▶ Запустить службу
-                </button>
-
-            </form>
-
-            {% endif %}
-
-
-            <!-- ================================================= -->
-            <!-- RESTART -->
-            <!-- ================================================= -->
-
-            {% if service.can_restart %}
-
-            <form
-                action="/service/restart"
-                method="POST"
-                onsubmit="return confirm('Перезапустить службу?');"
-            >
-
-                <button
-                    type="submit"
-                    class="w-full bg-slate-600 hover:bg-slate-700 text-white font-medium px-5 py-3 rounded-lg transition shadow"
-                >
-                    🔄 Перезапустить службу
-                </button>
-
-            </form>
-
-            {% endif %}
-
-
-            <!-- ================================================= -->
-            <!-- STOP -->
-            <!-- ================================================= -->
-
-            {% if service.can_stop %}
-
-            <form
-                action="/service/stop"
-                method="POST"
-                onsubmit="return confirm('Остановить службу? Веб-панель станет недоступна.');"
-            >
-
-                <button
-                    type="submit"
-                    class="w-full bg-rose-700 hover:bg-rose-800 text-white font-medium px-5 py-3 rounded-lg transition shadow"
-                >
-                    ⏹ Остановить службу
-                </button>
-
-            </form>
-
-            {% endif %}
-
-
-            <!-- ================================================= -->
-            <!-- UNINSTALL -->
-            <!-- ================================================= -->
-
-            {% if service.registered %}
-
-            <form
-                action="/service/uninstall"
-                method="POST"
-                onsubmit="return confirm('ВНИМАНИЕ! Удалить службу Network Backup Manager из Windows?');"
-            >
-
-                <button
-                    type="submit"
-                    class="w-full bg-red-800 hover:bg-red-900 text-white font-medium px-5 py-3 rounded-lg transition shadow"
-                >
-                    🗑 Удалить службу
-                </button>
-
-            </form>
-
-
-            {% if not service.is_admin %}
-
-            <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
-
-                Для удаления службы нужны
-                административные права.
-
-                При нажатии кнопки Windows
-                покажет запрос UAC.
-
-            </p>
-
-            {% endif %}
-
-            {% endif %}
-
-
-        </div>
-
-
-        <!-- ================================================= -->
-        <!-- IMPORTANT INFORMATION -->
-        <!-- ================================================= -->
-
-        <div class="mt-8 p-4 bg-blue-50 border border-blue-200 rounded-xl">
-
-            <h3 class="font-semibold text-blue-900 mb-3">
-                Информация
-            </h3>
-
-
-            <ul class="text-xs text-blue-800 space-y-2">
-
-                <li>
-                    • В Windows приложение регистрируется
-                    как <strong>служба Windows</strong>
-                    через <strong>NSSM</strong> с именем
-                    <strong>NetworkBackupManager</strong>.
-                </li>
-
-                <li>
-                    • Служба автоматически стартует
-                    при загрузке системы
-                    (<code class="font-mono bg-blue-100 px-1 rounded">SERVICE_AUTO_START</code>).
-                </li>
-
-                <li>
-                    • При падении процесса служба
-                    автоматически перезапускается через 5 секунд.
-                </li>
-
-                <li>
-                    • При запуске службы используется аргумент
-                    <code class="font-mono bg-blue-100 px-1 rounded">
-                        --service
-                    </code>.
-                </li>
-
-                <li>
-                    • Рабочий каталог службы:
-                    <code class="font-mono bg-blue-100 px-1 rounded break-all">
-                        {{ service.base_dir }}
-                    </code>
-                </li>
-
-                <li>
-                    • Благодаря этому
-                    <code class="font-mono bg-blue-100 px-1 rounded">data</code>,
-                    <code class="font-mono bg-blue-100 px-1 rounded">backups</code>,
-                    <code class="font-mono bg-blue-100 px-1 rounded">plugins</code>
-                    и
-                    <code class="font-mono bg-blue-100 px-1 rounded">logs</code>
-                    используются относительно каталога приложения,
-                    а не
-                    <code class="font-mono bg-blue-100 px-1 rounded">
-                        C:\Windows\System32
-                    </code>.
-                </li>
-
-                <li>
-                    • Логи stdout/stderr службы пишутся в
-                    <code class="font-mono bg-blue-100 px-1 rounded">logs\service_stdout.log</code>
-                    и
-                    <code class="font-mono bg-blue-100 px-1 rounded">logs\service_stderr.log</code>
-                    с авто-ротацией при 10 МБ.
-                </li>
-
-                <li>
-                    • Инсталлятор службы
-                    <strong>не изменяет права SSH-ключей</strong>.
-                    Файлы <code class="font-mono bg-blue-100 px-1 rounded">id_rsa.key</code>
-                    не изменяются, не копируются и не получают новые ACL.
-                </li>
-
-                <li>
-                    • Удаление службы
-                    <strong>не удаляет</strong>
-                    настройки, плагины и резервные копии.
-                </li>
-
-            </ul>
-
-        </div>
-
-
-        <!-- ================================================= -->
-        <!-- AUTO REFRESH -->
-        <!-- ================================================= -->
-
-        {% if service.registered %}
-
-        <div class="mt-5 text-center text-xs text-gray-400">
-
-            Страница автоматически обновляется
-            каждые 10 секунд.
-
-        </div>
-
-        <script>
-
-            setTimeout(function () {
-
-                window.location.reload();
-
-            }, 10000);
-
-        </script>
-
-        {% endif %}
-
-
+        <a href="/" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+                          bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                          border border-gray-200 dark:border-slate-700 transition">
+            ← На главную
+        </a>
     </div>
 
-</div>
+    <!-- Статус -->
+    <div class="bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-2xl shadow-sm p-6 mb-6">
 
+        <div class="flex items-center justify-between mb-5">
+            <h2 class="font-semibold text-gray-900 dark:text-slate-100">Состояние службы</h2>
+            <button type="button" onclick="location.reload()"
+                    class="text-xs bg-gray-50 dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                           border border-gray-200 dark:border-slate-700 px-3 py-1.5 rounded-lg transition">
+                ↻ Обновить
+            </button>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
+
+            <div class="flex justify-between items-center py-2 border-b border-gray-100 dark:border-slate-800">
+                <span class="text-gray-500 dark:text-slate-400">Регистрация:</span>
+                {% if service.registered %}
+                    <span class="font-semibold text-emerald-600 dark:text-emerald-400">✓ установлена</span>
+                {% else %}
+                    <span class="font-semibold text-amber-600 dark:text-amber-400">✗ не установлена</span>
+                {% endif %}
+            </div>
+
+            <div class="flex justify-between items-center py-2 border-b border-gray-100 dark:border-slate-800">
+                <span class="text-gray-500 dark:text-slate-400">Состояние:</span>
+                {% if service.os_running %}
+                    <span class="font-semibold text-emerald-600 dark:text-emerald-400">● работает</span>
+                {% elif service.registered %}
+                    <span class="font-semibold text-amber-600 dark:text-amber-400">● остановлена</span>
+                {% else %}
+                    <span class="font-semibold text-gray-400 dark:text-slate-500">—</span>
+                {% endif %}
+            </div>
+
+            <div class="flex justify-between items-center py-2 border-b border-gray-100 dark:border-slate-800">
+                <span class="text-gray-500 dark:text-slate-400">Состояние службы:</span>
+                <span class="font-semibold text-gray-800 dark:text-slate-200">
+                    {% if service.task_state == "running" %}работает
+                    {% elif service.task_state == "ready" %}готова
+                    {% elif service.task_state == "disabled" %}отключена
+                    {% elif service.task_state == "not_found" %}не найдена
+                    {% elif service.task_state == "active" %}активна
+                    {% elif service.task_state == "installed" %}установлена
+                    {% elif service.task_state == "stopped" %}остановлена
+                    {% elif service.task_state == "startpending" %}запускается
+                    {% elif service.task_state == "stoppending" %}останавливается
+                    {% else %}неизвестно{% endif %}
+                </span>
+            </div>
+
+            <div class="flex justify-between items-center py-2 border-b border-gray-100 dark:border-slate-800">
+                <span class="text-gray-500 dark:text-slate-400">Режим процесса:</span>
+                {% if service.service_mode %}
+                    <span class="font-semibold text-brand-600 dark:text-brand-400">служба</span>
+                {% else %}
+                    <span class="font-semibold text-gray-800 dark:text-slate-200">интерактивный</span>
+                {% endif %}
+            </div>
+
+            <div class="flex justify-between items-center py-2 border-b border-gray-100 dark:border-slate-800">
+                <span class="text-gray-500 dark:text-slate-400">Права администратора:</span>
+                {% if service.is_admin %}
+                    <span class="font-semibold text-emerald-600 dark:text-emerald-400">✓ есть</span>
+                {% else %}
+                    <span class="font-semibold text-amber-600 dark:text-amber-400">✗ нет</span>
+                {% endif %}
+            </div>
+
+            <div class="flex justify-between items-center py-2 border-b border-gray-100 dark:border-slate-800">
+                <span class="text-gray-500 dark:text-slate-400">Web-сервер:</span>
+                {% if service.http_up %}
+                    <span class="font-semibold text-emerald-600 dark:text-emerald-400">✓ доступен</span>
+                {% else %}
+                    <span class="font-semibold text-gray-400 dark:text-slate-500">✗ недоступен</span>
+                {% endif %}
+            </div>
+
+            <div class="flex justify-between items-center py-2 sm:col-span-2">
+                <span class="text-gray-500 dark:text-slate-400">Имя службы:</span>
+                <code class="font-mono text-xs px-2 py-1 rounded bg-gray-100 dark:bg-slate-800
+                             text-gray-800 dark:text-slate-200">{{ service.service_name }}</code>
+            </div>
+        </div>
+    </div>
+
+    <!-- Действия -->
+    <div class="space-y-3">
+
+        {% if not service.registered %}
+        <form action="/service/install" method="POST"
+              onsubmit="return confirm('Зарегистрировать Network Backup Manager как службу Windows?');">
+            <button type="submit"
+                    class="w-full px-5 py-3 rounded-xl text-sm font-medium
+                           bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition">
+                ✓ Зарегистрировать службу
+            </button>
+        </form>
+
+        {% if not service.is_admin %}
+        <p class="text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40
+                  border border-amber-200 dark:border-amber-900 rounded-lg p-3">
+            Для регистрации службы нужны административные права. При нажатии кнопки Windows покажет запрос UAC.
+        </p>
+        {% endif %}
+        {% endif %}
+
+        {% if service.registered and not service.os_running %}
+        <form action="/service/start" method="POST"
+              onsubmit="return confirm('Запустить службу?');">
+            <button type="submit"
+                    class="w-full px-5 py-3 rounded-xl text-sm font-medium
+                           bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition">
+                ▶ Запустить службу
+            </button>
+        </form>
+        {% endif %}
+
+        {% if service.can_restart %}
+        <form action="/service/restart" method="POST"
+              onsubmit="return confirm('Перезапустить службу?');">
+            <button type="submit"
+                    class="w-full px-5 py-3 rounded-xl text-sm font-medium
+                           bg-brand-600 hover:bg-brand-700 text-white shadow-sm transition">
+                🔄 Перезапустить службу
+            </button>
+        </form>
+        {% endif %}
+
+        {% if service.can_stop %}
+        <form action="/service/stop" method="POST"
+              onsubmit="return confirm('Остановить службу? Веб-панель станет недоступна.');">
+            <button type="submit"
+                    class="w-full px-5 py-3 rounded-xl text-sm font-medium
+                           bg-rose-700 hover:bg-rose-800 text-white shadow-sm transition">
+                ⏹ Остановить службу
+            </button>
+        </form>
+        {% endif %}
+
+        {% if service.registered %}
+        <form action="/service/uninstall" method="POST"
+              onsubmit="return confirm('ВНИМАНИЕ! Удалить службу Network Backup Manager из Windows?');">
+            <button type="submit"
+                    class="w-full px-5 py-3 rounded-xl text-sm font-medium
+                           bg-red-800 hover:bg-red-900 text-white shadow-sm transition">
+                🗑 Удалить службу
+            </button>
+        </form>
+
+        {% if not service.is_admin %}
+        <p class="text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40
+                  border border-amber-200 dark:border-amber-900 rounded-lg p-3">
+            Для удаления службы нужны административные права. При нажатии кнопки Windows покажет запрос UAC.
+        </p>
+        {% endif %}
+        {% endif %}
+    </div>
+
+    <!-- Информация -->
+    <div class="mt-8 p-5 bg-brand-50 dark:bg-brand-950/40 border border-brand-200 dark:border-brand-900 rounded-2xl">
+        <h3 class="font-semibold text-brand-900 dark:text-brand-100 mb-3">Информация</h3>
+        <ul class="text-xs text-brand-800 dark:text-brand-200 space-y-2 leading-relaxed">
+            <li>• В Windows приложение регистрируется как <strong>служба Windows</strong> через <strong>NSSM</strong> с именем <strong>NetworkBackupManager</strong>.</li>
+            <li>• Служба автоматически стартует при загрузке системы (<code class="font-mono bg-brand-100 dark:bg-brand-900/60 px-1 rounded">SERVICE_AUTO_START</code>).</li>
+            <li>• При падении процесса служба автоматически перезапускается через 5 секунд.</li>
+            <li>• При запуске службы используется аргумент <code class="font-mono bg-brand-100 dark:bg-brand-900/60 px-1 rounded">--service</code>.</li>
+            <li>• Рабочий каталог службы: <code class="font-mono bg-brand-100 dark:bg-brand-900/60 px-1 rounded break-all">{{ service.base_dir }}</code></li>
+            <li>• Благодаря этому <code class="font-mono bg-brand-100 dark:bg-brand-900/60 px-1 rounded">data</code>, <code class="font-mono bg-brand-100 dark:bg-brand-900/60 px-1 rounded">backups</code>, <code class="font-mono bg-brand-100 dark:bg-brand-900/60 px-1 rounded">plugins</code> и <code class="font-mono bg-brand-100 dark:bg-brand-900/60 px-1 rounded">logs</code> используются относительно каталога приложения, а не <code class="font-mono bg-brand-100 dark:bg-brand-900/60 px-1 rounded">C:\Windows\System32</code>.</li>
+            <li>• Логи stdout/stderr службы пишутся в <code class="font-mono bg-brand-100 dark:bg-brand-900/60 px-1 rounded">logs\service_stdout.log</code> и <code class="font-mono bg-brand-100 dark:bg-brand-900/60 px-1 rounded">logs\service_stderr.log</code> с авто-ротацией при 10 МБ.</li>
+            <li>• Инсталлятор службы <strong>не изменяет права SSH-ключей</strong>. Файлы <code class="font-mono bg-brand-100 dark:bg-brand-900/60 px-1 rounded">id_rsa.key</code> не изменяются, не копируются и не получают новые ACL.</li>
+            <li>• Удаление службы <strong>не удаляет</strong> настройки, плагины и резервные копии.</li>
+        </ul>
+    </div>
+
+    {% if service.registered %}
+    <div class="mt-5 text-center text-xs text-gray-400 dark:text-slate-500">
+        Страница автоматически обновляется каждые 10 секунд.
+    </div>
+    <script>
+        setTimeout(function () { window.location.reload(); }, 10000);
+    </script>
+    {% endif %}
+
+</main>
 
 </body>
-
 </html>
