@@ -1,0 +1,222 @@
+    {# ========================================================= #}
+{# PARTIAL: карточка выбранного устройства                   #}
+{# Контекст: d — payload из _build_device_payload()          #}
+{# ========================================================= #}
+
+{% set m = status_meta(d.status) %}
+
+<!-- HERO -->
+<div class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm overflow-hidden">
+    <div class="h-1.5 bg-gradient-to-r from-brand-500 via-brand-600 to-brand-700"></div>
+    <div class="p-6">
+        <div class="flex flex-wrap items-start justify-between gap-4">
+            <div class="min-w-0">
+                <div class="flex items-center gap-2 text-[11px] uppercase tracking-wide font-semibold text-gray-500 dark:text-slate-400">
+                    <span>{{ d.type }}</span>
+                    <span class="text-gray-300 dark:text-slate-700">·</span>
+                    <span>устройство #{{ d.index }}</span>
+                </div>
+                <h1 class="mt-1 text-2xl md:text-3xl font-bold font-mono tracking-tight truncate">{{ d.host }}</h1>
+
+                <div class="mt-2 flex flex-wrap items-center gap-2">
+                    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium {{ m.badge }}">
+                        <span class="w-1.5 h-1.5 rounded-full {{ m.dot }}"></span>
+                        {{ m.label }}
+                    </span>
+                    <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium
+                                 bg-gray-100 dark:bg-slate-800 text-gray-700 dark:text-slate-300
+                                 border border-gray-200 dark:border-slate-700">
+                        {{ d.version }} · SSH :{{ d.port }}
+                    </span>
+                </div>
+
+                <div class="mt-2 flex items-center gap-2 text-sm">
+                    <span class="text-gray-500 dark:text-slate-400">Последний успешный бэкап:</span>
+                    {% if d.last_success %}
+                        <span class="font-mono font-semibold">{{ d.last_success }}</span>
+                        <span class="text-xs font-medium {{ age_class(d.last_success_age_days) }}">({{ age_label(d.last_success_age_days) }})</span>
+                    {% else %}
+                        <span class="text-gray-400 dark:text-slate-500 italic">не было ни одного</span>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2">
+                <button id="run-backup-btn"
+                        data-device-id="{{ d.id }}"
+                        class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium
+                               bg-brand-600 hover:bg-brand-700 text-white shadow-sm transition
+                               disabled:opacity-70 disabled:cursor-not-allowed">
+                    <span class="btn-idle inline-flex items-center gap-2">🔄 Запустить бэкап</span>
+                    <span class="btn-busy hidden items-center gap-2">
+                        <span class="spinner"></span>
+                        <span>Выполняется…</span>
+                    </span>
+                </button>
+                <a href="/edit/{{ d.type }}/{{ d.index }}"
+                   class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium
+                          bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                          border border-gray-200 dark:border-slate-700 transition">
+                    ⚙ Редактировать
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- STATS -->
+<div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+    <div class="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-4">
+        <div class="text-[11px] uppercase tracking-wide font-semibold text-gray-500 dark:text-slate-400">Последний успех</div>
+        <div class="mt-1.5 text-lg font-bold font-mono">{{ d.last_success or '—' }}</div>
+        <div class="mt-1 text-[11px] font-medium {{ age_class(d.last_success_age_days) }}">{{ age_label(d.last_success_age_days) }}</div>
+    </div>
+
+    <div class="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-4">
+        <div class="text-[11px] uppercase tracking-wide font-semibold text-gray-500 dark:text-slate-400">Последняя попытка</div>
+        {% if d.last_attempt %}
+            <div class="mt-1.5 font-mono text-sm">{{ d.last_attempt }}</div>
+            <div class="mt-1 text-[11px] font-medium {{ 'text-emerald-600 dark:text-emerald-400' if d.last_attempt_ok else 'text-rose-600 dark:text-rose-400' }}">
+                {{ '✓ успешно' if d.last_attempt_ok else '✗ ошибка' }}
+            </div>
+        {% else %}
+            <div class="mt-1.5 text-gray-400 dark:text-slate-500">—</div>
+        {% endif %}
+    </div>
+
+    <div class="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-4">
+        <div class="text-[11px] uppercase tracking-wide font-semibold text-gray-500 dark:text-slate-400">Архивов</div>
+        <div class="mt-1.5 text-lg font-bold font-mono">{{ d.backup_count }}</div>
+        <div class="mt-1 text-[11px] text-gray-500 dark:text-slate-400">лимит: {{ d.max_backups }}</div>
+    </div>
+
+    <div class="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-4">
+        <div class="text-[11px] uppercase tracking-wide font-semibold text-gray-500 dark:text-slate-400">Общий размер</div>
+        <div class="mt-1.5 text-lg font-bold font-mono">{{ d.total_size }}</div>
+        <div class="mt-1 text-[11px] text-gray-500 dark:text-slate-400">в среднем {{ d.avg_size }}</div>
+    </div>
+</div>
+
+<!-- HISTORY -->
+<div class="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-5">
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div>
+            <h2 class="text-sm font-semibold">История бэкапов — последние 30 дней</h2>
+            <p class="mt-0.5 text-[11px] text-gray-500 dark:text-slate-400">
+                Нажмите на любой квадратик, чтобы открыть лог за эту дату.
+            </p>
+        </div>
+        <div class="flex items-center gap-3 text-[11px] text-gray-500 dark:text-slate-400">
+            <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-sm hist-ok"></span>успех</span>
+            <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-sm hist-fail"></span>ошибка</span>
+            <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-sm hist-none"></span>нет данных</span>
+        </div>
+    </div>
+
+    <div class="grid gap-1.5" style="grid-template-columns: repeat(30, minmax(0, 1fr));">
+        {% for i in range(d.history | length) %}
+            {% set state = d.history[i] %}
+            {% set date = d.history_dates[i] %}
+            {% set state_label = {'ok':'успех','fail':'ошибка','none':'нет данных'}[state] %}
+            <a href="/logs/device/{{ d.type }}/{{ d.index }}?focus_date={{ date }}"
+               class="hist-cell hist-{{ state }}"
+               title="{{ date }}: {{ state_label }} — нажмите, чтобы открыть лог за эту дату"></a>
+        {% endfor %}
+    </div>
+</div>
+
+<!-- CONFIG + NAV -->
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+    <div class="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-5">
+        <div class="flex items-center justify-between mb-3">
+            <h2 class="text-sm font-semibold">Параметры</h2>
+            <span class="text-[11px] text-gray-500 dark:text-slate-400">только для чтения</span>
+        </div>
+
+        <dl class="space-y-2.5 text-sm">
+            <div class="flex items-center justify-between gap-3">
+                <dt class="text-gray-500 dark:text-slate-400">Путь сохранения</dt>
+                <dd class="font-mono text-xs px-2 py-1 rounded bg-gray-100 dark:bg-slate-800 truncate max-w-[60%]" title="{{ d.backup_path }}">
+                    {{ d.backup_path }}
+                </dd>
+            </div>
+            <div class="flex items-center justify-between gap-3">
+                <dt class="text-gray-500 dark:text-slate-400">SSH-ключ</dt>
+                <dd class="font-mono text-xs">{{ d.ssh_key }}</dd>
+            </div>
+            <div class="flex items-center justify-between gap-3">
+                <dt class="text-gray-500 dark:text-slate-400">FTP-выгрузка</dt>
+                <dd class="text-xs">
+                    <span class="px-1.5 py-0.5 rounded font-medium {{ 'bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300' if d.ftp_enabled else 'bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-400' }}">
+                        {{ 'включена' if d.ftp_enabled else 'выключена' }}
+                    </span>
+                </dd>
+            </div>
+            <div class="flex items-center justify-between gap-3">
+                <dt class="text-gray-500 dark:text-slate-400">Ротация</dt>
+                <dd class="text-xs font-mono">{{ d.max_backups }} копий</dd>
+            </div>
+        </dl>
+    </div>
+
+    <div class="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-5">
+        <h2 class="text-sm font-semibold mb-3">Перейти</h2>
+        <div class="grid grid-cols-1 gap-2">
+            <a href="/backups/{{ d.type }}/{{ d.index }}"
+               class="flex items-center justify-between px-3 py-2.5 rounded-lg
+                      bg-gray-50 dark:bg-slate-800/60 hover:bg-brand-50 dark:hover:bg-brand-950/40
+                      border border-gray-200 dark:border-slate-700 transition group">
+                <span class="flex items-center gap-2 text-sm font-medium">
+                    📁 Архивы
+                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-brand-100 dark:bg-brand-900/60 text-brand-700 dark:text-brand-300">{{ d.backup_count }}</span>
+                </span>
+                <span class="text-gray-400 dark:text-slate-500 group-hover:text-brand-600 dark:group-hover:text-brand-400 transition">→</span>
+            </a>
+            <a href="/logs/device/{{ d.type }}/{{ d.index }}"
+               class="flex items-center justify-between px-3 py-2.5 rounded-lg
+                      bg-gray-50 dark:bg-slate-800/60 hover:bg-brand-50 dark:hover:bg-brand-950/40
+                      border border-gray-200 dark:border-slate-700 transition group">
+                <span class="flex items-center gap-2 text-sm font-medium">📄 Логи устройства</span>
+                <span class="text-gray-400 dark:text-slate-500 group-hover:text-brand-600 dark:group-hover:text-brand-400 transition">→</span>
+            </a>
+            <a href="/logs/main"
+               class="flex items-center justify-between px-3 py-2.5 rounded-lg
+                      bg-gray-50 dark:bg-slate-800/60 hover:bg-brand-50 dark:hover:bg-brand-950/40
+                      border border-gray-200 dark:border-slate-700 transition group">
+                <span class="flex items-center gap-2 text-sm font-medium">📜 Общий лог приложения</span>
+                <span class="text-gray-400 dark:text-slate-500 group-hover:text-brand-600 dark:group-hover:text-brand-400 transition">→</span>
+            </a>
+        </div>
+    </div>
+</div>
+
+<!-- RECENT -->
+<div class="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 overflow-hidden">
+    <div class="px-5 py-3 border-b border-gray-100 dark:border-slate-800 flex items-center justify-between">
+        <h2 class="text-sm font-semibold">Последние архивы</h2>
+        {% if d.backup_count > 0 %}
+            <a href="/backups/{{ d.type }}/{{ d.index }}" class="text-xs text-brand-600 dark:text-brand-400 hover:underline font-medium">
+                Показать все {{ d.backup_count }} →
+            </a>
+        {% endif %}
+    </div>
+    <ul class="divide-y divide-gray-100 dark:divide-slate-800">
+        {% for f in d.recent %}
+            <li class="px-5 py-3 flex items-center justify-between gap-3 hover:bg-gray-50 dark:hover:bg-slate-800/40 transition">
+                <div class="flex items-center gap-3 min-w-0">
+                    <span class="text-lg shrink-0">📄</span>
+                    <div class="min-w-0">
+                        <div class="font-mono text-sm truncate">{{ f.name }}</div>
+                        <div class="text-[11px] text-gray-500 dark:text-slate-400">{{ f.date }} · {{ f.size }}</div>
+                    </div>
+                </div>
+                <a href="/download-backup/{{ d.type }}/{{ d.index }}/{{ f.rel_path }}"
+                   class="shrink-0 text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-700 text-white font-medium transition">
+                    ⬇ Скачать
+                </a>
+            </li>
+        {% else %}
+            <li class="px-5 py-8 text-center text-sm text-gray-400 dark:text-slate-500">Архивов нет</li>
+        {% endfor %}
+    </ul>
+</div>

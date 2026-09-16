@@ -10,7 +10,7 @@ import base64
 import time
 
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import defaultdict
 from contextlib import asynccontextmanager
 
@@ -223,7 +223,6 @@ app.mount(
     name="static",
 )
 
-
 templates = None
 
 if (
@@ -239,6 +238,74 @@ if (
         )
     )
 
+
+# =========================================================
+# JINJA2 HELPERS
+# =========================================================
+
+def _status_meta(status: str) -> dict:
+    """Цвета/подписи статуса устройства."""
+    return {
+        "ok": {
+            "dot": "bg-emerald-500",
+            "ring": "ring-emerald-500/15",
+            "badge": "bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300",
+            "label": "Свежий",
+        },
+        "warn": {
+            "dot": "bg-amber-500",
+            "ring": "ring-amber-500/15",
+            "badge": "bg-amber-100 dark:bg-amber-900/60 text-amber-700 dark:text-amber-300",
+            "label": "Просрочен",
+        },
+        "fail": {
+            "dot": "bg-rose-500",
+            "ring": "ring-rose-500/15",
+            "badge": "bg-rose-100 dark:bg-rose-900/60 text-rose-700 dark:text-rose-300",
+            "label": "Ошибка",
+        },
+        "none": {
+            "dot": "bg-gray-300 dark:bg-slate-600",
+            "ring": "ring-gray-300/20 dark:ring-slate-600/20",
+            "badge": "bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-400",
+            "label": "Нет данных",
+        },
+    }.get(status, {
+        "dot": "bg-gray-300 dark:bg-slate-600",
+        "ring": "ring-gray-300/20 dark:ring-slate-600/20",
+        "badge": "bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-400",
+        "label": "—",
+    })
+
+
+def _age_label(days) -> str:
+    if days is None:
+        return "нет данных"
+    if days == 0:
+        return "сегодня"
+    if days == 1:
+        return "1 день назад"
+    if days < 5:
+        return f"{days} дня назад"
+    return f"{days} дней назад"
+
+
+def _age_class(days) -> str:
+    if days is None:
+        return "text-gray-500 dark:text-slate-400"
+    if days <= 2:
+        return "text-emerald-600 dark:text-emerald-400"
+    if days <= 7:
+        return "text-gray-500 dark:text-slate-400"
+    if days <= 30:
+        return "text-amber-600 dark:text-amber-400"
+    return "text-rose-600 dark:text-rose-400"
+
+
+if templates is not None:
+    templates.env.globals["status_meta"] = _status_meta
+    templates.env.globals["age_label"] = _age_label
+    templates.env.globals["age_class"] = _age_class
 
 # =========================================================
 # PASSWORD
@@ -468,20 +535,21 @@ def read_log_tail(
     file_path: Path,
     limit: str = "100",
     filter_tag: str | None = None,
+    focus_date: str | None = None,
 ):
     """
     Читает хвост файла логов.
 
-    Если filter_tag задан — оставляет только строки,
-    содержащие подстроку '[filter_tag]' (маркер устройства).
+    Возвращает:
+        (content, lines_shown, has_more, focus_line_index)
+
+    filter_tag — оставить строки с '[filter_tag]'.
+    focus_date — индекс первой строки, начинающейся с YYYY-MM-DD,
+                 или None.
     """
 
     if not file_path.exists():
-        return (
-            "Лог-файл пока отсутствует...",
-            0,
-            False,
-        )
+        return ("Лог-файл пока отсутствует...", 0, False, None)
 
     try:
         with open(
@@ -492,28 +560,35 @@ def read_log_tail(
         ) as f:
             lines = f.readlines()
     except Exception as exc:
-        return (
-            f"Ошибка чтения файла логов: {exc}",
-            0,
-            False,
-        )
+        return (f"Ошибка чтения файла логов: {exc}", 0, False, None)
 
     if filter_tag:
         needle = f"[{filter_tag}]"
         lines = [ln for ln in lines if needle in ln]
 
     total_lines = len(lines)
+    has_more = False
 
-    if limit == "all":
-        return ("".join(lines), total_lines, False)
+    if limit != "all":
+        max_l = int(limit) if limit.isdigit() else 100
+        if total_lines > max_l:
+            lines = lines[-max_l:]
+            total_lines = len(lines)
+            has_more = True
 
-    max_l = int(limit) if limit.isdigit() else 100
+    focus_line_index = None
+    if focus_date:
+        for i, ln in enumerate(lines):
+            if ln.startswith(focus_date):
+                focus_line_index = i
+                break
 
-    if total_lines > max_l:
-        tail = lines[-max_l:]
-        return ("".join(tail), len(tail), True)
-
-    return ("".join(lines), total_lines, False)
+    return (
+        "".join(lines),
+        total_lines,
+        has_more,
+        focus_line_index,
+    )
 
 # =========================================================
 # BACKUP INFO
@@ -616,6 +691,232 @@ def get_device_backup_info(
         age_days,
     )
 
+# =========================================================
+# DEVICE INFO — расширенный сбор данных
+# =========================================================
+
+def get_dir_size(path: Path) -> int:
+    """Суммарный размер всех файлов в каталоге, рекурсивно."""
+    if not path.exists() or not path.is_dir():
+        return 0
+    total = 0
+    try:
+        for f in path.rglob("*"):
+            if f.is_file():
+                try:
+                    total += f.stat().st_size
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return total
+
+
+def format_size(size_bytes: int) -> str:
+    if size_bytes < 1024:
+        return f"{size_bytes} Б"
+    if size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} КБ"
+    if size_bytes < 1024 * 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.1f} МБ"
+    return f"{size_bytes / (1024 * 1024 * 1024):.2f} ГБ"
+
+
+def _resolve_backup_path(backup_path) -> Path:
+    path = Path(backup_path)
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    return path
+
+
+def get_last_attempt(backup_path):
+    """
+    Возвращает (date_str, ok_bool) последней попытки бэкапа.
+
+    ok=True  — в последнем по дате каталоге есть файлы;
+    ok=False — каталог создан, но пуст (бэкап упал).
+    """
+    path = _resolve_backup_path(backup_path)
+
+    if not path.exists() or not path.is_dir():
+        return None, None
+
+    latest = None
+    for item in path.iterdir():
+        if not item.is_dir():
+            continue
+        date_part = item.name[:10]
+        try:
+            folder_date = datetime.strptime(date_part, "%Y-%m-%d")
+        except ValueError:
+            continue
+        if latest is None or folder_date > latest[0]:
+            try:
+                has_files = any(f.is_file() for f in item.iterdir())
+            except OSError:
+                has_files = False
+            latest = (folder_date, has_files)
+
+    if latest is None:
+        return None, None
+
+    return latest[0].strftime("%Y-%m-%d"), latest[1]
+
+
+def get_device_history(backup_path, days: int = 30):
+    """
+    Возвращает (history, dates).
+
+    history — список из 'ok' | 'fail' | 'none' длиной days.
+    dates   — список YYYY-MM-DD для каждой ячейки.
+    Сортировка: слева старые, справа свежие.
+    """
+    today = datetime.now().date()
+
+    dates = [
+        (today - timedelta(days=i)).strftime("%Y-%m-%d")
+        for i in range(days - 1, -1, -1)
+    ]
+
+    history = ["none"] * days
+
+    path = _resolve_backup_path(backup_path)
+    if not path.exists() or not path.is_dir():
+        return history, dates
+
+    for item in path.iterdir():
+        if not item.is_dir():
+            continue
+        date_part = item.name[:10]
+        if date_part not in dates:
+            continue
+        idx = dates.index(date_part)
+        try:
+            has_files = any(f.is_file() for f in item.iterdir())
+        except OSError:
+            has_files = False
+        history[idx] = "ok" if has_files else "fail"
+
+    return history, dates
+
+
+def get_recent_files(backup_path, limit: int = 3):
+    """Последние limit файлов во всех подкаталогах (по mtime)."""
+    path = _resolve_backup_path(backup_path)
+    if not path.exists() or not path.is_dir():
+        return []
+
+    files = []
+    for folder in path.iterdir():
+        if not folder.is_dir():
+            continue
+        try:
+            for f in folder.iterdir():
+                if f.is_file():
+                    files.append(f)
+        except OSError:
+            continue
+
+    def _mtime(p):
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0
+
+    files.sort(key=_mtime, reverse=True)
+
+    result = []
+    for f in files[:limit]:
+        try:
+            size = format_size(f.stat().st_size)
+            date = datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+        except OSError:
+            continue
+        result.append({
+            "name": f.name,
+            "rel_path": str(f.relative_to(path)),
+            "date": date,
+            "size": size,
+        })
+    return result
+
+
+def classify_device(age_days, last_attempt_ok) -> str:
+    """ok / warn / fail / none."""
+    if last_attempt_ok is False:
+        return "fail"
+    if age_days is None:
+        return "none"
+    if age_days < 15:
+        return "ok"
+    if age_days <= 30:
+        return "warn"
+    return "fail"
+
+
+def _build_device_payload(
+    device_type: str,
+    index: int,
+    router: dict,
+) -> dict:
+    """Собирает всё, что нужно для карточки устройства."""
+    b_path = router.get("backup_path", "backups/")
+
+    count, last_date, age_days = get_device_backup_info(b_path)
+    last_attempt_date, last_attempt_ok = get_last_attempt(b_path)
+    history, history_dates = get_device_history(b_path, 30)
+    total_bytes = get_dir_size(_resolve_backup_path(b_path))
+    total_size = format_size(total_bytes)
+
+    if count > 0 and total_bytes > 0:
+        avg_size = format_size(total_bytes // count)
+    else:
+        avg_size = "—"
+
+    status = classify_device(age_days, last_attempt_ok)
+
+    ip_addr = (
+        router.get("host")
+        or router.get("ip")
+        or router.get("address", "Не указан")
+    )
+
+    if device_type.lower() == "mikrotik":
+        version = f"ROS {router.get('version', '7')}"
+    else:
+        version = "pfSense"
+
+    ftp_cfg = router.get("ftp") or {}
+    ftp_enabled = bool(ftp_cfg.get("host"))
+
+    return {
+        "id": f"{device_type}/{index}",
+        "type": device_type,
+        "index": index,
+        "host": ip_addr,
+        "version": version,
+        "port": router.get("port", 22),
+        "status": status,
+        "last_success": last_date if count > 0 else None,
+        "last_success_age_days": age_days,
+        "last_attempt": last_attempt_date,
+        "last_attempt_ok": last_attempt_ok,
+        "backup_count": count,
+        "max_backups": router.get("max_backups", 7),
+        "total_size": total_size,
+        "avg_size": avg_size,
+        "backup_path": b_path,
+        "ssh_key": (
+            router.get("ssh_key")
+            or router.get("private_key")
+            or "id_rsa.key"
+        ),
+        "ftp_enabled": ftp_enabled,
+        "history": history,
+        "history_dates": history_dates,
+        "recent": get_recent_files(b_path, 3),
+    }
+
 
 # =========================================================
 # BACKUP TASKS
@@ -703,143 +1004,95 @@ def execute_all_backups_task():
 # MAIN PAGE
 # =========================================================
 
-@app.get(
-    "/",
-    response_class=HTMLResponse,
-)
+@app.get("/", response_class=HTMLResponse)
 def read_root(
     request: Request,
-    user: str = Depends(
-        require_auth
-    ),
+    user: str = Depends(require_auth),
 ):
-
     devices = []
 
-    if (
-        plugin_manager
-        and hasattr(
-            plugin_manager,
-            "_plugins",
-        )
-    ):
-
-        for (
-            device_type,
-            plugin_data,
-        ) in (
-            plugin_manager
-            ._plugins
-            .items()
-        ):
-
-            routers = plugin_data.get(
-                "routers",
-                [],
-            )
-
-            for index, router in enumerate(
-                routers
-            ):
-
-                ip_addr = (
-                    router.get("host")
-                    or router.get("ip")
-                    or router.get(
-                        "address",
-                        "Не указан",
-                    )
+    if plugin_manager and hasattr(plugin_manager, "_plugins"):
+        for device_type, plugin_data in plugin_manager._plugins.items():
+            routers = plugin_data.get("routers", [])
+            for index, router in enumerate(routers):
+                devices.append(
+                    _build_device_payload(device_type, index, router)
                 )
 
-                b_path = router.get(
-                    "backup_path",
-                    "backups/",
-                )
+    # Выбор устройства из ?selected=<type>/<index>
+    selected_id = request.query_params.get("selected", "")
+    selected = None
+    if devices:
+        if selected_id:
+            for d in devices:
+                if d["id"] == selected_id:
+                    selected = d
+                    break
+        if selected is None:
+            selected = devices[0]
 
-                (
-                    count,
-                    last_date,
-                    age_days,
-                ) = get_device_backup_info(
-                    b_path
-                )
-
-                if (
-                    count == 0
-                    or age_days is None
-                ):
-
-                    row_class = (
-                        "bg-white "
-                        "hover:bg-gray-50"
-                    )
-
-                elif age_days < 15:
-
-                    row_class = (
-                        "bg-emerald-50/80 "
-                        "hover:bg-emerald-100/80"
-                    )
-
-                elif age_days <= 30:
-
-                    row_class = (
-                        "bg-amber-100/70 "
-                        "hover:bg-amber-200/70"
-                    )
-
-                else:
-
-                    row_class = (
-                        "bg-rose-100/80 "
-                        "hover:bg-rose-200/80"
-                    )
-
-                devices.append({
-                    "type":
-                        device_type,
-
-                    "ip":
-                        ip_addr,
-
-                    "backup_path":
-                        b_path,
-
-                    "backup_dir_name":
-                        Path(
-                            b_path
-                        ).name,
-
-                    "backup_count":
-                        count,
-
-                    "last_backup_date":
-                        last_date,
-
-                    "row_class":
-                        row_class,
-
-                    "index":
-                        index,
-                })
+    logs_size_bytes = get_dir_size(LOGS_DIR)
 
     return templates.TemplateResponse(
         request,
         "index.html",
         {
-            "devices":
-                devices,
-
-            "scheduler_status":
-                scheduler.get_status_text(),
-
-            "is_backup_running":
-                is_backup_running(),
-
-            "service":
-                get_status(),
+            "devices": devices,
+            "selected": selected,
+            "scheduler_status": scheduler.get_status_text(),
+            "scheduler_config": scheduler.config,
+            "is_backup_running": is_backup_running(),
+            "service": get_status(),
+            "logs_size": format_size(logs_size_bytes),
         },
     )
+
+
+# =========================================================
+# API: DEVICE DETAIL (HTML partial)
+# =========================================================
+
+@app.get(
+    "/api/device/{device_type}/{index}",
+    response_class=HTMLResponse,
+)
+def api_device_detail(
+    request: Request,
+    device_type: str,
+    index: int,
+    user: str = Depends(require_auth),
+):
+    if not plugin_manager or device_type not in plugin_manager._plugins:
+        raise HTTPException(status_code=404, detail="Plugin not found")
+
+    routers = plugin_manager._plugins[device_type].get("routers", [])
+    if not (0 <= index < len(routers)):
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    payload = _build_device_payload(device_type, index, routers[index])
+
+    return templates.TemplateResponse(
+        request,
+        "_device_detail.html",
+        {"d": payload},
+    )
+
+
+# =========================================================
+# API: SYSTEM INFO (JSON)
+# =========================================================
+
+@app.get("/api/system/info")
+def api_system_info(user: str = Depends(require_auth)):
+    logs_size_bytes = get_dir_size(LOGS_DIR)
+    return {
+        "logs_size": format_size(logs_size_bytes),
+        "logs_size_bytes": logs_size_bytes,
+        "scheduler_config": scheduler.config,
+        "scheduler_status": scheduler.get_status_text(),
+        "service": get_status(),
+        "is_backup_running": is_backup_running(),
+    }
 
 
 # =========================================================
@@ -2073,7 +2326,7 @@ def logs_main_endpoint(
         / "app.log"
     )
 
-    content, lines_shown, has_more = (
+    content, lines_shown, has_more, _ = (
         read_log_tail(
             log_file,
             limit,
@@ -2131,7 +2384,7 @@ def logs_global_endpoint(
         / "app.log"
     )
 
-    content, lines_shown, has_more = (
+    content, lines_shown, has_more, _ = (
         read_log_tail(
             log_file,
             limit,
@@ -2189,7 +2442,7 @@ def logs_service_endpoint(
 
     log_file = LOGS_DIR / filename
 
-    content, lines_shown, has_more = read_log_tail(log_file, limit)
+    content, lines_shown, has_more, _ = read_log_tail(log_file, limit)
 
     if raw:
         return HTMLResponse(content, media_type="text/plain")
@@ -2227,6 +2480,7 @@ def device_logs(
     index: int,
     limit: str = "100",
     raw: bool = False,
+    focus_date: str = "",
     user: str = Depends(
         require_auth
     ),
@@ -2278,11 +2532,12 @@ def device_logs(
         index,
     )
 
-    content, lines_shown, has_more = (
+    content, lines_shown, has_more, focus_line_index = (
         read_log_tail(
             log_file,
             limit,
             filter_tag=filter_tag,
+            focus_date=focus_date or None,
         )
     )
 
@@ -2311,6 +2566,12 @@ def device_logs(
 
             "limit":
                 limit,
+
+            "focus_date":
+                focus_date or None,
+
+            "focus_line_index":
+                focus_line_index,
         },
     )
 

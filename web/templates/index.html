@@ -1,169 +1,375 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="ru" class="">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Панель резервного копирования</title>
+    <title>Network Backup Manager</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="icon" href="/static/favicon.ico">
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50:'#eff6ff',100:'#dbeafe',200:'#bfdbfe',300:'#93c5fd',
+                            400:'#60a5fa',500:'#3b82f6',600:'#2563eb',700:'#1d4ed8',
+                            800:'#1e40af',900:'#1e3a8a',
+                        },
+                    },
+                },
+            },
+        };
+    </script>
+    <style>
+        html, body { height: 100%; }
+        body { font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
+        .scroll-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+        .scroll-thin::-webkit-scrollbar-thumb { background: rgba(120,120,120,.35); border-radius: 4px; }
+        .scroll-thin::-webkit-scrollbar-thumb:hover { background: rgba(120,120,120,.6); }
+        .hist-cell {
+            width: 100%; aspect-ratio: 1/1; border-radius: 3px;
+            transition: transform .12s ease, box-shadow .12s ease;
+            cursor: pointer; position: relative;
+        }
+        .hist-cell:hover {
+            transform: scale(1.4);
+            box-shadow: 0 0 0 2px rgba(59,130,246,.55);
+            z-index: 2;
+        }
+        .hist-ok   { background: #10b981; }
+        .hist-fail { background: #ef4444; }
+        .hist-none { background: #cbd5e1; }
+        .dark .hist-none { background: #334155; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .spinner {
+            display: inline-block; width: 14px; height: 14px;
+            border: 2px solid currentColor; border-top-color: transparent;
+            border-radius: 50%; animation: spin .7s linear infinite;
+        }
+    </style>
 </head>
-<body class="bg-gray-100 min-h-screen text-gray-800">
-    <div class="container mx-auto px-4 py-8 max-w-7xl">
-        
-        <div class="text-center mb-8">
-            <h1 class="text-3xl font-bold text-gray-900 mb-2">🛡️ Бэкапы сетевого оборудования</h1>
-            
-            <!-- Вывод статуса планировщика -->
-            <p class="text-xs text-gray-500 font-mono mb-2">
-                ⏰ Автобэкап: <span class="font-semibold text-blue-700">{{ scheduler_status }}</span>
-            </p>
-            <p class="text-xs text-gray-500 font-mono mb-4">
-                Служба:
-                {% if service.registered %}
-                    <span class="font-semibold text-emerald-700">установлена</span>
-                {% else %}
-                    <span class="font-semibold text-amber-700">не установлена</span>
-                {% endif %}
-                ·
-                {% if service.service_mode %}
-                    режим службы
-                {% else %}
-                    интерактивный процесс
-                {% endif %}
-            </p>
+<body class="bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-slate-100 transition-colors">
 
-            <div class="flex flex-wrap justify-center items-center gap-3">
-                <a href="/service"
-                class="bg-slate-700 hover:bg-slate-800 text-white font-medium px-4 py-2 rounded-lg transition shadow text-sm">
-                    ⚙ Управление службой
-                </a>
-                <a href="/scheduler" class="bg-amber-600 hover:bg-amber-700 text-white font-medium px-4 py-2 rounded-lg transition shadow text-sm">
+<header class="sticky top-0 z-20 bg-white/85 dark:bg-slate-900/85 backdrop-blur border-b border-gray-200 dark:border-slate-800">
+    <div class="px-5 py-3 flex flex-wrap items-center gap-3">
+        <div class="flex items-center gap-2 mr-3">
+            <div class="w-9 h-9 rounded-lg bg-brand-600 flex items-center justify-center text-white text-lg shadow-sm">🛡️</div>
+            <div class="leading-tight">
+                <div class="text-sm font-semibold">Network Backup Manager</div>
+                <div class="text-[11px] text-gray-500 dark:text-slate-400">Панель резервного копирования</div>
+            </div>
+        </div>
+
+        <div class="hidden md:flex items-center gap-2 text-[11px]" id="status-chips">
+            {% if service.registered and service.os_running %}
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-900">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                Служба работает
+            </span>
+            {% elif service.registered %}
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-900">
+                <span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+                Служба остановлена
+            </span>
+            {% else %}
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-400 border border-gray-200 dark:border-slate-700">
+                <span class="w-1.5 h-1.5 rounded-full bg-gray-400"></span>
+                Служба не установлена
+            </span>
+            {% endif %}
+
+            {% if scheduler_config.enabled %}
+                {% if scheduler_config.mode == 'daily' %}
+                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 border border-brand-200 dark:border-brand-900">
+                    ⏰ Автобэкап: ежедневно в {{ scheduler_config.daily_time }}
+                </span>
+                {% else %}
+                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 border border-brand-200 dark:border-brand-900">
+                    ⏰ Автобэкап: каждые {{ scheduler_config.interval_hours }} ч.
+                </span>
+                {% endif %}
+            {% else %}
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-400 border border-gray-200 dark:border-slate-700">
+                ⏰ Автобэкап выключен
+            </span>
+            {% endif %}
+
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-gray-100 dark:bg-slate-800 text-gray-700 dark:text-slate-300 border border-gray-200 dark:border-slate-700"
+                  title="Суммарный размер файлов в каталоге logs/">
+                📜 Логи: <b class="font-mono" id="logs-size">{{ logs_size }}</b>
+            </span>
+        </div>
+
+        <div class="flex-1"></div>
+
+        <div class="flex items-center gap-2">
+            {% if is_backup_running %}
+            <button disabled class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium
+                                   bg-gray-400 text-white cursor-not-allowed opacity-70">
+                <span class="spinner"></span> Идёт бэкап...
+            </button>
+            {% else %}
+            <form action="/run-now" method="POST" class="inline" onsubmit="disableAllBackups()">
+                <button type="submit" id="run-all-btn"
+                        class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium
+                               bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition">
+                    ▶ Запустить все бэкапы
+                </button>
+            </form>
+            {% endif %}
+
+            <div class="hidden md:flex items-center gap-1.5">
+                <a href="/scheduler" class="px-3 py-2 rounded-lg text-xs font-medium
+                                          bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                                          border border-gray-200 dark:border-slate-700 transition">
                     ⏰ Планировщик
                 </a>
-                <a href="/logs/main" class="bg-indigo-700 hover:bg-indigo-800 text-white font-medium px-4 py-2 rounded-lg transition shadow text-sm">
-                    📜 Основной лог
+                <a href="/service" class="px-3 py-2 rounded-lg text-xs font-medium
+                                          bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                                          border border-gray-200 dark:border-slate-700 transition">
+                    ⚙ Служба
                 </a>
-                <a href="/logs/service?stream=stderr" class="bg-zinc-800 hover:bg-zinc-900 text-white font-medium px-4 py-2 rounded-lg transition shadow text-sm">
-                    🔧 Лог службы
+                <a href="/logs/main" class="px-3 py-2 rounded-lg text-xs font-medium
+                                           bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                                           border border-gray-200 dark:border-slate-700 transition">
+                    📜 Логи
                 </a>
-                <a href="/add" class="bg-blue-600 hover:bg-blue-700 text-white font-medium px-4 py-2 rounded-lg transition shadow text-sm">
-                    + Добавить роутер
-                </a>
-
-                <!-- Кнопка массового бэкапа -->
-                {% if is_backup_running %}
-                    <button type="button" disabled class="bg-gray-400 text-white font-medium px-4 py-2 rounded-lg cursor-not-allowed opacity-60 text-sm flex items-center gap-2 shadow">
-                        <span class="w-2 h-2 rounded-full bg-amber-300 animate-ping"></span> ⏳ Идет бэкап...
-                    </button>
-                {% else %}
-                    <form action="/run-now" method="POST" class="inline" onsubmit="disableAllBackupButtons()">
-                        <button type="submit" class="backup-action-btn bg-green-600 hover:bg-green-700 text-white font-medium px-4 py-2 rounded-lg transition shadow text-sm">
-                            ▶ Запустить все бэкапы
-                        </button>
-                    </form>
-                {% endif %}
             </div>
-        </div>
 
-        <!-- Предупреждающий баннер во время активного бэкапа -->
-        {% if is_backup_running %}
-        <div class="mb-6 p-4 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-center justify-between text-amber-900 shadow-sm">
-            <div class="flex items-center gap-3">
-                <span class="text-2xl">⏳</span>
-                <div>
-                    <h3 class="font-bold text-sm">Внимание: В данный момент выполняется резервное копирование!</h3>
-                    <p class="text-xs text-amber-700">Запуск новых задач временно заблокирован до завершения операции. Вы можете отслеживать прогресс в логе.</p>
-                </div>
-            </div>
-            <a href="/logs/main" class="bg-amber-600 hover:bg-amber-700 text-white text-xs font-medium px-3.5 py-2 rounded-lg transition shadow shrink-0">
-                📜 Открыть лог
+            <button id="theme-toggle" title="Переключить тему"
+                    class="w-9 h-9 inline-flex items-center justify-center rounded-lg
+                           bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                           border border-gray-200 dark:border-slate-700 transition">
+                <span class="dark:hidden">🌙</span>
+                <span class="hidden dark:inline">☀️</span>
+            </button>
+
+            <a href="/add" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium
+                                  bg-brand-600 hover:bg-brand-700 text-white shadow-sm transition">
+                + Добавить
             </a>
         </div>
-        {% endif %}
-
-        <div class="bg-white rounded-xl shadow overflow-hidden">
-            <div class="overflow-x-auto">
-                <table class="w-full text-left border-collapse whitespace-nowrap">
-                    <thead>
-                        <tr class="bg-gray-50 border-b border-gray-200 text-xs font-semibold text-gray-600 uppercase tracking-wider">
-                            <th class="py-3 px-4 text-left">Тип плагина</th>
-                            <th class="py-3 px-4 text-left">IP-адрес / Хост</th>
-                            <th class="py-3 px-4 text-left">Путь сохранения</th>
-                            <th class="py-3 px-4 text-left">Последний бэкап</th>
-                            <th class="py-3 px-4 text-center">Действия</th>
-                        </tr>
-                    </thead>
-                    <tbody class="divide-y divide-gray-200">
-                        {% if devices %}
-                            {% for dev in devices %}
-                            <!-- Переменная dev.row_class задает цвет фона строки в зависимости от возраста бэкапа -->
-                            <tr class="{{ dev.row_class }} transition">
-                                <td class="py-3 px-4 font-medium text-gray-900">{{ dev.type }}</td>
-                                <td class="py-3 px-4 text-gray-900 font-mono font-medium">{{ dev.ip }}</td>
-                                <td class="py-3 px-4 text-gray-500 text-sm font-mono">{{ dev.backup_dir_name }}</td>
-                                <td class="py-3 px-4 text-sm text-gray-700 font-mono">{{ dev.last_backup_date }}</td>
-                                <td class="py-3 px-4 text-right space-x-1.5">
-                                    
-                                    <!-- Кнопка одиночного бэкапа -->
-                                    {% if is_backup_running %}
-                                        <span class="text-gray-400 font-medium text-xs bg-gray-100 border border-gray-200 px-2 py-1.5 rounded-lg inline-block cursor-not-allowed opacity-60">
-                                            ⏳ Занято
-                                        </span>
-                                    {% else %}
-                                        <a href="/run-progress/{{ dev.type }}/{{ dev.index }}" title="Сделать копию" onclick="disableAllBackupButtons()" class="backup-action-btn text-green-700 hover:text-green-900 font-medium text-xs bg-white border border-green-300 px-2 py-1.5 rounded-lg transition inline-block shadow-sm">
-                                            🔄 Бэкап
-                                        </a>
-                                    {% endif %}
-                                    
-                                    <a href="/logs/device/{{ dev.type }}/{{ dev.index }}" title="Логи устройства" class="text-amber-700 hover:text-amber-900 font-medium text-xs bg-white border border-amber-300 px-2 py-1.5 rounded-lg transition inline-block shadow-sm">
-                                        📄 Лог
-                                    </a>
-
-                                    {% if dev.backup_count > 0 %}
-                                    <a href="/backups/{{ dev.type }}/{{ dev.index }}" title="Список бэкапов" class="text-blue-700 hover:text-blue-900 font-medium text-xs bg-white border border-blue-300 px-2 py-1.5 rounded-lg transition inline-block shadow-sm">
-                                        📁 Архивы ({{ dev.backup_count }})
-                                    </a>
-                                    {% else %}
-                                    <span class="text-gray-300 font-medium text-xs bg-white border border-gray-200 px-2 py-1.5 rounded-lg inline-block cursor-not-allowed">
-                                        📁 Архивы (0)
-                                    </span>
-                                    {% endif %}
-
-                                    <a href="/edit/{{ dev.type }}/{{ dev.index }}" class="text-indigo-700 hover:text-indigo-900 font-medium text-xs bg-white border border-indigo-300 px-2 py-1.5 rounded-lg transition inline-block shadow-sm">
-                                        ⚙ Ред.
-                                    </a>
-                                </td>
-                            </tr>
-                            {% endfor %}
-                        {% else %}
-                            <tr>
-                                <td colspan="5" class="py-8 text-center text-gray-400">
-                                    Устройства еще не добавлены. Нажмите «Добавить роутер».
-                                </td>
-                            </tr>
-                        {% endif %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
     </div>
+</header>
 
-    <!-- Клиентский скрипт мгновенного отключения кнопок при нажатии -->
-    <script>
-        function disableAllBackupButtons() {
-            setTimeout(() => {
-                const elements = document.querySelectorAll('.backup-action-btn');
-                elements.forEach(el => {
-                    el.classList.add('opacity-50', 'cursor-not-allowed', 'pointer-events-none');
-                    if (el.tagName === 'BUTTON') {
-                        el.disabled = true;
-                        el.innerText = '⏳ Запуск...';
-                    } else if (el.tagName === 'A') {
-                        el.innerText = '⏳ Занято';
-                    }
-                });
-            }, 50);
+<main class="max-w-[1400px] mx-auto px-5 py-5">
+    <div class="grid grid-cols-1 lg:grid-cols-[340px_minmax(0,1fr)] gap-5">
+
+        <aside class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm overflow-hidden flex flex-col lg:h-[calc(100vh-120px)] lg:sticky lg:top-[76px]">
+            <div class="p-3 border-b border-gray-100 dark:border-slate-800">
+                <div class="relative">
+                    <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-400 dark:text-slate-500 pointer-events-none">🔍</span>
+                    <input type="text" id="device-search" placeholder="Поиск по IP / хосту…"
+                           class="w-full pl-9 pr-3 py-2 rounded-lg text-sm
+                                  bg-gray-50 dark:bg-slate-950
+                                  border border-gray-200 dark:border-slate-800
+                                  placeholder-gray-400 dark:placeholder-slate-500
+                                  focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+                </div>
+            </div>
+
+            <div class="flex-1 overflow-y-auto scroll-thin divide-y divide-gray-100 dark:divide-slate-800" id="device-list">
+                {% for d in devices %}
+                    {% set m = status_meta(d.status) %}
+                    <button data-device-id="{{ d.id }}"
+                            class="device-item group w-full text-left px-4 py-3 border-l-2 transition
+                                   {{ 'bg-brand-50/60 dark:bg-brand-950/30 border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-950/40'
+                                      if (selected and selected.id == d.id)
+                                      else 'border-transparent hover:bg-gray-50 dark:hover:bg-slate-800/60' }}">
+                        <div class="flex items-start gap-3">
+                            <span class="mt-1.5 w-2.5 h-2.5 rounded-full {{ m.dot }} ring-4 {{ m.ring }} shrink-0"></span>
+                            <div class="min-w-0 flex-1">
+                                <div class="flex items-center justify-between gap-2">
+                                    <span class="text-[11px] uppercase tracking-wide font-semibold text-gray-500 dark:text-slate-400">{{ d.type }}</span>
+                                    <span class="text-[10px] px-1.5 py-0.5 rounded font-medium {{ m.badge }}">{{ m.label }}</span>
+                                </div>
+                                <div class="mt-0.5 font-mono text-sm font-medium truncate">{{ d.host }}</div>
+                                <div class="mt-0.5 text-[11px] text-gray-500 dark:text-slate-400 truncate">
+                                    {% if d.last_success %}
+                                        Последний: {{ d.last_success }} · {{ d.backup_count }} копий
+                                    {% else %}
+                                        Бэкапы ещё не создавались
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                    </button>
+                {% endfor %}
+                {% if not devices %}
+                    <div class="px-4 py-8 text-center text-sm text-gray-400 dark:text-slate-500">
+                        Устройства не добавлены.
+                    </div>
+                {% endif %}
+            </div>
+
+            <div class="px-4 py-2.5 border-t border-gray-100 dark:border-slate-800 text-[11px] text-gray-500 dark:text-slate-400 flex items-center justify-between">
+                <span>Всего устройств: <b class="text-gray-700 dark:text-slate-200">{{ devices | length }}</b></span>
+            </div>
+        </aside>
+
+        <section id="detail-panel" class="space-y-5">
+            {% if selected %}
+                {% with d = selected %}
+                    {% include "_device_detail.html" %}
+                {% endwith %}
+            {% else %}
+                <div class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 p-12 text-center">
+                    <div class="text-5xl mb-4">📦</div>
+                    <h2 class="text-lg font-semibold mb-2">Нет устройств</h2>
+                    <p class="text-sm text-gray-500 dark:text-slate-400 mb-4">Добавьте первое устройство для резервного копирования.</p>
+                    <a href="/add" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium">
+                        + Добавить роутер
+                    </a>
+                </div>
+            {% endif %}
+        </section>
+    </div>
+</main>
+
+<script>
+// ============================================================
+// ТЕМА
+// ============================================================
+
+const htmlEl = document.documentElement;
+const storedTheme = localStorage.getItem('nbm-theme');
+const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+if (storedTheme === 'dark' || (!storedTheme && prefersDark)) htmlEl.classList.add('dark');
+
+document.getElementById('theme-toggle').addEventListener('click', () => {
+    htmlEl.classList.toggle('dark');
+    localStorage.setItem('nbm-theme', htmlEl.classList.contains('dark') ? 'dark' : 'light');
+});
+
+
+// ============================================================
+// ВЫБОР УСТРОЙСТВА (гибрид: SSR при первой загрузке, fetch при клике)
+// ============================================================
+
+const panel = document.getElementById('detail-panel');
+
+async function selectDevice(id) {
+    // Подсветка в списке
+    document.querySelectorAll('[data-device-id]').forEach(el => {
+        const isActive = el.dataset.deviceId === id;
+        el.classList.toggle('bg-brand-50/60', isActive);
+        el.classList.toggle('dark:bg-brand-950/30', isActive);
+        el.classList.toggle('border-brand-600', isActive);
+        el.classList.toggle('hover:bg-brand-50', isActive);
+        el.classList.toggle('dark:hover:bg-brand-950/40', isActive);
+        el.classList.toggle('border-transparent', !isActive);
+        el.classList.toggle('hover:bg-gray-50', !isActive);
+        el.classList.toggle('dark:hover:bg-slate-800/60', !isActive);
+    });
+
+    // Обновление URL без перезагрузки
+    history.replaceState(null, '', '/?selected=' + id);
+
+    // Загрузка фрагмента
+    panel.style.opacity = '0.35';
+    panel.style.transition = 'opacity .12s ease';
+
+    try {
+        const [type, idx] = id.split('/');
+        const res = await fetch(`/api/device/${type}/${idx}`);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        panel.innerHTML = await res.text();
+    } catch (e) {
+        panel.innerHTML = `<div class="bg-white dark:bg-slate-900 rounded-2xl border border-rose-300 dark:border-rose-800 p-6 text-rose-700 dark:text-rose-300">
+            Не удалось загрузить устройство: ${e.message}
+        </div>`;
+    } finally {
+        panel.style.opacity = '1';
+        bindRunBackup();
+    }
+}
+
+document.querySelectorAll('[data-device-id]').forEach(btn => {
+    btn.addEventListener('click', () => selectDevice(btn.dataset.deviceId));
+});
+
+
+// ============================================================
+// КНОПКА "ЗАПУСТИТЬ БЭКАП" В КАРТОЧКЕ
+// ============================================================
+
+function bindRunBackup() {
+    const btn = document.getElementById('run-backup-btn');
+    if (!btn) return;
+
+    btn.addEventListener('click', () => {
+        if (btn.disabled) return;
+        btn.disabled = true;
+        btn.querySelector('.btn-idle').classList.add('hidden');
+        const busy = btn.querySelector('.btn-busy');
+        busy.classList.remove('hidden');
+        busy.classList.add('inline-flex');
+
+        const id = btn.dataset.deviceId; // "mikrotik/0"
+        const [type, idx] = id.split('/');
+
+        // Перенаправление на существующий endpoint одиночного бэкапа
+        window.location.href = `/run-progress/${type}/${idx}`;
+    });
+}
+
+bindRunBackup();
+
+
+// ============================================================
+// МАССОВЫЙ БЭКАП — блокируем кнопки
+// ============================================================
+
+function disableAllBackups() {
+    const b = document.getElementById('run-all-btn');
+    if (b) {
+        b.disabled = true;
+        b.classList.add('opacity-60', 'cursor-not-allowed');
+        b.innerHTML = '<span class="spinner"></span> Запуск...';
+    }
+    const rb = document.getElementById('run-backup-btn');
+    if (rb) {
+        rb.disabled = true;
+        rb.classList.add('opacity-60', 'cursor-not-allowed');
+    }
+}
+
+
+// ============================================================
+// ПОИСК ПО СПИСКУ УСТРОЙСТВ
+// ============================================================
+
+document.getElementById('device-search').addEventListener('input', (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    document.querySelectorAll('[data-device-id]').forEach(el => {
+        const text = el.textContent.toLowerCase();
+        el.style.display = text.includes(q) ? '' : 'none';
+    });
+});
+
+
+// ============================================================
+// ОПРОС СИСТЕМНОЙ ИНФОРМАЦИИ (раз в 30 секунд)
+// ============================================================
+
+async function refreshSystemInfo() {
+    try {
+        const res = await fetch('/api/system/info');
+        if (!res.ok) return;
+        const info = await res.json();
+        const sizeEl = document.getElementById('logs-size');
+        if (sizeEl && info.logs_size) {
+            sizeEl.textContent = info.logs_size;
         }
-    </script>
+    } catch (e) {
+        // тихо игнорируем
+    }
+}
+
+setInterval(refreshSystemInfo, 30000);
+</script>
+
 </body>
 </html>

@@ -21,7 +21,6 @@
                 </span>
             </p>
         </div>
-
         <!-- Управление и кнопки -->
         <div class="flex items-center gap-2">
             <button id="toggle-auto" onclick="toggleAutoRefresh()" class="bg-emerald-800 hover:bg-emerald-700 text-emerald-100 text-xs px-3 py-2 rounded-lg border border-emerald-600 transition font-medium">
@@ -47,11 +46,25 @@
             </a>
         </div>
     </div>
+    
+    {% if focus_date and focus_line_index is none %}
+    <div class="mt-3 px-4 py-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-200 text-xs flex items-center gap-3 shrink-0">
+        <span class="text-base">🔎</span>
+        <div>
+            <b>Дата {{ focus_date }} не найдена</b> в текущем окне лога
+            ({{ lines_shown }} строк).
+            Нажмите «Показать весь лог», чтобы поискать по всей истории.
+        </div>
+        <a href="?focus_date={{ focus_date }}&limit=all"
+           class="ml-auto shrink-0 px-3 py-1.5 rounded-md bg-amber-600 hover:bg-amber-700 text-white font-medium transition">
+            Показать весь лог
+        </a>
+    </div>
+    {% endif %}
 
     <!-- Консоль логов -->
     <div class="flex-1 relative mt-4 overflow-hidden rounded-xl border border-gray-800 bg-black shadow-2xl">
-        <pre id="log-container" class="h-full w-full p-4 overflow-y-auto font-mono text-xs text-green-400 whitespace-pre-wrap break-all leading-relaxed select-text">{{ content }}</pre>
-
+        <div id="log-container" class="h-full w-full p-4 overflow-y-auto font-mono text-xs text-green-400 whitespace-pre-wrap break-all leading-relaxed select-text">{% for line in content.splitlines(keepends=True) %}<span class="log-line" data-i="{{ loop.index0 }}">{{ line }}</span>{% endfor %}</div>
         <!-- Плавающая кнопка прокрутки -->
         <button onclick="scrollToBottom()" 
                 id="floating-btn"
@@ -64,6 +77,8 @@
         const container = document.getElementById('log-container');
         const liveIndicator = document.getElementById('live-indicator');
         const toggleBtn = document.getElementById('toggle-auto');
+        const FOCUS_LINE_INDEX = {{ focus_line_index if focus_line_index is not none else 'null' }};
+        const FOCUS_DATE = {{ ('"' + focus_date + '"') if focus_date else 'null' }};
         let autoRefresh = true;
 
         function scrollToBottom() {
@@ -113,6 +128,25 @@
         window.addEventListener('DOMContentLoaded', () => {
             scrollToBottom();
         });
+                if (FOCUS_LINE_INDEX !== null) {
+            autoRefresh = false;
+            toggleBtn.textContent = "▶ Включить автообновление";
+            toggleBtn.className = "bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs px-3 py-2 rounded-lg border border-gray-700 transition font-medium";
+            liveIndicator.classList.add("hidden");
+
+            if (FOCUS_DATE) {
+                document.querySelectorAll('.log-line').forEach(el => {
+                    if (el.textContent.startsWith(FOCUS_DATE)) {
+                        el.classList.add('bg-amber-500/10', 'text-amber-300');
+                    }
+                });
+            }
+
+            const target = document.querySelector('.log-line[data-i="' + FOCUS_LINE_INDEX + '"]');
+            if (target) {
+                target.scrollIntoView({ block: 'center', behavior: 'auto' });
+            }
+        }
     </script>
 </body>
 </html>
