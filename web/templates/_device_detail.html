@@ -124,6 +124,79 @@
         {% endfor %}
     </div>
 </div>
+<!-- STORAGE BACKENDS -->
+{% if d.storage_rows %}
+<div class="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-5">
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div>
+            <h2 class="text-sm font-semibold">Хранилища</h2>
+            <p class="mt-0.5 text-[11px] text-gray-500 dark:text-slate-400">
+                Куда выгружаются резервные копии.
+            </p>
+        </div>
+        <a href="/edit/{{ d.type }}/{{ d.index }}"
+           class="text-xs text-brand-600 dark:text-brand-400 hover:underline font-medium">
+            Настроить →
+        </a>
+    </div>
+
+    <ul class="divide-y divide-gray-100 dark:divide-slate-800 -mx-5">
+        {% for s in d.storage_rows %}
+        <li class="px-5 py-3 flex items-center justify-between gap-3">
+            <div class="flex items-center gap-3 min-w-0">
+                <span class="text-xl shrink-0">{{ s.icon }}</span>
+                <div class="min-w-0">
+                    <div class="text-sm font-medium truncate">{{ s.name }}</div>
+                    <div class="text-[11px] text-gray-500 dark:text-slate-400 truncate">
+                        {{ s.message }}
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex items-center gap-2 shrink-0">
+                {% if s.last_run %}
+                    <span class="text-[11px] font-mono text-gray-400 dark:text-slate-500 hidden sm:inline">
+                        {{ s.last_run }}
+                    </span>
+                {% endif %}
+
+                {% if s.status == 'ok' %}
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium
+                                 bg-emerald-100 dark:bg-emerald-900/60
+                                 text-emerald-700 dark:text-emerald-300">
+                        ✓ OK
+                    </span>
+                {% elif s.status == 'error' %}
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium
+                                 bg-rose-100 dark:bg-rose-900/60
+                                 text-rose-700 dark:text-rose-300">
+                        ✗ Ошибка
+                    </span>
+                {% elif s.status == 'skipped' %}
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium
+                                 bg-slate-100 dark:bg-slate-800
+                                 text-slate-600 dark:text-slate-400">
+                        ↷ Пропущено
+                    </span>
+                {% elif s.status == 'idle' %}
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium
+                                 bg-gray-100 dark:bg-slate-800
+                                 text-gray-600 dark:text-slate-400">
+                        — Не запускалось
+                    </span>
+                {% else %}
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium
+                                 bg-gray-100 dark:bg-slate-800
+                                 text-gray-500 dark:text-slate-500">
+                        ⏸ Отключено
+                    </span>
+                {% endif %}
+            </div>
+        </li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
 
 <!-- CONFIG + NAV -->
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
@@ -143,14 +216,6 @@
             <div class="flex items-center justify-between gap-3">
                 <dt class="text-gray-500 dark:text-slate-400">SSH-ключ</dt>
                 <dd class="font-mono text-xs">{{ d.ssh_key }}</dd>
-            </div>
-            <div class="flex items-center justify-between gap-3">
-                <dt class="text-gray-500 dark:text-slate-400">FTP-выгрузка</dt>
-                <dd class="text-xs">
-                    <span class="px-1.5 py-0.5 rounded font-medium {{ 'bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300' if d.ftp_enabled else 'bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-400' }}">
-                        {{ 'включена' if d.ftp_enabled else 'выключена' }}
-                    </span>
-                </dd>
             </div>
             <div class="flex items-center justify-between gap-3">
                 <dt class="text-gray-500 dark:text-slate-400">Ротация</dt>

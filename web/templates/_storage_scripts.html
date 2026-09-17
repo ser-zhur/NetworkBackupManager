@@ -1,0 +1,48 @@
+<script>
+async function testStorage(backendId, deviceType, index) {
+    const resultEl = document.getElementById('storage-test-' + backendId);
+    resultEl.textContent = 'Проверка…';
+    resultEl.className = 'text-xs text-gray-500 dark:text-slate-400';
+
+    const section = document.querySelector(`[data-backend-id="${backendId}"]`);
+    const payload = {};
+
+    section.querySelectorAll('input, select').forEach(el => {
+        const m = el.name.match(/^storage_[^_]+_(.+)$/);
+        if (!m) return;
+        const key = m[1];
+
+        if (el.type === 'checkbox') {
+            payload[key] = el.checked;
+        } else if (el.type === 'number') {
+            payload[key] = el.value === '' ? '' : Number(el.value);
+        } else {
+            payload[key] = el.value;
+        }
+    });
+
+    const url = `/api/storage/test/${backendId}`
+              + `?device_type=${encodeURIComponent(deviceType)}`
+              + `&index=${index}`;
+
+    try {
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+
+        if (data.ok) {
+            resultEl.textContent = '✓ ' + data.message;
+            resultEl.className = 'text-xs text-emerald-600 dark:text-emerald-400 font-medium';
+        } else {
+            resultEl.textContent = '✗ ' + data.message;
+            resultEl.className = 'text-xs text-rose-600 dark:text-rose-400 font-medium';
+        }
+    } catch (e) {
+        resultEl.textContent = 'Ошибка: ' + e.message;
+        resultEl.className = 'text-xs text-rose-600 dark:text-rose-400 font-medium';
+    }
+}
+</script>

@@ -27,13 +27,13 @@
             </button>
 
             {% if limit != 'all' %}
-                <a href="?limit=all{% if focus_date %}&focus_date={{ focus_date }}{% endif %}"
-                   class="bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs px-3 py-2 rounded-lg border border-gray-700 transition flex items-center gap-1 font-medium">
+                <a href="?limit=all{% if stream %}&stream={{ stream }}{% endif %}{% if focus_date %}&focus_date={{ focus_date }}{% endif %}"
+                class="bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs px-3 py-2 rounded-lg border border-gray-700 transition flex items-center gap-1 font-medium">
                     📖 Показать весь лог
                 </a>
             {% else %}
-                <a href="?limit=100{% if focus_date %}&focus_date={{ focus_date }}{% endif %}"
-                   class="bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs px-3 py-2 rounded-lg border border-gray-700 transition flex items-center gap-1 font-medium">
+                <a href="?limit=100{% if stream %}&stream={{ stream }}{% endif %}{% if focus_date %}&focus_date={{ focus_date }}{% endif %}"
+                class="bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs px-3 py-2 rounded-lg border border-gray-700 transition flex items-center gap-1 font-medium">
                     ⚡ Показать 100 строк
                 </a>
             {% endif %}

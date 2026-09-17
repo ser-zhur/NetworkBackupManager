@@ -1,0 +1,158 @@
+{# ========================================================= #}
+{# PARTIAL: секция настроек хранилищ                          #}
+{#                                                            #}
+{# Ожидает в контексте:                                       #}
+{#   storage_backends — список backend'ов                     #}
+{#   storage_mode     — 'edit' | 'add'                        #}
+{#                                                            #}
+{# В режиме edit:                                             #}
+{#   router, device_type, index                               #}
+{# В режиме add:                                              #}
+{#   default_storage                                          #}
+{# ========================================================= #}
+
+{% set _mode = storage_mode|default('edit') %}
+
+{% for backend in storage_backends %}
+
+    {% if _mode == 'edit' %}
+        {% set cfg = (router.storage or {}).get(backend.id, {}) %}
+    {% else %}
+        {% set cfg = (default_storage or {}).get(backend.id, {}) %}
+    {% endif %}
+
+    <section class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm p-6 space-y-4"
+             data-backend-id="{{ backend.id }}">
+
+        <div class="flex items-start justify-between gap-4">
+            <div>
+                <h3 class="text-sm font-semibold text-gray-700 dark:text-slate-200 flex items-center gap-2">
+                    {{ backend.icon }} {{ backend.name }}
+                </h3>
+                {% if backend.description %}
+                    <p class="text-xs text-gray-500 dark:text-slate-400 mt-1">
+                        {{ backend.description }}
+                    </p>
+                {% endif %}
+            </div>
+
+            <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                <input type="checkbox"
+                       name="storage_{{ backend.id }}_enabled"
+                       value="true"
+                       {% if cfg.get('enabled') %}checked{% endif %}
+                       class="sr-only peer">
+                <div class="w-11 h-6 bg-gray-200 dark:bg-slate-700 rounded-full
+                            peer-checked:bg-brand-600 transition
+                            after:content-[''] after:absolute after:top-0.5 after:left-0.5
+                            after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all
+                            peer-checked:after:translate-x-5"></div>
+            </label>
+        </div>
+
+        {% if backend.fields %}
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+            {% for field in backend.fields %}
+                {% set val = cfg.get(field.name, field.default) %}
+
+                {% if field.type == 'select' %}
+                    <div class="md:col-span-2">
+                        <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
+                            {{ field.label }}{% if field.required %} *{% endif %}
+                        </label>
+                        <select name="storage_{{ backend.id }}_{{ field.name }}"
+                                class="w-full rounded-lg px-3 py-2 text-sm
+                                       bg-gray-50 dark:bg-slate-950
+                                       border border-gray-200 dark:border-slate-800
+                                       focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+                            {% for v, label in (field.choices or []) %}
+                                <option value="{{ v }}" {% if val == v %}selected{% endif %}>{{ label }}</option>
+                            {% endfor %}
+                        </select>
+                        {% if field.help %}
+                            <p class="mt-1 text-[11px] text-gray-500 dark:text-slate-400">{{ field.help }}</p>
+                        {% endif %}
+                    </div>
+
+                {% elif field.type == 'bool' %}
+                    <label class="flex items-center gap-3 md:col-span-2">
+                        <input type="checkbox"
+                               name="storage_{{ backend.id }}_{{ field.name }}"
+                               value="true"
+                               {% if val %}checked{% endif %}
+                               class="text-brand-600 focus:ring-brand-500">
+                        <span class="text-sm text-gray-700 dark:text-slate-300">{{ field.label }}</span>
+                    </label>
+
+                {% elif field.type == 'password' %}
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
+                            {{ field.label }}{% if field.required %} *{% endif %}
+                        </label>
+                        <input type="password"
+                               name="storage_{{ backend.id }}_{{ field.name }}"
+                               value=""
+                               placeholder="{% if _mode == 'edit' and val %}Оставьте пустым, чтобы не менять{% else %}{{ field.placeholder }}{% endif %}"
+                               class="w-full rounded-lg px-3 py-2 text-sm
+                                      bg-gray-50 dark:bg-slate-950
+                                      border border-gray-200 dark:border-slate-800
+                                      placeholder-gray-400 dark:placeholder-slate-500
+                                      focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+                    </div>
+
+                {% elif field.type == 'number' %}
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
+                            {{ field.label }}{% if field.required %} *{% endif %}
+                        </label>
+                        <input type="number"
+                               name="storage_{{ backend.id }}_{{ field.name }}"
+                               value="{{ val }}"
+                               placeholder="{{ field.placeholder }}"
+                               {% if field.required %}required{% endif %}
+                               class="w-full rounded-lg px-3 py-2 text-sm font-mono
+                                      bg-gray-50 dark:bg-slate-950
+                                      border border-gray-200 dark:border-slate-800
+                                      placeholder-gray-400 dark:placeholder-slate-500
+                                      focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+                    </div>
+
+                {% else %}
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
+                            {{ field.label }}{% if field.required %} *{% endif %}
+                        </label>
+                        <input type="text"
+                               name="storage_{{ backend.id }}_{{ field.name }}"
+                               value="{{ val }}"
+                               placeholder="{{ field.placeholder }}"
+                               {% if field.required %}required{% endif %}
+                               class="w-full rounded-lg px-3 py-2 text-sm font-mono
+                                      bg-gray-50 dark:bg-slate-950
+                                      border border-gray-200 dark:border-slate-800
+                                      placeholder-gray-400 dark:placeholder-slate-500
+                                      focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+                    </div>
+                {% endif %}
+            {% endfor %}
+        </div>
+
+        <div class="flex flex-wrap items-center gap-3 pt-2">
+            <button type="button"
+                    {% if _mode == 'edit' %}
+                        onclick="testStorage('{{ backend.id }}', '{{ device_type }}', {{ index }})"
+                    {% else %}
+                        onclick="testStorage('{{ backend.id }}', '', -1)"
+                    {% endif %}
+                    class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+                           bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                           border border-gray-200 dark:border-slate-700 transition">
+                🔌 Проверить соединение
+            </button>
+            <span id="storage-test-{{ backend.id }}"
+                  class="text-xs text-gray-500 dark:text-slate-400"></span>
+        </div>
+        {% endif %}
+    </section>
+
+{% endfor %}

@@ -118,50 +118,8 @@
             </div>
         </section>
 
-        <!-- 3. FTP -->
-        <section class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm p-6 space-y-4">
-            <h3 class="text-sm font-semibold text-gray-700 dark:text-slate-200 flex items-center gap-2">
-                ☁️ 3. Внешний FTP-сервер (опционально)
-            </h3>
 
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">FTP Хост:</label>
-                    <input type="text" name="ftp_host" placeholder="192.168.88.254"
-                           class="w-full rounded-lg px-3 py-2 text-sm
-                                  bg-gray-50 dark:bg-slate-950
-                                  border border-gray-200 dark:border-slate-800
-                                  focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">FTP Директория:</label>
-                    <input type="text" name="ftp_dir" value="/network_backups"
-                           class="w-full rounded-lg px-3 py-2 text-sm font-mono
-                                  bg-gray-50 dark:bg-slate-950
-                                  border border-gray-200 dark:border-slate-800
-                                  focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
-                </div>
-            </div>
-
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">FTP Пользователь:</label>
-                    <input type="text" name="ftp_user"
-                           class="w-full rounded-lg px-3 py-2 text-sm
-                                  bg-gray-50 dark:bg-slate-950
-                                  border border-gray-200 dark:border-slate-800
-                                  focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">FTP Пароль (зашифруется):</label>
-                    <input type="password" name="ftp_pass" placeholder="••••••••"
-                           class="w-full rounded-lg px-3 py-2 text-sm
-                                  bg-gray-50 dark:bg-slate-950
-                                  border border-gray-200 dark:border-slate-800
-                                  focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
-                </div>
-            </div>
-        </section>
+{% include "_storage_scripts.html" %}
 
         <div class="flex justify-end gap-3 pt-2">
             <a href="/"

@@ -51,6 +51,11 @@ from core.scheduler import (
     BackupScheduler,
 )
 
+from core.storage import (
+    StorageManager,
+    PushContext,
+)
+
 from core.service_installer import (
     get_status,
     schedule_restart,
@@ -75,6 +80,7 @@ from core.context import (
     PLUGINS_DIR,
     WEB_DIR,
     AUTH_FILE,
+    STATE_FILE,
     load_json,
 )
 
@@ -144,6 +150,31 @@ security = HTTPBasic()
 
 
 # =========================================================
+# STORAGE MANAGER
+# =========================================================
+
+try:
+    storage_manager = StorageManager()
+    storage_manager.discover()
+
+    for err in storage_manager.errors():
+        logging.warning("storage: %s", err)
+
+    logging.info(
+        "storage backends: %s",
+        ", ".join(storage_manager.ids()) or "—",
+    )
+
+except Exception as exc:
+    logging.error(
+        "Ошибка загрузки StorageManager: %s",
+        exc,
+        exc_info=True,
+    )
+    storage_manager = None
+
+
+# =========================================================
 # PLUGIN MANAGER
 # =========================================================
 
@@ -153,7 +184,9 @@ try:
         PluginManager,
     )
 
-    plugin_manager = PluginManager()
+    plugin_manager = PluginManager(
+        storage_manager=storage_manager,
+    )
 
     plugin_manager.discover_and_load_plugins()
 
@@ -162,10 +195,10 @@ except Exception as exc:
     logging.error(
         "Ошибка загрузки PluginManager: %s",
         exc,
+        exc_info=True,
     )
 
     plugin_manager = None
-
 
 # =========================================================
 # SCHEDULER
@@ -721,6 +754,164 @@ def format_size(size_bytes: int) -> str:
         return f"{size_bytes / (1024 * 1024):.1f} МБ"
     return f"{size_bytes / (1024 * 1024 * 1024):.2f} ГБ"
 
+# =========================================================
+# STORAGE STATE (data/state.json)
+# =========================================================
+
+def _load_device_state(device_id: str) -> dict:
+    """Последний результат backend'ов для устройства."""
+    try:
+        state = load_json(STATE_FILE, {})
+        if not isinstance(state, dict):
+            return {}
+        entry = state.get(device_id)
+        return entry if isinstance(entry, dict) else {}
+    except Exception:
+        return {}
+
+
+def _ensure_storage_section(router: dict) -> None:
+    """
+    Если у устройства нет секции storage — добавляем
+    дефолт в памяти (git включён, остальные выключены).
+
+    На диск НЕ пишем: при первом сохранении формы через
+    update_router секция сохранится уже явно.
+    """
+    if "storage" in router and isinstance(router["storage"], dict):
+        return
+
+    if storage_manager is None:
+        return
+
+    router["storage"] = storage_manager.defaults_for_new_router()
+
+
+def _build_storage_rows(router: dict, device_state: dict) -> list:
+    """
+    Список строк для блока «Хранилища» в карточке устройства.
+    """
+    if storage_manager is None:
+        return []
+
+    storage_cfg = router.get("storage") or {}
+    backends_state = device_state.get("backends") or {}
+    last_run = device_state.get("last_run")
+
+    rows = []
+    for backend in storage_manager.all():
+        cfg = storage_cfg.get(backend.id) or {}
+        enabled = bool(cfg.get("enabled"))
+
+        st = backends_state.get(backend.id) or {}
+
+        if not enabled:
+            status = "disabled"
+            ok = None
+            message = "Отключено"
+            skipped = False
+        else:
+            ok = st.get("ok")
+            message = st.get("message") or ""
+            skipped = bool(st.get("skipped"))
+
+            if ok is None:
+                status = "idle"
+                message = message or "Ещё не запускалось"
+            elif skipped:
+                status = "skipped"
+            elif ok:
+                status = "ok"
+            else:
+                status = "error"
+
+        rows.append({
+            "id": backend.id,
+            "name": backend.name,
+            "icon": backend.icon,
+            "description": backend.description,
+            "enabled": enabled,
+            "status": status,
+            "message": message,
+            "last_run": last_run if enabled else None,
+        })
+
+    return rows
+
+
+# =========================================================
+# STORAGE FORM HELPERS
+# =========================================================
+
+def _parse_storage_form(form, old_storage: dict) -> dict:
+    """
+    Разбирает поля формы storage_<backend>_<field>
+    и формирует секцию storage для routers.json.
+
+    Пароли при сохранении шифруются. Если поле-пароль
+    пришло пустым — берётся старое значение из old_storage.
+    """
+    if storage_manager is None:
+        return {}
+
+    old_storage = old_storage if isinstance(old_storage, dict) else {}
+    result: dict = {}
+
+    for backend in storage_manager.all():
+        enabled_key = f"storage_{backend.id}_enabled"
+        enabled = form.get(enabled_key) == "true"
+
+        cfg: dict = {"enabled": enabled}
+        old_cfg = old_storage.get(backend.id) or {}
+
+        for field in backend.fields:
+            key = f"storage_{backend.id}_{field.name}"
+
+            if field.type == "bool":
+                cfg[field.name] = form.get(key) == "true"
+
+            elif field.type == "number":
+                raw = form.get(key, "")
+                if raw == "" or raw is None:
+                    cfg[field.name] = field.default
+                else:
+                    try:
+                        cfg[field.name] = int(raw)
+                    except (TypeError, ValueError):
+                        cfg[field.name] = field.default
+
+            elif field.type == "password":
+                raw = form.get(key, "")
+                if raw:
+                    cfg[field.name] = storage.encrypt(raw)
+                else:
+                    cfg[field.name] = old_cfg.get(field.name, "")
+
+            else:
+                raw = form.get(key, "")
+                if raw == "" and field.default != "":
+                    cfg[field.name] = field.default
+                else:
+                    cfg[field.name] = raw
+
+        result[backend.id] = cfg
+
+    return result
+
+
+def _storage_backends_for_template():
+    """Список backend'ов для рендера формы."""
+    if storage_manager is None:
+        return []
+    return storage_manager.all()
+
+
+def _storage_defaults_for_template():
+    """Дефолтная секция storage — для формы добавления."""
+    if storage_manager is None:
+        return {}
+    return storage_manager.defaults_for_new_router()
+
 
 def _resolve_backup_path(backup_path) -> Path:
     path = Path(backup_path)
@@ -801,15 +992,25 @@ def get_device_history(backup_path, days: int = 30):
 
 
 def get_recent_files(backup_path, limit: int = 3):
-    """Последние limit файлов во всех подкаталогах (по mtime)."""
+    """
+    Последние limit файлов из датированных подкаталогов
+    (по mtime). Файлы в корне и служебные каталоги
+    (.git и прочие) не учитываются.
+    """
     path = _resolve_backup_path(backup_path)
     if not path.exists() or not path.is_dir():
         return []
 
     files = []
     for folder in path.iterdir():
+
         if not folder.is_dir():
             continue
+
+        # Только датированные подкаталоги
+        if not DATE_DIR_REGEX.match(folder.name):
+            continue
+
         try:
             for f in folder.iterdir():
                 if f.is_file():
@@ -860,6 +1061,9 @@ def _build_device_payload(
     router: dict,
 ) -> dict:
     """Собирает всё, что нужно для карточки устройства."""
+    # Гарантируем секцию storage (в памяти)
+    _ensure_storage_section(router)
+
     b_path = router.get("backup_path", "backups/")
 
     count, last_date, age_days = get_device_backup_info(b_path)
@@ -886,9 +1090,6 @@ def _build_device_payload(
     else:
         version = "pfSense"
 
-    ftp_cfg = router.get("ftp") or {}
-    ftp_enabled = bool(ftp_cfg.get("host"))
-
     return {
         "id": f"{device_type}/{index}",
         "type": device_type,
@@ -911,10 +1112,15 @@ def _build_device_payload(
             or router.get("private_key")
             or "id_rsa.key"
         ),
-        "ftp_enabled": ftp_enabled,
         "history": history,
         "history_dates": history_dates,
         "recent": get_recent_files(b_path, 3),
+
+        "storage_rows": _build_storage_rows(
+            router,
+            _load_device_state(f"{device_type}/{index}"),
+        ),
+    
     }
 
 
@@ -960,11 +1166,33 @@ def execute_device_backup_task(
 
         created_files = backup_func(secure_router)
 
-        if created_files and hasattr(plugin_manager, "_rotate_local"):
-            plugin_manager._rotate_local(
-                secure_router.get("backup_path"),
-                secure_router.get("max_backups", 7),
-            )
+        if created_files:
+            # Локальная ротация датированных папок
+            if hasattr(plugin_manager, "_rotate_local"):
+                plugin_manager._rotate_local(
+                    secure_router.get("backup_path"),
+                    secure_router.get("max_backups", 7),
+                )
+
+            # Push в storage backends (git, FTP, SMB, ...)
+            if hasattr(plugin_manager, "_push_to_storages"):
+                try:
+                    plugin_manager._push_to_storages(
+                        device_type=device_type,
+                        index=index,
+                        device_host=ip_disp,
+                        router=secure_router,
+                        backup_path=Path(
+                            secure_router.get("backup_path")
+                        ),
+                        created_files=created_files,
+                    )
+                except Exception as exc:
+                    logging.error(
+                        "storage: ошибка диспетчеризации: %s",
+                        exc,
+                        exc_info=True,
+                    )
 
         logging.info("✅ [Фон] Бэкап успешно завершен для %s", ip_disp)
         
@@ -1094,6 +1322,72 @@ def api_system_info(user: str = Depends(require_auth)):
         "is_backup_running": is_backup_running(),
     }
 
+# =========================================================
+# API: TEST STORAGE BACKEND
+# =========================================================
+
+@app.post("/api/storage/test/{backend_id}")
+async def api_storage_test(
+    backend_id: str,
+    request: Request,
+    device_type: str = "",
+    index: int = -1,
+    user: str = Depends(require_auth),
+):
+    if storage_manager is None:
+        raise HTTPException(404, "StorageManager недоступен")
+
+    backend = storage_manager.get(backend_id)
+    if backend is None:
+        raise HTTPException(404, f"Backend '{backend_id}' не найден")
+
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+
+    # Пытаемся найти старое значение паролей из существующего
+    # роутера — если тестируется уже настроенное устройство.
+    old_cfg: dict = {}
+    if device_type and index >= 0:
+        try:
+            routers = plugin_manager._plugins[device_type].get("routers", [])
+            if 0 <= index < len(routers):
+                old_cfg = (routers[index].get("storage") or {}).get(backend_id) or {}
+        except Exception:
+            old_cfg = {}
+
+    # Собираем конфиг из формы + старых паролей
+    cfg: dict = {}
+    for field in backend.fields:
+        value = data.get(field.name, "")
+
+        if field.type == "password":
+            if value:
+                cfg[field.name] = value           # плейн из формы
+            else:
+                enc = old_cfg.get(field.name, "")
+                cfg[field.name] = storage.decrypt(enc) if enc else ""
+        elif field.type == "number":
+            try:
+                cfg[field.name] = int(value) if value != "" else field.default
+            except (TypeError, ValueError):
+                cfg[field.name] = field.default
+        elif field.type == "bool":
+            cfg[field.name] = bool(value)
+        else:
+            cfg[field.name] = value if value != "" else field.default
+
+    try:
+        result = backend.test(cfg)
+    except Exception as exc:
+        logging.error(
+            "storage test [%s]: исключение: %s",
+            backend_id, exc, exc_info=True,
+        )
+        return {"ok": False, "message": f"Исключение: {exc}"}
+
+    return {"ok": result.ok, "message": result.message}
 
 # =========================================================
 # SERVICE PAGE
@@ -1644,7 +1938,13 @@ def add_router_page(
         "add.html",
         {
             "plugins":
-                plugins_list
+                plugins_list,
+
+            "storage_backends":
+                _storage_backends_for_template(),
+
+            "default_storage":
+                _storage_defaults_for_template(),
         },
     )
 
@@ -1657,22 +1957,31 @@ def add_router_page(
     "/save-router"
 )
 async def save_router_endpoint(
+    request: Request,
     user: str = Depends(
         require_auth
     ),
-    device_type: str = Form(...),
-    ip: str = Form(...),
-    version: str = Form("7"),
-    username: str = Form("admin"),
-    ssh_pass: str = Form(""),
-    private_key: str = Form(""),
-    backup_path: str = Form(...),
-    max_backups: int = Form(5),
-    ftp_host: str = Form(""),
-    ftp_dir: str = Form(""),
-    ftp_user: str = Form(""),
-    ftp_pass: str = Form(""),
 ):
+    form = await request.form()
+
+    device_type = (form.get("device_type") or "").strip()
+    ip = (form.get("ip") or "").strip()
+    version = form.get("version") or "7"
+    username = form.get("username") or "admin"
+    ssh_pass = form.get("ssh_pass") or ""
+    private_key = form.get("private_key") or ""
+    backup_path = (form.get("backup_path") or "").strip()
+
+    try:
+        max_backups = int(form.get("max_backups") or "5")
+    except (TypeError, ValueError):
+        max_backups = 5
+
+    if not device_type or not ip or not backup_path:
+        raise HTTPException(
+            status_code=400,
+            detail="Не заполнены обязательные поля",
+        )
 
     if (
         not plugin_manager
@@ -1740,33 +2049,8 @@ async def save_router_endpoint(
             else "id_rsa.key"
         )
 
-        new_router[
-            "port"
-        ] = 6132
-
-    if ftp_host:
-
-        new_router["ftp"] = {
-            "host":
-                ftp_host,
-
-            "port":
-                21,
-
-            "remote_dir":
-                ftp_dir,
-
-            "user":
-                ftp_user,
-
-            "pass":
-                storage.encrypt(
-                    ftp_pass
-                )
-                if ftp_pass
-                else "",
-        }
-
+    new_router["storage"] = _parse_storage_form(form, {})
+    
     plugin_data = (
         plugin_manager
         ._plugins[
@@ -2014,6 +2298,8 @@ def backups_page(
         defaultdict(list)
     )
 
+
+
     if (
         backup_path.exists()
         and backup_path.is_dir()
@@ -2024,93 +2310,51 @@ def backups_page(
             reverse=True,
         ):
 
-            if item.is_dir():
+            # Только датированные подкаталоги.
+            # Файлы в корне (config.rsc, config.backup)
+            # и служебные каталоги (.git) не показываем.
+            if not item.is_dir():
+                continue
 
-                folder_name = (
-                    item.name
-                )
+            if not DATE_DIR_REGEX.match(item.name):
+                continue
 
+            folder_name = item.name
+
+            try:
                 files_in_dir = sorted(
                     [
                         f
                         for f in item.iterdir()
                         if f.is_file()
                     ],
-                    key=lambda x:
-                        x.name,
+                    key=lambda x: x.name,
                 )
+            except OSError:
+                continue
 
-                for f in files_in_dir:
+            for f in files_in_dir:
 
-                    size_bytes = (
-                        f.stat()
-                        .st_size
-                    )
-
-                    if (
-                        size_bytes
-                        >= 1024
-                    ):
-
-                        size_str = (
-                            f"{size_bytes / 1024:.1f} KB"
-                        )
-
-                    else:
-
-                        size_str = (
-                            f"{size_bytes} B"
-                        )
-
-                    rel_path = (
-                        f"{folder_name}/"
-                        f"{f.name}"
-                    )
-
-                    grouped_backups[
-                        folder_name
-                    ].append({
-                        "name":
-                            f.name,
-
-                        "rel_path":
-                            rel_path,
-
-                        "size":
-                            size_str,
-                    })
-
-            elif item.is_file():
-
-                size_bytes = (
-                    item.stat()
-                    .st_size
-                )
+                try:
+                    size_bytes = f.stat().st_size
+                except OSError:
+                    continue
 
                 if size_bytes >= 1024:
-
-                    size_str = (
-                        f"{size_bytes / 1024:.1f} KB"
-                    )
-
+                    size_str = f"{size_bytes / 1024:.1f} KB"
                 else:
+                    size_str = f"{size_bytes} B"
 
-                    size_str = (
-                        f"{size_bytes} B"
-                    )
+                rel_path = f"{folder_name}/{f.name}"
 
-                grouped_backups[
-                    "Корневой каталог"
-                ].append({
-                    "name":
-                        item.name,
-
-                    "rel_path":
-                        item.name,
-
-                    "size":
-                        size_str,
+                grouped_backups[folder_name].append({
+                    "name": f.name,
+                    "rel_path": rel_path,
+                    "size": size_str,
                 })
+
+
+
 
     return templates.TemplateResponse(
         request,
@@ -2363,63 +2607,6 @@ def logs_main_endpoint(
 
 
 # =========================================================
-# GLOBAL LOG
-# =========================================================
-
-@app.get(
-    "/logs/global",
-    response_class=HTMLResponse,
-)
-def logs_global_endpoint(
-    request: Request,
-    limit: str = "100",
-    raw: bool = False,
-    user: str = Depends(
-        require_auth
-    ),
-):
-
-    log_file = (
-        LOGS_DIR
-        / "app.log"
-    )
-
-    content, lines_shown, has_more, _ = (
-        read_log_tail(
-            log_file,
-            limit,
-        )
-    )
-
-    if raw:
-
-        return HTMLResponse(
-            content,
-            media_type="text/plain",
-        )
-
-    return templates.TemplateResponse(
-        request,
-        "logs.html",
-        {
-            "log_type":
-                "Web Server Log",
-
-            "content":
-                content,
-
-            "lines_shown":
-                int(lines_shown),
-
-            "has_more":
-                has_more,
-
-            "limit":
-                limit,
-        },
-    )
-
-# =========================================================
 # SERVICE LOGS (stdout/stderr NSSM)
 # =========================================================
 
@@ -2462,6 +2649,7 @@ def logs_service_endpoint(
             "lines_shown": int(lines_shown),
             "has_more": has_more,
             "limit": limit,
+            "stream": stream,
         },
     )
 
@@ -2620,6 +2808,9 @@ def edit_router(
         plugin["routers"][index]
     )
 
+    # Гарантируем секцию storage в памяти
+    _ensure_storage_section(router)
+
     return templates.TemplateResponse(
         request,
         "edit.html",
@@ -2632,9 +2823,11 @@ def edit_router(
 
             "router":
                 router,
+
+            "storage_backends":
+                _storage_backends_for_template(),
         },
     )
-
 
 # =========================================================
 # UPDATE ROUTER
@@ -2647,23 +2840,37 @@ def edit_router(
 async def update_router(
     device_type: str,
     index: int,
+    request: Request,
     user: str = Depends(
         require_auth
     ),
-    ip: str = Form(...),
-    version: str = Form("7"),
-    username: str = Form("admin"),
-    ssh_pass: str = Form(""),
-    private_key: str = Form(""),
-    backup_path: str = Form(...),
-    max_backups: int = Form(5),
-    ftp_host: str = Form(""),
-    ftp_dir: str = Form(""),
-    ftp_user: str = Form(""),
-    ftp_pass: str = Form(""),
-    port: int = Form(22),
-    ftp_port: int = Form(21),
 ):
+    form = await request.form()
+
+    ip = (form.get("ip") or "").strip()
+    version = form.get("version") or "7"
+    username = form.get("username") or "admin"
+    ssh_pass = form.get("ssh_pass") or ""
+    private_key = form.get("private_key") or ""
+    backup_path = (form.get("backup_path") or "").strip()
+    max_backups_raw = form.get("max_backups") or "5"
+    port_raw = form.get("port") or "22"
+
+    try:
+        max_backups = int(max_backups_raw)
+    except (TypeError, ValueError):
+        max_backups = 5
+
+    try:
+        port = int(port_raw)
+    except (TypeError, ValueError):
+        port = 22
+
+    if not ip or not backup_path:
+        raise HTTPException(
+            status_code=400,
+            detail="Не заполнены обязательные поля",
+        )
 
     if (
         not plugin_manager
@@ -2764,32 +2971,10 @@ async def update_router(
             "port"
         ] = port
 
-    if ftp_host:
-
-        # Если новый FTP-пароль не введён — оставляем старый.
-        if ftp_pass:
-            ftp_pass_encrypted = storage.encrypt(ftp_pass)
-        else:
-            old_ftp = old_router.get("ftp") or {}
-            ftp_pass_encrypted = old_ftp.get("pass", "")
-
-        updated_router["ftp"] = {
-            "host":
-                ftp_host,
-
-            "port":
-                int(ftp_port),
-
-            "remote_dir":
-                ftp_dir,
-
-            "user":
-                ftp_user,
-
-            "pass":
-                ftp_pass_encrypted,
-        }
-
+    # Хранилища (git, ftp, smb, ...)
+    old_storage = old_router.get("storage") or {}
+    updated_router["storage"] = _parse_storage_form(form, old_storage)
+    
     routers_list[
         index
     ] = updated_router

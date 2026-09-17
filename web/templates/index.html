@@ -4,6 +4,18 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Network Backup Manager</title>
+        <script>
+        (function () {
+            try {
+                const stored = localStorage.getItem('nbm-theme');
+                const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+                if (stored === 'dark' || (!stored && prefersDark)) {
+                    document.documentElement.classList.add('dark');
+                }
+            } catch (e) {}
+        })();
+    </script>
+
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="icon" href="/static/favicon.ico">
     <script>
@@ -22,6 +34,7 @@
             },
         };
     </script>
+    
     <style>
         html, body { height: 100%; }
         body { font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
@@ -229,19 +242,25 @@
 </main>
 
 <script>
+
 // ============================================================
 // ТЕМА
 // ============================================================
+// Начальная установка темы делается в <head> (см. IIFE).
+// Здесь только обработчик клика.
 
 const htmlEl = document.documentElement;
-const storedTheme = localStorage.getItem('nbm-theme');
-const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-if (storedTheme === 'dark' || (!storedTheme && prefersDark)) htmlEl.classList.add('dark');
 
-document.getElementById('theme-toggle').addEventListener('click', () => {
-    htmlEl.classList.toggle('dark');
-    localStorage.setItem('nbm-theme', htmlEl.classList.contains('dark') ? 'dark' : 'light');
-});
+const themeBtn = document.getElementById('theme-toggle');
+if (themeBtn) {
+    themeBtn.addEventListener('click', () => {
+        htmlEl.classList.toggle('dark');
+        localStorage.setItem(
+            'nbm-theme',
+            htmlEl.classList.contains('dark') ? 'dark' : 'light'
+        );
+    });
+}
 
 
 // ============================================================

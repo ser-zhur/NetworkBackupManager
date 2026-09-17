@@ -4,6 +4,14 @@ from cryptography.fernet import Fernet
 
 
 class SecureStorage:
+    def decrypt(self, cipher_text: str) -> str:
+        if not cipher_text:
+            return ""
+        try:
+            return self._cipher.decrypt(cipher_text.encode("utf-8")).decode("utf-8")
+        except Exception as exc:
+            logging.warning("SecureStorage.decrypt: не удалось расшифровать значение: %s", exc)
+            return ""
     def __init__(self, storage_dir=None):
         if storage_dir is None:
             # Определяем корень проекта относительно папки core

@@ -126,69 +126,9 @@
             </div>
         </section>
 
-        <!-- 3. FTP -->
-        <section class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm p-6 space-y-4">
-            <h3 class="text-sm font-semibold text-gray-700 dark:text-slate-200 flex items-center gap-2">
-                ☁️ 3. Внешний FTP-сервер (опционально)
-            </h3>
-
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div class="md:col-span-2">
-                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">FTP Хост:</label>
-                    <input type="text" name="ftp_host"
-                           value="{{ router.ftp.host if router.ftp else '' }}"
-                           placeholder="ftp.example.com"
-                           class="w-full rounded-lg px-3 py-2 text-sm
-                                  bg-gray-50 dark:bg-slate-950
-                                  border border-gray-200 dark:border-slate-800
-                                  placeholder-gray-400 dark:placeholder-slate-500
-                                  focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">FTP Порт:</label>
-                    <input type="number" name="ftp_port"
-                           value="{{ router.ftp.port if router.ftp else 21 }}"
-                           class="w-full rounded-lg px-3 py-2 text-sm
-                                  bg-gray-50 dark:bg-slate-950
-                                  border border-gray-200 dark:border-slate-800
-                                  focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
-                </div>
-            </div>
-
-            <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">FTP Директория:</label>
-                <input type="text" name="ftp_dir"
-                       value="{{ router.ftp.remote_dir if router.ftp else '' }}"
-                       placeholder="/remote_backups"
-                       class="w-full rounded-lg px-3 py-2 text-sm font-mono
-                              bg-gray-50 dark:bg-slate-950
-                              border border-gray-200 dark:border-slate-800
-                              placeholder-gray-400 dark:placeholder-slate-500
-                              focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
-            </div>
-
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">FTP Пользователь:</label>
-                    <input type="text" name="ftp_user"
-                           value="{{ router.ftp.user if router.ftp else '' }}"
-                           class="w-full rounded-lg px-3 py-2 text-sm
-                                  bg-gray-50 dark:bg-slate-950
-                                  border border-gray-200 dark:border-slate-800
-                                  focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
-                </div>
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">FTP Пароль:</label>
-                    <input type="password" name="ftp_pass" value=""
-                           placeholder="Оставьте пустым, чтобы не менять"
-                           class="w-full rounded-lg px-3 py-2 text-sm
-                                  bg-gray-50 dark:bg-slate-950
-                                  border border-gray-200 dark:border-slate-800
-                                  placeholder-gray-400 dark:placeholder-slate-500
-                                  focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
-                </div>
-            </div>
-        </section>
+<!-- Хранилища (частичный шаблон) -->
+{% set storage_mode = 'edit' %}
+{% include "_storage_form.html" %}
 
         <div class="flex justify-end gap-3 pt-2">
             <a href="/"
@@ -205,6 +145,8 @@
         </div>
     </form>
 </main>
+
+{% include "_storage_scripts.html" %}
 
 </body>
 </html>

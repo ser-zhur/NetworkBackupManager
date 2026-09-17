@@ -290,6 +290,7 @@ python -m PyInstaller ^
   --collect-all bcrypt ^
   --collect-all nacl ^
   --collect-all scp ^
+    --collect-all dulwich ^
   main.py > "%PYI_TEMP%" 2>&1
 
 set "PYI_EXIT=%ERRORLEVEL%"

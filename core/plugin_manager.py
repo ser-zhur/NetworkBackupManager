@@ -11,12 +11,24 @@ import importlib.util
 import json
 import logging
 from datetime import datetime
-from ftplib import FTP, error_perm
 from pathlib import Path
 
+import threading
+
 from core.secure_storage import SecureStorage
-from core.context import PLUGINS_DIR, BASE_DIR
-from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
+from core.context import (
+    PLUGINS_DIR,
+    BASE_DIR,
+    STATE_FILE,
+    load_json,
+    save_json,
+)
+from core.storage import PushContext
+from concurrent.futures import (
+    ThreadPoolExecutor,
+    as_completed,
+    TimeoutError,
+)
 
 
 # =========================================================
@@ -32,12 +44,17 @@ DATE_DIR_REGEX = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # но и не даём им бесконечно накапливаться.
 MAX_EMPTY_DIRS = 5
 
+# Lock для атомарного read-modify-write data/state.json.
+# Параллельные бэкапы пишут в один файл — без блокировки
+# возможны потери записей.
+_STATE_LOCK = threading.Lock()
 
 class PluginManager:
-    def __init__(self):
+    def __init__(self, storage_manager=None):
         self.plugins_dir = PLUGINS_DIR
         self._plugins = {}
         self.storage = SecureStorage()
+        self.storage_manager = storage_manager
 
     # =====================================================
     # DISCOVER & LOAD
@@ -262,52 +279,225 @@ class PluginManager:
                     )
 
     # =====================================================
-    # FTP UPLOAD
+    # STORAGE HELPERS
     # =====================================================
 
-    def _upload_to_ftp(self, ftp_config, created_files):
-        """Выгрузка бэкапов на FTP с расшифровкой пароля"""
+    @staticmethod
+    def _normalize_created_files(created_files) -> dict:
+        """
+        Приводит список путей к словарю {имя_в_репо: Path}.
 
-        host = ftp_config.get("host")
-        port = ftp_config.get("port", 21)
-        user = ftp_config.get("user")
+        Плагины возвращают разные имена (host_YYYY-MM-DD.rsc),
+        а в git-репо мы хотим видеть фиксированные
+        config.rsc / config.backup / config.xml.
+        """
+        result = {}
+        for p in created_files or []:
+            path = Path(p)
+            if not path.is_file():
+                continue
+            ext = path.suffix.lower()
+            if ext == ".rsc":
+                result["config.rsc"] = path
+            elif ext == ".backup":
+                result["config.backup"] = path
+            elif ext == ".xml":
+                result["config.xml"] = path
+            else:
+                result[path.name] = path
+        return result
 
-        encrypted_pass = ftp_config.get("pass", "")
-        password = self.storage.decrypt(encrypted_pass)
+    def _decrypt_backend_config(self, backend, cfg: dict) -> dict:
+        """
+        Копия конфига backend'а с расшифрованными значениями
+        полей-паролей. Backend получает плейн-значения.
+        """
+        result = dict(cfg or {})
+        for field in backend.fields:
+            if field.type != "password":
+                continue
+            value = result.get(field.name, "")
+            if value:
+                result[field.name] = self.storage.decrypt(value)
+        return result
 
-        today = datetime.now().strftime("%Y-%m-%d")
 
-        try:
-            with FTP() as ftp:
-                ftp.connect(host, port)
-                ftp.login(user=user, passwd=password)
+    def _push_to_storages(
+        self,
+        device_type: str,
+        index: int,
+        device_host: str,
+        router: dict,
+        backup_path: Path,
+        created_files: list,
+    ) -> None:
+        """
+        Пробегает по включённым backend'ам и пушит файлы.
 
-                parts = (
-                    ftp_config["remote_dir"] + "/" + today
-                ).strip("/").split("/")
+        Authority (git) идёт первым; его вердикт changed
+        попадает в ctx и используется остальными при
+        mode == "changes_only".
+        """
+        if self.storage_manager is None:
+            return
 
-                for part in parts:
-                    try:
-                        ftp.cwd(part)
-                    except error_perm:
-                        ftp.mkd(part)
-                        ftp.cwd(part)
+        backends = self.storage_manager.enabled_for(router)
+        if not backends:
+            return
 
-                for file_path in created_files:
-                    file_name = os.path.basename(file_path)
-                    with open(file_path, "rb") as f:
-                        ftp.storbinary(f"STOR {file_name}", f)
-
-                        logging.info(
-                            "📤 Загружен на FTP: %s",
-                            file_name,
-                        )
-
-        except Exception as e:
-            logging.error(
-                "❌ Ошибка FTP-загрузки в ядре: %s",
-                e,
+        files = self._normalize_created_files(created_files)
+        if not files:
+            logging.warning(
+                "storage: нет файлов для отправки (%s)",
+                device_host,
             )
+            return
+
+        storage_cfg = router.get("storage") or {}
+
+        ctx = PushContext(
+            device_id=f"{device_type}/{index}",
+            device_host=device_host,
+            device_type=device_type,
+            backup_path=Path(backup_path),
+            files=files,
+            changed=None,
+            run_time=datetime.now(),
+        )
+
+        results = {}
+
+        # ---- authority первым ----
+        for backend in backends:
+            if not backend.is_authority:
+                continue
+            cfg = self._decrypt_backend_config(
+                backend,
+                storage_cfg.get(backend.id) or {},
+            )
+            try:
+                result = backend.push(cfg, ctx)
+            except Exception as exc:
+                logging.error(
+                    "storage[%s]: исключение в push: %s",
+                    backend.id,
+                    exc,
+                    exc_info=True,
+                )
+                from core.storage.base import PushResult
+                result = PushResult.failure(f"Исключение: {exc}")
+
+            results[backend.id] = result
+
+            if result.details and "changed" in result.details:
+                ctx.changed = result.details["changed"]
+
+            self._log_storage_result(backend.id, result)
+
+        # ---- остальные ----
+        for backend in backends:
+            if backend.is_authority:
+                continue
+            cfg = self._decrypt_backend_config(
+                backend,
+                storage_cfg.get(backend.id) or {},
+            )
+
+            # mode=changes_only и git сказал «не изменилось» — skip
+            if backend._should_skip_for_changes(cfg, ctx):
+                from core.storage.base import PushResult
+                result = PushResult.skipped(
+                    "Изменений нет — выгрузка пропущена"
+                )
+                results[backend.id] = result
+                self._log_storage_result(backend.id, result)
+                continue
+
+            try:
+                result = backend.push(cfg, ctx)
+            except Exception as exc:
+                logging.error(
+                    "storage[%s]: исключение в push: %s",
+                    backend.id,
+                    exc,
+                    exc_info=True,
+                )
+                from core.storage.base import PushResult
+                result = PushResult.failure(f"Исключение: {exc}")
+
+            results[backend.id] = result
+            self._log_storage_result(backend.id, result)
+
+        # ---- сохраняем в state.json ----
+        self._save_backend_state(ctx.device_id, results)
+
+    @staticmethod
+    def _log_storage_result(backend_id: str, result) -> None:
+        if result.details and result.details.get("skipped"):
+            logging.info(
+                "storage[%s]: %s",
+                backend_id,
+                result.message,
+            )
+        elif result.ok:
+            logging.info(
+                "storage[%s]: ✓ %s",
+                backend_id,
+                result.message,
+            )
+        else:
+            logging.error(
+                "storage[%s]: ✗ %s",
+                backend_id,
+                result.message,
+            )
+
+    @staticmethod
+    def _save_backend_state(device_id: str, results: dict) -> None:
+        """
+        Обновляет data/state.json по одному устройству.
+
+        Структура:
+
+            {
+              "mikrotik/192.168.88.1": {
+                "last_run": "2026-09-16 03:00:12",
+                "backends": {
+                  "git": {"ok": true, "message": "...", "skipped": false},
+                  ...
+                }
+              }
+            }
+        """
+        with _STATE_LOCK:
+            state = load_json(STATE_FILE, {})
+            if not isinstance(state, dict):
+                state = {}
+
+            state[device_id] = {
+                "last_run": datetime.now().strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ),
+                "backends": {
+                    bid: {
+                        "ok": bool(r.ok),
+                        "message": r.message or "",
+                        "skipped": bool(
+                            r.details
+                            and r.details.get("skipped")
+                        ),
+                    }
+                    for bid, r in results.items()
+                },
+            }
+
+            try:
+                save_json(STATE_FILE, state)
+            except Exception as exc:
+                logging.error(
+                    "storage: не удалось сохранить state.json: %s",
+                    exc,
+                )
 
     # =====================================================
     # RUN ALL BACKUPS
@@ -327,9 +517,10 @@ class PluginManager:
             plugin_func = data["func"]
             routers = data["routers"]
 
-            for router in routers:
+            for index, router in enumerate(routers):
                 tasks.append({
                     "device_type": device_type,
+                    "index": index,
                     "plugin_func": plugin_func,
                     "router": router,
                 })
@@ -367,7 +558,6 @@ class PluginManager:
             try:
                 max_backups = router.get("max_backups", 7)
                 backup_path = router["backup_path"]
-                ftp_config = router.get("ftp")
 
                 secure_router = copy.deepcopy(router)
 
@@ -380,14 +570,36 @@ class PluginManager:
 
                 created_files = plugin_func(secure_router)
 
-                if created_files:
-                    self._rotate_local(backup_path, max_backups)
-                    if ftp_config:
-                        self._upload_to_ftp(ftp_config, created_files)
-                    logging.info("✅ Успешно: %s", ip)
-                else:
-                    logging.warning("⚠ Файлы не созданы: %s", ip)
+                if not created_files:
+                    logging.warning(
+                        "⚠ Файлы не созданы: %s", ip
+                    )
+                    return ip
 
+                # Локальная ротация датированных папок —
+                # временно оставлена для совместимости с UI
+                # истории (Этап 2.2 уберёт её).
+                self._rotate_local(backup_path, max_backups)
+
+                # ---- новые storage backends ----
+                try:
+                    self._push_to_storages(
+                        device_type=device_type,
+                        index=task["index"],
+                        device_host=ip,
+                        router=router,
+                        backup_path=Path(backup_path),
+                        created_files=created_files,
+                    )
+                except Exception as exc:
+                    logging.error(
+                        "storage: ошибка диспетчеризации "
+                        "backend'ов: %s",
+                        exc,
+                        exc_info=True,
+                    )
+
+                logging.info("✅ Успешно: %s", ip)
                 return ip
 
             finally:
