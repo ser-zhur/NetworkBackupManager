@@ -4,7 +4,7 @@ from PyInstaller.utils.hooks import collect_dynamic_libs
 from PyInstaller.utils.hooks import collect_submodules
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('web', 'web'), ('bin', 'bin')]
+datas = [('web', 'web'), ('bin', 'bin'), ('storages', 'storages')]
 binaries = []
 hiddenimports = ['core', 'core.context', 'core.service_installer', 'core.plugin_manager', 'core.secure_storage', 'core.scheduler', 'web', 'web.server', 'fastapi', 'fastapi.templating', 'fastapi.staticfiles', 'starlette.templating', 'starlette.staticfiles', 'jinja2', 'uvicorn', 'uvicorn.logging', 'uvicorn.loops.auto', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets.auto']
 datas += collect_data_files('cryptography')
