@@ -264,6 +264,7 @@ python -m PyInstaller ^
   %VERSION_ARG% ^
   --add-data "web;web" ^
   --add-data "bin;bin" ^
+  --add-data "storages;storages" ^
   --hidden-import core ^
   --hidden-import core.context ^
   --hidden-import core.service_installer ^
@@ -290,7 +291,7 @@ python -m PyInstaller ^
   --collect-all bcrypt ^
   --collect-all nacl ^
   --collect-all scp ^
-    --collect-all dulwich ^
+  --collect-all dulwich ^
   main.py > "%PYI_TEMP%" 2>&1
 
 set "PYI_EXIT=%ERRORLEVEL%"
@@ -375,6 +376,7 @@ if not exist "dist\NetworkBackupManager\plugins\Mikrotik"  mkdir "dist\NetworkBa
 if not exist "dist\NetworkBackupManager\plugins\Pfsense"   mkdir "dist\NetworkBackupManager\plugins\Pfsense"
 if not exist "dist\NetworkBackupManager\backups"           mkdir "dist\NetworkBackupManager\backups"
 if not exist "dist\NetworkBackupManager\logs"              mkdir "dist\NetworkBackupManager\logs"
+if not exist "dist\NetworkBackupManager\storages"          mkdir "dist\NetworkBackupManager\storages"
 
 echo OK.
 echo.
@@ -444,6 +446,26 @@ echo.
 >>"%LOG_FILE%" echo routers.json and SSH keys were NOT copied.
 >>"%LOG_FILE%" echo.
 
+REM --------------------------------------------------------
+REM STORAGE BACKENDS
+REM --------------------------------------------------------
+
+echo.
+echo Copying storage backends...
+
+for %%F in (storages\*.py) do (
+    if not "%%~nxF"=="__init__.py" (
+        copy /Y "%%F" "dist\NetworkBackupManager\storages\%%~nxF" >nul 2>&1
+        if errorlevel 1 (
+            echo ERROR copying %%F
+            >>"%LOG_FILE%" echo ERROR copying %%F
+            pause
+            exit /b 1
+        )
+        echo   [OK] storages\%%~nxF
+        >>"%LOG_FILE%" echo   [OK] storages\%%~nxF
+    )
+)
 
 REM ========================================================
 REM REMOVE PYTHON CACHE

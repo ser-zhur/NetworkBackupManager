@@ -45,7 +45,7 @@ def backup_pfsense_ssh(router):
     backup_dir = os.path.join(backup_path, today)
     os.makedirs(backup_dir, exist_ok=True)
 
-    logging.info(f"📡 Подключение к pfSense {host}:{port} по SSH")
+    logging.info("📡 Подключение к pfSense %s:%s по SSH", host, port)
 
     try:
         key = paramiko.RSAKey.from_private_key_file(key_path)
@@ -64,12 +64,12 @@ def backup_pfsense_ssh(router):
         # Приводим к абсолютному пути
         full_path = os.path.abspath(local_file)
 
-        logging.info(f"✅ Бэкап pfSense сохранён: {full_path}")
+        logging.info("✅ Бэкап pfSense сохранён: %s", full_path)    
         return [full_path]
  
 
     except (paramiko.SSHException, socket.error) as e:
-        logging.error(f"❌ Сбой подключения к pfSense {host}:{port}: {e}")
+        logging.error("❌ Сбой подключения к pfSense %s:%s: %s", host, port, e)
         raise e
 
 def run_backup(router_config):

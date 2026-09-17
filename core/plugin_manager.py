@@ -431,6 +431,62 @@ class PluginManager:
         # ---- сохраняем в state.json ----
         self._save_backend_state(ctx.device_id, results)
 
+        # ---- cleanup: если git-коммит прошёл, удаляем
+        #      временный датированный каталог ----
+        self._cleanup_staging_for_git(
+            ctx=ctx,
+            results=results,
+            storage_cfg=storage_cfg,
+        )
+
+    def _cleanup_staging_for_git(
+        self,
+        ctx,
+        results: dict,
+        storage_cfg: dict,
+    ) -> None:
+        """
+        Если git-бэкенд включён и его push прошёл успешно —
+        удаляем датированный каталог, из которого мы только
+        что скопировали файлы в корень backup_path.
+
+        Не трогаем каталог, если:
+          - git выключен;
+          - git-бэкенда нет в results;
+          - git вернул ok=False (файлы не сохранены — терять нельзя).
+        """
+        git_cfg = (storage_cfg or {}).get("git") or {}
+        if not git_cfg.get("enabled"):
+            return
+
+        git_result = results.get("git")
+        if git_result is None or not git_result.ok:
+            return
+
+        # Ищем датированный каталог среди файлов
+        parents = set()
+        for path in ctx.files.values():
+            try:
+                p = Path(path).resolve()
+            except Exception:
+                continue
+            parent = p.parent
+            if DATE_DIR_REGEX.match(parent.name):
+                parents.add(parent)
+
+        for parent in parents:
+            try:
+                shutil.rmtree(parent, ignore_errors=True)
+                logging.info(
+                    "git: удалён временный каталог %s",
+                    parent,
+                )
+            except Exception as exc:
+                logging.warning(
+                    "git: не удалось удалить %s: %s",
+                    parent, exc,
+                )
+
     @staticmethod
     def _log_storage_result(backend_id: str, result) -> None:
         if result.details and result.details.get("skipped"):
@@ -576,10 +632,14 @@ class PluginManager:
                     )
                     return ip
 
-                # Локальная ротация датированных папок —
-                # временно оставлена для совместимости с UI
-                # истории (Этап 2.2 уберёт её).
-                self._rotate_local(backup_path, max_backups)
+                storage_cfg = router.get("storage") or {}
+                git_enabled = bool(
+                    (storage_cfg.get("git") or {}).get("enabled")
+                )
+
+                # Ротация датированных папок — только если git выключен
+                if not git_enabled:
+                    self._rotate_local(backup_path, max_backups)
 
                 # ---- новые storage backends ----
                 try:

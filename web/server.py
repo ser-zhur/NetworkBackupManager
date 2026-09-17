@@ -27,6 +27,7 @@ from fastapi.responses import (
     HTMLResponse,
     RedirectResponse,
     FileResponse,
+    Response,
 )
 
 from fastapi.templating import (
@@ -53,7 +54,6 @@ from core.scheduler import (
 
 from core.storage import (
     StorageManager,
-    PushContext,
 )
 
 from core.service_installer import (
@@ -74,10 +74,7 @@ from core.service_installer import (
 
 from core.context import (
     BASE_DIR,
-    DATA_DIR,
     LOGS_DIR,
-    BACKUPS_DIR,
-    PLUGINS_DIR,
     WEB_DIR,
     AUTH_FILE,
     STATE_FILE,
@@ -88,6 +85,11 @@ from core.logger import (
     setup_logging,
     set_device_context,
     clear_device_context,
+)
+
+from core.git_storage import (
+    GitStorage,
+    is_available as git_available,
 )
 
 # =========================================================
@@ -343,34 +345,6 @@ if templates is not None:
 # =========================================================
 # PASSWORD
 # =========================================================
-
-def hash_password(
-    password: str,
-    salt: bytes | None = None,
-) -> str:
-
-    if salt is None:
-
-        salt = os.urandom(16)
-
-    key = hashlib.pbkdf2_hmac(
-        "sha256",
-        password.encode("utf-8"),
-        salt,
-        260000,
-    )
-
-    return (
-        "pbkdf2_sha256$260000$"
-        + base64.b64encode(
-            salt
-        ).decode()
-        + "$"
-        + base64.b64encode(
-            key
-        ).decode()
-    )
-
 
 def verify_password(
     password: str,
@@ -754,6 +728,36 @@ def format_size(size_bytes: int) -> str:
         return f"{size_bytes / (1024 * 1024):.1f} МБ"
     return f"{size_bytes / (1024 * 1024 * 1024):.2f} ГБ"
 
+def _get_dir_size_excluding_git(path: Path) -> int:
+    """
+    Размер всех файлов в каталоге, рекурсивно,
+    за исключением служебного каталога .git.
+    """
+    if not path.exists() or not path.is_dir():
+        return 0
+
+    git_dir = path / ".git"
+    total = 0
+
+    try:
+        for f in path.rglob("*"):
+            if not f.is_file():
+                continue
+            # Пропускаем всё, что внутри .git
+            try:
+                f.relative_to(git_dir)
+                continue
+            except ValueError:
+                pass
+            try:
+                total += f.stat().st_size
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+    return total
+
 # =========================================================
 # STORAGE STATE (data/state.json)
 # =========================================================
@@ -1054,7 +1058,6 @@ def classify_device(age_days, last_attempt_ok) -> str:
         return "warn"
     return "fail"
 
-
 def _build_device_payload(
     device_type: str,
     index: int,
@@ -1065,15 +1068,52 @@ def _build_device_payload(
     _ensure_storage_section(router)
 
     b_path = router.get("backup_path", "backups/")
+    b_path_abs = _resolve_backup_path(b_path)
 
-    count, last_date, age_days = get_device_backup_info(b_path)
-    last_attempt_date, last_attempt_ok = get_last_attempt(b_path)
-    history, history_dates = get_device_history(b_path, 30)
-    total_bytes = get_dir_size(_resolve_backup_path(b_path))
+    storage_cfg = router.get("storage") or {}
+    git_cfg = storage_cfg.get("git") or {}
+    git_enabled = bool(git_cfg.get("enabled"))
+
+    # ---- Пытаемся прочитать историю из git ----
+    git_commits = []
+    if git_enabled and git_available():
+        try:
+            gs = GitStorage(b_path_abs)
+            if gs.is_initialized():
+                git_commits = gs.get_history(limit=200)
+        except Exception as exc:
+            logging.warning(
+                "git: не удалось прочитать историю %s/%s: %s",
+                device_type, index, exc,
+            )
+
+    # ---- Определяем статус / последний успех ----
+    if git_commits:
+        last = git_commits[0]
+        try:
+            last_ts = last.get("ts") or 0
+            last_dt = datetime.fromtimestamp(last_ts)
+            last_date = last_dt.strftime("%Y-%m-%d")
+            age_days = (datetime.now() - last_dt).days
+        except Exception:
+            last_date = (last.get("time") or "")[:10]
+            age_days = None
+
+        backup_count = len(git_commits)
+        last_attempt_date = last_date
+        last_attempt_ok = True
+    else:
+        # Fallback на датированные папки (пока плагины их пишут)
+        count, last_date, age_days = get_device_backup_info(b_path)
+        last_attempt_date, last_attempt_ok = get_last_attempt(b_path)
+        backup_count = count
+
+    # ---- Размер без .git ----
+    total_bytes = _get_dir_size_excluding_git(b_path_abs)
     total_size = format_size(total_bytes)
 
-    if count > 0 and total_bytes > 0:
-        avg_size = format_size(total_bytes // count)
+    if backup_count > 0 and total_bytes > 0:
+        avg_size = format_size(total_bytes // backup_count)
     else:
         avg_size = "—"
 
@@ -1090,6 +1130,17 @@ def _build_device_payload(
     else:
         version = "pfSense"
 
+    # ---- Последние коммиты для UI ----
+    git_recent = []
+    for c in git_commits[:3]:
+        git_recent.append({
+            "sha": c["sha"],
+            "short": c["short"],
+            "message": c["message"],
+            "time": c["time"],
+            "files": c["files"],
+        })
+
     return {
         "id": f"{device_type}/{index}",
         "type": device_type,
@@ -1098,11 +1149,11 @@ def _build_device_payload(
         "version": version,
         "port": router.get("port", 22),
         "status": status,
-        "last_success": last_date if count > 0 else None,
+        "last_success": last_date if backup_count > 0 else None,
         "last_success_age_days": age_days,
         "last_attempt": last_attempt_date,
         "last_attempt_ok": last_attempt_ok,
-        "backup_count": count,
+        "backup_count": backup_count,
         "max_backups": router.get("max_backups", 7),
         "total_size": total_size,
         "avg_size": avg_size,
@@ -1112,18 +1163,19 @@ def _build_device_payload(
             or router.get("private_key")
             or "id_rsa.key"
         ),
-        "history": history,
-        "history_dates": history_dates,
+        "history": [],
+        "history_dates": [],
         "recent": get_recent_files(b_path, 3),
-
+        "git_enabled": git_enabled,
+        "git_total": len(git_commits),
+        "git_recent": git_recent,
         "storage_rows": _build_storage_rows(
             router,
             _load_device_state(f"{device_type}/{index}"),
         ),
-    
     }
-
-
+    
+    
 # =========================================================
 # BACKUP TASKS
 # =========================================================
@@ -1162,13 +1214,16 @@ def execute_device_backup_task(
 
         logging.info("🚀 [Фон] Запуск бэкапа: %s", ip_disp)
         
-        invalidate_status_cache()
-
         created_files = backup_func(secure_router)
 
         if created_files:
-            # Локальная ротация датированных папок
-            if hasattr(plugin_manager, "_rotate_local"):
+            storage_cfg = secure_router.get("storage") or {}
+            git_enabled = bool(
+                (storage_cfg.get("git") or {}).get("enabled")
+            )
+
+            # Ротация датированных папок — только если git выключен
+            if not git_enabled and hasattr(plugin_manager, "_rotate_local"):
                 plugin_manager._rotate_local(
                     secure_router.get("backup_path"),
                     secure_router.get("max_backups", 7),
@@ -1196,7 +1251,6 @@ def execute_device_backup_task(
 
         logging.info("✅ [Фон] Бэкап успешно завершен для %s", ip_disp)
         
-        invalidate_status_cache()
 
     except Exception as exc:
         logging.error("❌ [Фон] Ошибка при бэкапе: %s", exc)
@@ -2280,6 +2334,14 @@ def backups_page(
         plugin["routers"][index]
     )
 
+    # Если git включён — переадресуем на историю версий
+    storage_cfg = router.get("storage") or {}
+    if (storage_cfg.get("git") or {}).get("enabled"):
+        return RedirectResponse(
+            url=f"/git/{device_type}/{index}",
+            status_code=307,
+        )
+
     backup_path = Path(
         router.get(
             "backup_path",
@@ -2547,6 +2609,299 @@ def download_backup(
         ),
     )
 
+
+# =========================================================
+# GIT: HISTORY
+# =========================================================
+
+def _get_git_storage_for(device_type: str, index: int):
+    """
+    Возвращает (router, backup_path, GitStorage) или
+    (None, None, None), если устройство не найдено.
+    """
+    if not plugin_manager or device_type not in plugin_manager._plugins:
+        return None, None, None
+
+    routers = plugin_manager._plugins[device_type].get("routers", [])
+    if not (0 <= index < len(routers)):
+        return None, None, None
+
+    router = routers[index]
+    backup_path = _resolve_backup_path(
+        router.get("backup_path", "backups/")
+    )
+
+    return router, backup_path, GitStorage(backup_path)
+
+
+@app.get(
+    "/git/{device_type}/{index}",
+    response_class=HTMLResponse,
+)
+def git_history_page(
+    request: Request,
+    device_type: str,
+    index: int,
+    limit: int = 100,
+    user: str = Depends(require_auth),
+):
+    router, backup_path, storage = _get_git_storage_for(
+        device_type, index
+    )
+
+    if router is None:
+        return HTMLResponse(
+            "<h3>Устройство не найдено</h3>",
+            status_code=404,
+        )
+
+    commits = []
+    notes = {}
+    available = git_available()
+    initialized = storage.is_initialized() if available else False
+
+    if initialized:
+        try:
+            commits = storage.get_history(limit=limit)
+            notes = storage.get_notes()
+        except Exception as exc:
+            logging.error(
+                "git: ошибка чтения истории %s/%s: %s",
+                device_type, index, exc, exc_info=True,
+            )
+
+    for c in commits:
+        c["note"] = notes.get(c["sha"], "")
+
+    host = (
+        router.get("host")
+        or router.get("ip")
+        or router.get("address")
+        or f"устройство #{index}"
+    )
+
+    return templates.TemplateResponse(
+        request,
+        "git_history.html",
+        {
+            "device_type": device_type,
+            "index": index,
+            "host": host,
+            "backup_path": str(backup_path),
+            "commits": commits,
+            "total": len(commits),
+            "limit": limit,
+            "git_available": available,
+            "git_initialized": initialized,
+        },
+    )
+
+
+# =========================================================
+# GIT: DOWNLOAD FILE AT COMMIT
+# =========================================================
+
+@app.get(
+    "/git/{device_type}/{index}/download/{sha}/{filename}",
+)
+def git_download_file(
+    device_type: str,
+    index: int,
+    sha: str,
+    filename: str,
+    user: str = Depends(require_auth),
+):
+    router, backup_path, storage = _get_git_storage_for(
+        device_type, index
+    )
+    if router is None:
+        raise HTTPException(404, "Устройство не найдено")
+
+    if not git_available() or not storage.is_initialized():
+        raise HTTPException(404, "Репозиторий git недоступен")
+
+    # Защита от path traversal
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(400, "Некорректное имя файла")
+
+    data = storage.get_file_at(sha, filename)
+    if data is None:
+        raise HTTPException(
+            404,
+            f"Файл {filename!r} не найден в коммите {sha[:7]}",
+        )
+
+    return Response(
+        content=data,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition":
+                f'attachment; filename="{filename}"',
+        },
+    )
+
+
+# =========================================================
+# GIT: SET NOTE
+# =========================================================
+
+@app.post(
+    "/git/{device_type}/{index}/note/{sha}",
+)
+async def git_set_note(
+    device_type: str,
+    index: int,
+    sha: str,
+    request: Request,
+    user: str = Depends(require_auth),
+):
+    router, backup_path, storage = _get_git_storage_for(
+        device_type, index
+    )
+    if router is None:
+        raise HTTPException(404, "Устройство не найдено")
+
+    if not git_available() or not storage.is_initialized():
+        raise HTTPException(404, "Репозиторий git недоступен")
+
+    form = await request.form()
+    note = (form.get("note") or "").strip()
+
+    try:
+        storage.set_note(sha, note)
+        logging.info(
+            "git[%s/%s]: заметка %s для коммита %s",
+            device_type, index,
+            "обновлена" if note else "удалена",
+            sha[:7],
+        )
+    except Exception as exc:
+        logging.error(
+            "git: ошибка сохранения заметки: %s",
+            exc, exc_info=True,
+        )
+
+    return RedirectResponse(
+        url=f"/git/{device_type}/{index}",
+        status_code=303,
+    )
+
+# =========================================================
+# GIT: DIFF
+# =========================================================
+
+@app.get(
+    "/git/{device_type}/{index}/diff/{sha_a}/{sha_b}",
+    response_class=HTMLResponse,
+)
+def git_diff_page(
+    request: Request,
+    device_type: str,
+    index: int,
+    sha_a: str,
+    sha_b: str,
+    user: str = Depends(require_auth),
+):
+    router, backup_path, storage = _get_git_storage_for(
+        device_type, index
+    )
+    if router is None:
+        return HTMLResponse(
+            "<h3>Устройство не найдено</h3>",
+            status_code=404,
+        )
+
+    if not git_available() or not storage.is_initialized():
+        return HTMLResponse(
+            "<h3>Репозиторий git недоступен</h3>",
+            status_code=404,
+        )
+
+    # Разбираем короткие SHA в полные
+    history = storage.get_history(limit=500)
+    by_short = {c["short"]: c["sha"] for c in history}
+    by_full = {c["sha"]: c["sha"] for c in history}
+
+    full_a = by_short.get(sha_a) or by_full.get(sha_a) or sha_a
+    full_b = by_short.get(sha_b) or by_full.get(sha_b) or sha_b
+
+    commit_a = next(
+        (c for c in history if c["sha"] == full_a), None
+    )
+    commit_b = next(
+        (c for c in history if c["sha"] == full_b), None
+    )
+
+    if commit_a is None or commit_b is None:
+        return HTMLResponse(
+            "<h3>Коммит не найден</h3>",
+            status_code=404,
+        )
+
+    # Список файлов, которые вообще могут быть в diff.
+    # Берём объединение файлов из обоих коммитов.
+    filenames = sorted(set(commit_a["files"]) | set(commit_b["files"]))
+
+    try:
+        diffs = storage.get_diff(full_a, full_b, filenames)
+    except Exception as exc:
+        logging.error(
+            "git: ошибка построения diff %s..%s: %s",
+            sha_a[:7], sha_b[:7], exc, exc_info=True,
+        )
+        diffs = {"(ошибка)": f"Не удалось построить diff: {exc}"}
+
+    # Парсим diff на строки для подсветки
+    parsed_diffs = {}
+    for name, text in diffs.items():
+        lines = []
+        for line in text.splitlines():
+            if line.startswith("+++") or line.startswith("---"):
+                kind = "header"
+            elif line.startswith("@@"):
+                kind = "hunk"
+            elif line.startswith("+"):
+                kind = "add"
+            elif line.startswith("-"):
+                kind = "del"
+            else:
+                kind = "ctx"
+            lines.append({"kind": kind, "text": line})
+        parsed_diffs[name] = lines
+
+    host = (
+        router.get("host")
+        or router.get("ip")
+        or router.get("address")
+        or f"устройство #{index}"
+    )
+
+    stats = {
+        "files": len([n for n, lines in parsed_diffs.items()
+                      if any(l["kind"] in ("add", "del") for l in lines)]),
+        "add": sum(
+            1 for lines in parsed_diffs.values()
+            for l in lines if l["kind"] == "add"
+        ),
+        "del": sum(
+            1 for lines in parsed_diffs.values()
+            for l in lines if l["kind"] == "del"
+        ),
+    }
+
+    return templates.TemplateResponse(
+        request,
+        "git_diff.html",
+        {
+            "device_type": device_type,
+            "index": index,
+            "host": host,
+            "commit_a": commit_a,
+            "commit_b": commit_b,
+            "parsed_diffs": parsed_diffs,
+            "stats": stats,
+        },
+    )
 
 # =========================================================
 # MAIN LOG

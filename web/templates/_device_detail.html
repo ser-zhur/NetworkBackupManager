@@ -59,6 +59,12 @@
                           border border-gray-200 dark:border-slate-700 transition">
                     ⚙ Редактировать
                 </a>
+                                <a href="/git/{{ d.type }}/{{ d.index }}"
+                   class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium
+                          bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                          border border-gray-200 dark:border-slate-700 transition">
+                    📜 История версий
+                </a>
             </div>
         </div>
     </div>
@@ -97,33 +103,6 @@
     </div>
 </div>
 
-<!-- HISTORY -->
-<div class="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-5">
-    <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
-        <div>
-            <h2 class="text-sm font-semibold">История бэкапов — последние 30 дней</h2>
-            <p class="mt-0.5 text-[11px] text-gray-500 dark:text-slate-400">
-                Нажмите на любой квадратик, чтобы открыть лог за эту дату.
-            </p>
-        </div>
-        <div class="flex items-center gap-3 text-[11px] text-gray-500 dark:text-slate-400">
-            <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-sm hist-ok"></span>успех</span>
-            <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-sm hist-fail"></span>ошибка</span>
-            <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-sm hist-none"></span>нет данных</span>
-        </div>
-    </div>
-
-    <div class="grid gap-1.5" style="grid-template-columns: repeat(30, minmax(0, 1fr));">
-        {% for i in range(d.history | length) %}
-            {% set state = d.history[i] %}
-            {% set date = d.history_dates[i] %}
-            {% set state_label = {'ok':'успех','fail':'ошибка','none':'нет данных'}[state] %}
-            <a href="/logs/device/{{ d.type }}/{{ d.index }}?focus_date={{ date }}"
-               class="hist-cell hist-{{ state }}"
-               title="{{ date }}: {{ state_label }} — нажмите, чтобы открыть лог за эту дату"></a>
-        {% endfor %}
-    </div>
-</div>
 <!-- STORAGE BACKENDS -->
 {% if d.storage_rows %}
 <div class="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-5">
@@ -225,8 +204,18 @@
     </div>
 
     <div class="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-5">
-        <h2 class="text-sm font-semibold mb-3">Перейти</h2>
+                <h2 class="text-sm font-semibold mb-3">Перейти</h2>
         <div class="grid grid-cols-1 gap-2">
+                                <a href="/git/{{ d.type }}/{{ d.index }}"
+               class="flex items-center justify-between px-3 py-2.5 rounded-lg
+                      bg-gray-50 dark:bg-slate-800/60 hover:bg-brand-50 dark:hover:bg-brand-950/40
+                      border border-gray-200 dark:border-slate-700 transition group">
+                <span class="flex items-center gap-2 text-sm font-medium">
+                    📜 История версий
+                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-brand-100 dark:bg-brand-900/60 text-brand-700 dark:text-brand-300">git</span>
+                </span>
+                <span class="text-gray-400 dark:text-slate-500 group-hover:text-brand-600 dark:group-hover:text-brand-400 transition">→</span>
+            </a>
             <a href="/backups/{{ d.type }}/{{ d.index }}"
                class="flex items-center justify-between px-3 py-2.5 rounded-lg
                       bg-gray-50 dark:bg-slate-800/60 hover:bg-brand-50 dark:hover:bg-brand-950/40
@@ -255,33 +244,66 @@
     </div>
 </div>
 
-<!-- RECENT -->
+<!-- RECENT VERSIONS -->
 <div class="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 overflow-hidden">
     <div class="px-5 py-3 border-b border-gray-100 dark:border-slate-800 flex items-center justify-between">
-        <h2 class="text-sm font-semibold">Последние архивы</h2>
-        {% if d.backup_count > 0 %}
-            <a href="/backups/{{ d.type }}/{{ d.index }}" class="text-xs text-brand-600 dark:text-brand-400 hover:underline font-medium">
-                Показать все {{ d.backup_count }} →
+        <h2 class="text-sm font-semibold">Последние версии</h2>
+        {% if d.git_total > 0 %}
+            <a href="/git/{{ d.type }}/{{ d.index }}"
+               class="text-xs text-brand-600 dark:text-brand-400 hover:underline font-medium">
+                Вся история ({{ d.git_total }}) →
             </a>
         {% endif %}
     </div>
+
+    {% if d.git_recent %}
     <ul class="divide-y divide-gray-100 dark:divide-slate-800">
-        {% for f in d.recent %}
-            <li class="px-5 py-3 flex items-center justify-between gap-3 hover:bg-gray-50 dark:hover:bg-slate-800/40 transition">
-                <div class="flex items-center gap-3 min-w-0">
-                    <span class="text-lg shrink-0">📄</span>
-                    <div class="min-w-0">
-                        <div class="font-mono text-sm truncate">{{ f.name }}</div>
-                        <div class="text-[11px] text-gray-500 dark:text-slate-400">{{ f.date }} · {{ f.size }}</div>
+        {% for c in d.git_recent %}
+            <li class="px-5 py-3 hover:bg-gray-50 dark:hover:bg-slate-800/40 transition">
+                <div class="flex flex-wrap items-start justify-between gap-3">
+
+                    <div class="min-w-0 flex-1">
+                        <div class="flex flex-wrap items-center gap-2 mb-1">
+                            <code class="font-mono text-[11px] px-2 py-0.5 rounded
+                                         bg-brand-100 dark:bg-brand-900/60
+                                         text-brand-700 dark:text-brand-300 font-semibold">
+                                {{ c.short }}
+                            </code>
+                            <span class="text-[11px] font-mono text-gray-500 dark:text-slate-400">
+                                {{ c.time }}
+                            </span>
+                        </div>
+                        <div class="text-sm text-gray-900 dark:text-slate-100 truncate">
+                            {{ c.message }}
+                        </div>
+                        {% if c.files %}
+                        <div class="mt-1 flex flex-wrap items-center gap-1.5">
+                            {% for f in c.files %}
+                            <a href="/git/{{ d.type }}/{{ d.index }}/download/{{ c.sha }}/{{ f }}"
+                               class="inline-flex items-center gap-1 text-[11px] font-mono px-1.5 py-0.5 rounded
+                                      bg-gray-100 dark:bg-slate-800
+                                      text-gray-600 dark:text-slate-400
+                                      hover:bg-brand-100 dark:hover:bg-brand-900/60
+                                      hover:text-brand-700 dark:hover:text-brand-300
+                                      border border-gray-200 dark:border-slate-700 transition">
+                                ⬇ {{ f }}
+                            </a>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
                     </div>
+
                 </div>
-                <a href="/download-backup/{{ d.type }}/{{ d.index }}/{{ f.rel_path }}"
-                   class="shrink-0 text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-700 text-white font-medium transition">
-                    ⬇ Скачать
-                </a>
             </li>
-        {% else %}
-            <li class="px-5 py-8 text-center text-sm text-gray-400 dark:text-slate-500">Архивов нет</li>
         {% endfor %}
     </ul>
+    {% else %}
+    <div class="px-5 py-8 text-center text-sm text-gray-400 dark:text-slate-500">
+        {% if d.git_enabled %}
+            Версий ещё нет. Запустите бэкап устройства.
+        {% else %}
+            Git-версионирование выключено для этого устройства.
+        {% endif %}
+    </div>
+    {% endif %}
 </div>

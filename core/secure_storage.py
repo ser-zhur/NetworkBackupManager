@@ -1,26 +1,20 @@
+import logging
 import os
-from pathlib import Path
+
 from cryptography.fernet import Fernet
 
 
+logger = logging.getLogger(__name__)
+
+
 class SecureStorage:
-    def decrypt(self, cipher_text: str) -> str:
-        if not cipher_text:
-            return ""
-        try:
-            return self._cipher.decrypt(cipher_text.encode("utf-8")).decode("utf-8")
-        except Exception as exc:
-            logging.warning("SecureStorage.decrypt: не удалось расшифровать значение: %s", exc)
-            return ""
     def __init__(self, storage_dir=None):
         if storage_dir is None:
-            # Определяем корень проекта относительно папки core
             base_dir = os.path.dirname(os.path.abspath(__file__))
             self.storage_dir = os.path.dirname(base_dir)
         else:
             self.storage_dir = str(storage_dir)
 
-        # Если случайно передали путь с именем файла "secret.key" в конце, убираем его
         if self.storage_dir.endswith("secret.key"):
             self.storage_dir = os.path.dirname(self.storage_dir)
 
@@ -28,8 +22,6 @@ class SecureStorage:
         self._cipher = self._load_or_create_key()
 
     def _load_or_create_key(self) -> Fernet:
-        """Загружает существующий локальный ключ или создает новый с гарнтией наличия папки"""
-        # Гарантируем создание директории, если ее нет
         os.makedirs(os.path.dirname(self.key_file), exist_ok=True)
 
         if os.path.exists(self.key_file):
@@ -43,20 +35,26 @@ class SecureStorage:
         return Fernet(key)
 
     def encrypt(self, plain_text: str) -> str:
-        """Шифрует строку"""
         if not plain_text:
             return ""
         try:
-            return self._cipher.encrypt(plain_text.encode("utf-8")).decode("utf-8")
-        except Exception:
+            return self._cipher.encrypt(
+                plain_text.encode("utf-8")
+            ).decode("utf-8")
+        except Exception as exc:
+            logger.warning("SecureStorage.encrypt: %s", exc)
             return ""
 
     def decrypt(self, cipher_text: str) -> str:
-        """Расшифровывает строку"""
         if not cipher_text:
             return ""
         try:
-            return self._cipher.decrypt(cipher_text.encode("utf-8")).decode("utf-8")
-        except Exception:
-            # Если текст не зашифрован или зашифрован другим ключом, возвращаем как есть или пустую строку
+            return self._cipher.decrypt(
+                cipher_text.encode("utf-8")
+            ).decode("utf-8")
+        except Exception as exc:
+            logger.warning(
+                "SecureStorage.decrypt: не удалось расшифровать "
+                "значение: %s", exc,
+            )
             return ""

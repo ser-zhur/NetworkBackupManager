@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    {% include "_base_head.html" %}
+    <title>Diff {{ commit_a.short }}..{{ commit_b.short }} — {{ host }}</title>
+    <style>
+        .diff-line {
+            display: block;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 12px;
+            line-height: 1.5;
+            padding: 0 12px;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .diff-add  { background: rgba(16, 185, 129, 0.15); color: #059669; }
+        .diff-del  { background: rgba(244, 63, 94, 0.15);  color: #e11d48; }
+        .diff-hunk { background: rgba(59, 130, 246, 0.12); color: #2563eb; font-weight: 600; }
+        .diff-header { background: rgba(100, 116, 139, 0.12); color: #475569; font-weight: 600; }
+        .diff-ctx  { color: #64748b; }
+        .dark .diff-add  { background: rgba(16, 185, 129, 0.12); color: #6ee7b7; }
+        .dark .diff-del  { background: rgba(244, 63, 94, 0.12);  color: #fda4af; }
+        .dark .diff-hunk { background: rgba(59, 130, 246, 0.12); color: #93c5fd; }
+        .dark .diff-header { background: rgba(148, 163, 184, 0.12); color: #cbd5e1; }
+        .dark .diff-ctx  { color: #94a3b8; }
+    </style>
+</head>
+<body class="bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-slate-100 transition-colors min-h-screen">
+
+{% with header_subtitle = "Сравнение версий" %}
+    {% include "_header.html" %}
+{% endwith %}
+
+<main class="max-w-6xl mx-auto px-5 py-8">
+
+    <!-- Заголовок -->
+    <div class="flex flex-wrap items-start justify-between gap-4 mb-6">
+        <div class="min-w-0">
+            <h1 class="text-2xl font-bold text-gray-900 dark:text-slate-100 flex items-center gap-2">
+                🔍 Сравнение версий
+            </h1>
+            <p class="text-sm text-gray-500 dark:text-slate-400 mt-1">
+                Устройство <span class="font-mono font-medium text-gray-700 dark:text-slate-200">{{ host }}</span>
+            </p>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2">
+            <a href="/git/{{ device_type }}/{{ index }}"
+               class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+                      bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                      border border-gray-200 dark:border-slate-700 transition">
+                ← К истории
+            </a>
+            <a href="/?selected={{ device_type }}/{{ index }}"
+               class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+                      bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                      border border-gray-200 dark:border-slate-700 transition">
+                🏠 К устройству
+            </a>
+        </div>
+    </div>
+
+    <!-- Плашки версий -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+        <div class="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-4">
+            <div class="text-[11px] uppercase tracking-wide font-semibold text-rose-600 dark:text-rose-400 mb-2">
+                Было (до)
+            </div>
+            <div class="flex items-center gap-3 mb-2">
+                <code class="font-mono text-xs px-2 py-0.5 rounded
+                             bg-rose-100 dark:bg-rose-900/60
+                             text-rose-700 dark:text-rose-300 font-semibold">
+                    {{ commit_a.short }}
+                </code>
+                <span class="text-xs font-mono text-gray-500 dark:text-slate-400">{{ commit_a.time }}</span>
+            </div>
+            <div class="text-sm text-gray-900 dark:text-slate-100">{{ commit_a.message }}</div>
+        </div>
+
+        <div class="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-4">
+            <div class="text-[11px] uppercase tracking-wide font-semibold text-emerald-600 dark:text-emerald-400 mb-2">
+                Стало (после)
+            </div>
+            <div class="flex items-center gap-3 mb-2">
+                <code class="font-mono text-xs px-2 py-0.5 rounded
+                             bg-emerald-100 dark:bg-emerald-900/60
+                             text-emerald-700 dark:text-emerald-300 font-semibold">
+                    {{ commit_b.short }}
+                </code>
+                <span class="text-xs font-mono text-gray-500 dark:text-slate-400">{{ commit_b.time }}</span>
+            </div>
+            <div class="text-sm text-gray-900 dark:text-slate-100">{{ commit_b.message }}</div>
+        </div>
+    </div>
+
+    <!-- Статистика -->
+    <div class="flex flex-wrap items-center gap-3 mb-6 text-xs">
+        <span class="px-3 py-1.5 rounded-full
+                     bg-gray-100 dark:bg-slate-800
+                     text-gray-700 dark:text-slate-300 font-medium">
+            Файлов изменено: <b>{{ stats.files }}</b>
+        </span>
+        <span class="px-3 py-1.5 rounded-full
+                     bg-emerald-100 dark:bg-emerald-900/60
+                     text-emerald-700 dark:text-emerald-300 font-medium">
+            +{{ stats.add }} добавлено
+        </span>
+        <span class="px-3 py-1.5 rounded-full
+                     bg-rose-100 dark:bg-rose-900/60
+                     text-rose-700 dark:text-rose-300 font-medium">
+            −{{ stats.del }} удалено
+        </span>
+    </div>
+
+    <!-- Секции по файлам -->
+    {% if parsed_diffs %}
+        <div class="space-y-5">
+            {% for filename, lines in parsed_diffs.items() %}
+                {% set has_changes = lines | selectattr('kind', 'in', ['add', 'del']) | list | length > 0 %}
+
+                <section class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm overflow-hidden">
+
+                    <!-- Заголовок файла -->
+                    <div class="px-5 py-3 border-b border-gray-100 dark:border-slate-800
+                                bg-gray-50 dark:bg-slate-800/40
+                                flex flex-wrap items-center justify-between gap-3">
+                        <div class="flex items-center gap-2 min-w-0">
+                            <span class="text-lg shrink-0">📄</span>
+                            <span class="font-mono text-sm font-medium truncate">{{ filename }}</span>
+                            {% if not has_changes %}
+                                <span class="text-[11px] font-medium px-2 py-0.5 rounded
+                                             bg-gray-100 dark:bg-slate-800
+                                             text-gray-600 dark:text-slate-400">
+                                    без изменений
+                                </span>
+                            {% endif %}
+                        </div>
+
+                        <div class="flex items-center gap-2 shrink-0">
+                            <a href="/git/{{ device_type }}/{{ index }}/download/{{ commit_a.sha }}/{{ filename }}"
+                               title="Скачать версию {{ commit_a.short }}"
+                               class="text-[11px] font-mono px-2 py-1 rounded
+                                      bg-white dark:bg-slate-800
+                                      border border-gray-200 dark:border-slate-700
+                                      hover:bg-rose-50 dark:hover:bg-rose-950/40
+                                      hover:border-rose-300 dark:hover:border-rose-800
+                                      text-gray-700 dark:text-slate-300 transition">
+                                ⬇ {{ commit_a.short }}
+                            </a>
+                            <a href="/git/{{ device_type }}/{{ index }}/download/{{ commit_b.sha }}/{{ filename }}"
+                               title="Скачать версию {{ commit_b.short }}"
+                               class="text-[11px] font-mono px-2 py-1 rounded
+                                      bg-white dark:bg-slate-800
+                                      border border-gray-200 dark:border-slate-700
+                                      hover:bg-emerald-50 dark:hover:bg-emerald-950/40
+                                      hover:border-emerald-300 dark:hover:border-emerald-800
+                                      text-gray-700 dark:text-slate-300 transition">
+                                ⬇ {{ commit_b.short }}
+                            </a>
+                        </div>
+                    </div>
+
+                    <!-- Diff -->
+                    <div class="overflow-x-auto">
+                        {% if lines %}
+                            {% for line in lines %}
+                                <span class="diff-line diff-{{ line.kind }}">{{ line.text }}</span>
+                            {% endfor %}
+                        {% else %}
+                            <div class="px-5 py-6 text-center text-sm text-gray-400 dark:text-slate-500">
+                                Пустой файл
+                            </div>
+                        {% endif %}
+                    </div>
+                </section>
+            {% endfor %}
+        </div>
+
+    {% else %}
+        <div class="bg-white dark:bg-slate-900 rounded-2xl border border-dashed border-gray-300 dark:border-slate-700 py-16 text-center">
+            <div class="text-5xl mb-4">🟰</div>
+            <h2 class="text-lg font-semibold mb-2">Различий не обнаружено</h2>
+            <p class="text-sm text-gray-500 dark:text-slate-400">
+                Содержимое файлов в этих двух коммитах совпадает.
+            </p>
+        </div>
+    {% endif %}
+
+</main>
+
+</body>
+</html>
