@@ -873,11 +873,6 @@ def _build_device_payload(
         or router.get("address", "Не указан")
     )
 
-    if device_type.lower() == "mikrotik":
-        version = f"ROS {router.get('version', '7')}"
-    else:
-        version = "pfSense"
-
     git_recent = []
     for c in git_commits[:3]:
         git_recent.append({
@@ -893,7 +888,6 @@ def _build_device_payload(
         "type": device_type,
         "index": index,
         "host": ip_addr,
-        "version": version,
         "port": router.get("port", 22),
         "status": status,
         "last_success": last_date,
@@ -1688,7 +1682,6 @@ async def save_router_endpoint(
 
     device_type = (form.get("device_type") or "").strip()
     ip = (form.get("ip") or "").strip()
-    version = form.get("version") or "7"
     username = form.get("username") or "admin"
     ssh_pass = form.get("ssh_pass") or ""
     private_key = form.get("private_key") or ""
@@ -1748,10 +1741,6 @@ async def save_router_endpoint(
         device_type.lower()
         == "mikrotik"
     ):
-
-        new_router[
-            "version"
-        ] = version
 
         new_router[
             "private_key"
@@ -2742,7 +2731,6 @@ async def update_router(
     form = await request.form()
 
     ip = (form.get("ip") or "").strip()
-    version = form.get("version") or "7"
     username = form.get("username") or "admin"
     ssh_pass = form.get("ssh_pass") or ""
     private_key = form.get("private_key") or ""
@@ -2830,10 +2818,6 @@ async def update_router(
         device_type.lower()
         == "mikrotik"
     ):
-
-        updated_router[
-            "version"
-        ] = version
 
         updated_router[
             "private_key"
