@@ -46,6 +46,7 @@ class GitStorageBackend(StorageBackend):
     supports_download = True
     supports_delete = True
     supports_notes = True
+    always_enabled = True
 
     def test(self, config: dict) -> PushResult:
         if not git_available():

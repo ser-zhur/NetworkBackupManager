@@ -2,7 +2,6 @@ import os
 import json
 import copy
 import logging
-import re
 import threading
 import secrets
 import hashlib
@@ -10,8 +9,7 @@ import base64
 import time
 
 from pathlib import Path
-from datetime import datetime, timedelta
-from collections import defaultdict
+from datetime import datetime
 from contextlib import asynccontextmanager
 
 from fastapi import (
@@ -140,10 +138,6 @@ def backup_finished():
 # CORE
 # =========================================================
 
-DATE_DIR_REGEX = re.compile(
-    r"^\d{4}-\d{2}-\d{2}$"
-)
-
 storage = SecureStorage(
     str(BASE_DIR)
 )
@@ -219,7 +213,7 @@ async def lifespan(
     logging.info(
         "🚀 Запуск планировщика..."
     )
-    
+
     invalidate_status_cache()
 
     scheduler.start()
@@ -233,7 +227,7 @@ async def lifespan(
         logging.info(
             "🛑 Остановка планировщика..."
         )
-        
+
         invalidate_status_cache()
         scheduler.stop()
 
@@ -342,8 +336,9 @@ if templates is not None:
     templates.env.globals["age_label"] = _age_label
     templates.env.globals["age_class"] = _age_class
 
+
 # =========================================================
-# PASSWORD
+# PASSWORD (verify only — hash делается в main.py)
 # =========================================================
 
 def verify_password(
@@ -480,10 +475,6 @@ def _render_service_action(
     message: str,
     ok: bool,
 ):
-    """
-    Рендер страницы результата действия со службой.
-    Убирает дублирование TemplateResponse в каждом endpoint’е.
-    """
     return templates.TemplateResponse(
         request,
         "service_action.html",
@@ -496,13 +487,7 @@ def _render_service_action(
 
 
 def _schedule_self_exit(delay: float = 5.0) -> None:
-    """
-    Откладывает завершение текущего процесса.
 
-    Нужно после запроса UAC на install: пока новая служба
-    стартует, интерактивная копия должна освободить порт
-    8080, иначе служба не сможет забиндиться.
-    """
     def _exit():
         time.sleep(delay)
         try:
@@ -514,6 +499,7 @@ def _schedule_self_exit(delay: float = 5.0) -> None:
         target=_exit,
         daemon=True,
     ).start()
+
 
 def _device_filter_tag(device_type: str, index: int) -> str | None:
     """
@@ -534,6 +520,7 @@ def _device_filter_tag(device_type: str, index: int) -> str | None:
 
     return f"{device_type}/{host}"
 
+
 # =========================================================
 # LOG READER
 # =========================================================
@@ -544,16 +531,6 @@ def read_log_tail(
     filter_tag: str | None = None,
     focus_date: str | None = None,
 ):
-    """
-    Читает хвост файла логов.
-
-    Возвращает:
-        (content, lines_shown, has_more, focus_line_index)
-
-    filter_tag — оставить строки с '[filter_tag]'.
-    focus_date — индекс первой строки, начинающейся с YYYY-MM-DD,
-                 или None.
-    """
 
     if not file_path.exists():
         return ("Лог-файл пока отсутствует...", 0, False, None)
@@ -597,109 +574,9 @@ def read_log_tail(
         focus_line_index,
     )
 
-# =========================================================
-# BACKUP INFO
-# =========================================================
-
-def get_device_backup_info(
-    backup_path,
-):
-
-    path = Path(
-        backup_path
-    )
-
-    if not path.is_absolute():
-
-        path = (
-            BASE_DIR / path
-        )
-
-    if (
-        not path.exists()
-        or not path.is_dir()
-    ):
-
-        return (
-            0,
-            "Нет бэкапов",
-            None,
-        )
-
-    dated_dirs = []
-
-    for item in path.iterdir():
-
-        if not item.is_dir():
-            continue
-
-        try:
-
-            has_files = any(
-                f.is_file()
-                for f in item.iterdir()
-            )
-
-        except (
-            PermissionError,
-            OSError,
-        ):
-
-            has_files = False
-
-        if not has_files:
-            continue
-
-        date_part = item.name[:10]
-
-        try:
-
-            folder_date = (
-                datetime.strptime(
-                    date_part,
-                    "%Y-%m-%d",
-                )
-            )
-
-            dated_dirs.append(
-                (
-                    folder_date,
-                    item,
-                )
-            )
-
-        except ValueError:
-
-            continue
-
-    if not dated_dirs:
-
-        return (
-            0,
-            "Нет бэкапов",
-            None,
-        )
-
-    latest_date, latest_dir = max(
-        dated_dirs,
-        key=lambda x: x[0],
-    )
-
-    age_days = (
-        datetime.now()
-        - latest_date
-    ).days
-
-    return (
-        len(dated_dirs),
-        latest_date.strftime(
-            "%Y-%m-%d"
-        ),
-        age_days,
-    )
 
 # =========================================================
-# DEVICE INFO — расширенный сбор данных
+# SIZE UTILS
 # =========================================================
 
 def get_dir_size(path: Path) -> int:
@@ -728,6 +605,7 @@ def format_size(size_bytes: int) -> str:
         return f"{size_bytes / (1024 * 1024):.1f} МБ"
     return f"{size_bytes / (1024 * 1024 * 1024):.2f} ГБ"
 
+
 def _get_dir_size_excluding_git(path: Path) -> int:
     """
     Размер всех файлов в каталоге, рекурсивно,
@@ -743,7 +621,6 @@ def _get_dir_size_excluding_git(path: Path) -> int:
         for f in path.rglob("*"):
             if not f.is_file():
                 continue
-            # Пропускаем всё, что внутри .git
             try:
                 f.relative_to(git_dir)
                 continue
@@ -757,6 +634,7 @@ def _get_dir_size_excluding_git(path: Path) -> int:
         pass
 
     return total
+
 
 # =========================================================
 # STORAGE STATE (data/state.json)
@@ -774,23 +652,6 @@ def _load_device_state(device_id: str) -> dict:
         return {}
 
 
-def _ensure_storage_section(router: dict) -> None:
-    """
-    Если у устройства нет секции storage — добавляем
-    дефолт в памяти (git включён, остальные выключены).
-
-    На диск НЕ пишем: при первом сохранении формы через
-    update_router секция сохранится уже явно.
-    """
-    if "storage" in router and isinstance(router["storage"], dict):
-        return
-
-    if storage_manager is None:
-        return
-
-    router["storage"] = storage_manager.defaults_for_new_router()
-
-
 def _build_storage_rows(router: dict, device_state: dict) -> list:
     """
     Список строк для блока «Хранилища» в карточке устройства.
@@ -805,13 +666,16 @@ def _build_storage_rows(router: dict, device_state: dict) -> list:
     rows = []
     for backend in storage_manager.all():
         cfg = storage_cfg.get(backend.id) or {}
-        enabled = bool(cfg.get("enabled"))
+        enabled = (
+            backend.always_enabled
+            or backend.is_authority
+            or bool(cfg.get("enabled"))
+        )
 
         st = backends_state.get(backend.id) or {}
 
         if not enabled:
             status = "disabled"
-            ok = None
             message = "Отключено"
             skipped = False
         else:
@@ -835,6 +699,7 @@ def _build_storage_rows(router: dict, device_state: dict) -> list:
             "icon": backend.icon,
             "description": backend.description,
             "enabled": enabled,
+            "always_enabled": backend.always_enabled,
             "status": status,
             "message": message,
             "last_run": last_run if enabled else None,
@@ -864,6 +729,10 @@ def _parse_storage_form(form, old_storage: dict) -> dict:
     for backend in storage_manager.all():
         enabled_key = f"storage_{backend.id}_enabled"
         enabled = form.get(enabled_key) == "true"
+
+        # always_enabled (git) — игнорируем значение из формы
+        if backend.always_enabled:
+            enabled = True
 
         cfg: dict = {"enabled": enabled}
         old_cfg = old_storage.get(backend.id) or {}
@@ -904,146 +773,26 @@ def _parse_storage_form(form, old_storage: dict) -> dict:
 
 
 def _storage_backends_for_template():
-    """Список backend'ов для рендера формы."""
     if storage_manager is None:
         return []
     return storage_manager.all()
 
 
 def _storage_defaults_for_template():
-    """Дефолтная секция storage — для формы добавления."""
     if storage_manager is None:
         return {}
     return storage_manager.defaults_for_new_router()
 
+
+# =========================================================
+# PATH UTILS
+# =========================================================
 
 def _resolve_backup_path(backup_path) -> Path:
     path = Path(backup_path)
     if not path.is_absolute():
         path = BASE_DIR / path
     return path
-
-
-def get_last_attempt(backup_path):
-    """
-    Возвращает (date_str, ok_bool) последней попытки бэкапа.
-
-    ok=True  — в последнем по дате каталоге есть файлы;
-    ok=False — каталог создан, но пуст (бэкап упал).
-    """
-    path = _resolve_backup_path(backup_path)
-
-    if not path.exists() or not path.is_dir():
-        return None, None
-
-    latest = None
-    for item in path.iterdir():
-        if not item.is_dir():
-            continue
-        date_part = item.name[:10]
-        try:
-            folder_date = datetime.strptime(date_part, "%Y-%m-%d")
-        except ValueError:
-            continue
-        if latest is None or folder_date > latest[0]:
-            try:
-                has_files = any(f.is_file() for f in item.iterdir())
-            except OSError:
-                has_files = False
-            latest = (folder_date, has_files)
-
-    if latest is None:
-        return None, None
-
-    return latest[0].strftime("%Y-%m-%d"), latest[1]
-
-
-def get_device_history(backup_path, days: int = 30):
-    """
-    Возвращает (history, dates).
-
-    history — список из 'ok' | 'fail' | 'none' длиной days.
-    dates   — список YYYY-MM-DD для каждой ячейки.
-    Сортировка: слева старые, справа свежие.
-    """
-    today = datetime.now().date()
-
-    dates = [
-        (today - timedelta(days=i)).strftime("%Y-%m-%d")
-        for i in range(days - 1, -1, -1)
-    ]
-
-    history = ["none"] * days
-
-    path = _resolve_backup_path(backup_path)
-    if not path.exists() or not path.is_dir():
-        return history, dates
-
-    for item in path.iterdir():
-        if not item.is_dir():
-            continue
-        date_part = item.name[:10]
-        if date_part not in dates:
-            continue
-        idx = dates.index(date_part)
-        try:
-            has_files = any(f.is_file() for f in item.iterdir())
-        except OSError:
-            has_files = False
-        history[idx] = "ok" if has_files else "fail"
-
-    return history, dates
-
-
-def get_recent_files(backup_path, limit: int = 3):
-    """
-    Последние limit файлов из датированных подкаталогов
-    (по mtime). Файлы в корне и служебные каталоги
-    (.git и прочие) не учитываются.
-    """
-    path = _resolve_backup_path(backup_path)
-    if not path.exists() or not path.is_dir():
-        return []
-
-    files = []
-    for folder in path.iterdir():
-
-        if not folder.is_dir():
-            continue
-
-        # Только датированные подкаталоги
-        if not DATE_DIR_REGEX.match(folder.name):
-            continue
-
-        try:
-            for f in folder.iterdir():
-                if f.is_file():
-                    files.append(f)
-        except OSError:
-            continue
-
-    def _mtime(p):
-        try:
-            return p.stat().st_mtime
-        except OSError:
-            return 0
-
-    files.sort(key=_mtime, reverse=True)
-
-    result = []
-    for f in files[:limit]:
-        try:
-            size = format_size(f.stat().st_size)
-            date = datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
-        except OSError:
-            continue
-        result.append({
-            "name": f.name,
-            "rel_path": str(f.relative_to(path)),
-            "date": date,
-            "size": size,
-        })
-    return result
 
 
 def classify_device(age_days, last_attempt_ok) -> str:
@@ -1058,25 +807,24 @@ def classify_device(age_days, last_attempt_ok) -> str:
         return "warn"
     return "fail"
 
+
+# =========================================================
+# DEVICE PAYLOAD
+# =========================================================
+
 def _build_device_payload(
     device_type: str,
     index: int,
     router: dict,
 ) -> dict:
     """Собирает всё, что нужно для карточки устройства."""
-    # Гарантируем секцию storage (в памяти)
-    _ensure_storage_section(router)
 
     b_path = router.get("backup_path", "backups/")
     b_path_abs = _resolve_backup_path(b_path)
 
-    storage_cfg = router.get("storage") or {}
-    git_cfg = storage_cfg.get("git") or {}
-    git_enabled = bool(git_cfg.get("enabled"))
-
-    # ---- Пытаемся прочитать историю из git ----
+    # ---- История из git ----
     git_commits = []
-    if git_enabled and git_available():
+    if git_available():
         try:
             gs = GitStorage(b_path_abs)
             if gs.is_initialized():
@@ -1087,7 +835,7 @@ def _build_device_payload(
                 device_type, index, exc,
             )
 
-    # ---- Определяем статус / последний успех ----
+    # ---- Метрики из git ----
     if git_commits:
         last = git_commits[0]
         try:
@@ -1103,12 +851,12 @@ def _build_device_payload(
         last_attempt_date = last_date
         last_attempt_ok = True
     else:
-        # Fallback на датированные папки (пока плагины их пишут)
-        count, last_date, age_days = get_device_backup_info(b_path)
-        last_attempt_date, last_attempt_ok = get_last_attempt(b_path)
-        backup_count = count
+        last_date = None
+        age_days = None
+        backup_count = 0
+        last_attempt_date = None
+        last_attempt_ok = None
 
-    # ---- Размер без .git ----
     total_bytes = _get_dir_size_excluding_git(b_path_abs)
     total_size = format_size(total_bytes)
 
@@ -1130,7 +878,6 @@ def _build_device_payload(
     else:
         version = "pfSense"
 
-    # ---- Последние коммиты для UI ----
     git_recent = []
     for c in git_commits[:3]:
         git_recent.append({
@@ -1149,7 +896,7 @@ def _build_device_payload(
         "version": version,
         "port": router.get("port", 22),
         "status": status,
-        "last_success": last_date if backup_count > 0 else None,
+        "last_success": last_date,
         "last_success_age_days": age_days,
         "last_attempt": last_attempt_date,
         "last_attempt_ok": last_attempt_ok,
@@ -1163,10 +910,6 @@ def _build_device_payload(
             or router.get("private_key")
             or "id_rsa.key"
         ),
-        "history": [],
-        "history_dates": [],
-        "recent": get_recent_files(b_path, 3),
-        "git_enabled": git_enabled,
         "git_total": len(git_commits),
         "git_recent": git_recent,
         "storage_rows": _build_storage_rows(
@@ -1174,8 +917,8 @@ def _build_device_payload(
             _load_device_state(f"{device_type}/{index}"),
         ),
     }
-    
-    
+
+
 # =========================================================
 # BACKUP TASKS
 # =========================================================
@@ -1213,23 +956,11 @@ def execute_device_backup_task(
         )
 
         logging.info("🚀 [Фон] Запуск бэкапа: %s", ip_disp)
-        
+
         created_files = backup_func(secure_router)
 
         if created_files:
-            storage_cfg = secure_router.get("storage") or {}
-            git_enabled = bool(
-                (storage_cfg.get("git") or {}).get("enabled")
-            )
-
-            # Ротация датированных папок — только если git выключен
-            if not git_enabled and hasattr(plugin_manager, "_rotate_local"):
-                plugin_manager._rotate_local(
-                    secure_router.get("backup_path"),
-                    secure_router.get("max_backups", 7),
-                )
-
-            # Push в storage backends (git, FTP, SMB, ...)
+            # Push в storage backends (git всегда, остальные — по конфигу)
             if hasattr(plugin_manager, "_push_to_storages"):
                 try:
                     plugin_manager._push_to_storages(
@@ -1250,7 +981,6 @@ def execute_device_backup_task(
                     )
 
         logging.info("✅ [Фон] Бэкап успешно завершен для %s", ip_disp)
-        
 
     except Exception as exc:
         logging.error("❌ [Фон] Ошибка при бэкапе: %s", exc)
@@ -1258,6 +988,7 @@ def execute_device_backup_task(
     finally:
         backup_finished()
         clear_device_context()
+
 
 def execute_all_backups_task():
 
@@ -1301,7 +1032,6 @@ def read_root(
                     _build_device_payload(device_type, index, router)
                 )
 
-    # Выбор устройства из ?selected=<type>/<index>
     selected_id = request.query_params.get("selected", "")
     selected = None
     if devices:
@@ -1331,7 +1061,7 @@ def read_root(
 
 
 # =========================================================
-# API: DEVICE DETAIL (HTML partial)
+# API: DEVICE DETAIL
 # =========================================================
 
 @app.get(
@@ -1361,7 +1091,7 @@ def api_device_detail(
 
 
 # =========================================================
-# API: SYSTEM INFO (JSON)
+# API: SYSTEM INFO
 # =========================================================
 
 @app.get("/api/system/info")
@@ -1375,6 +1105,7 @@ def api_system_info(user: str = Depends(require_auth)):
         "service": get_status(),
         "is_backup_running": is_backup_running(),
     }
+
 
 # =========================================================
 # API: TEST STORAGE BACKEND
@@ -1400,8 +1131,6 @@ async def api_storage_test(
     except Exception:
         data = {}
 
-    # Пытаемся найти старое значение паролей из существующего
-    # роутера — если тестируется уже настроенное устройство.
     old_cfg: dict = {}
     if device_type and index >= 0:
         try:
@@ -1411,14 +1140,13 @@ async def api_storage_test(
         except Exception:
             old_cfg = {}
 
-    # Собираем конфиг из формы + старых паролей
     cfg: dict = {}
     for field in backend.fields:
         value = data.get(field.name, "")
 
         if field.type == "password":
             if value:
-                cfg[field.name] = value           # плейн из формы
+                cfg[field.name] = value
             else:
                 enc = old_cfg.get(field.name, "")
                 cfg[field.name] = storage.decrypt(enc) if enc else ""
@@ -1442,6 +1170,7 @@ async def api_storage_test(
         return {"ok": False, "message": f"Исключение: {exc}"}
 
     return {"ok": result.ok, "message": result.message}
+
 
 # =========================================================
 # SERVICE PAGE
@@ -1471,6 +1200,7 @@ def service_page(
 # =========================================================
 # SERVICE INSTALL
 # =========================================================
+
 @app.post(
     "/service/install",
     response_class=HTMLResponse,
@@ -1479,9 +1209,6 @@ def service_install_endpoint(
     request: Request,
     user: str = Depends(require_auth),
 ):
-    # -----------------------------------------------------
-    # 1. Precondition — уже зарегистрирована
-    # -----------------------------------------------------
 
     if is_service_registered():
         return _render_service_action(
@@ -1490,11 +1217,6 @@ def service_install_endpoint(
             "Служба уже зарегистрирована.",
             ok=True,
         )
-
-    # -----------------------------------------------------
-    # 2. Защита от нонсенса: процесс в режиме службы,
-    #    но служба не зарегистрирована.
-    # -----------------------------------------------------
 
     if is_service_process():
         return _render_service_action(
@@ -1505,10 +1227,6 @@ def service_install_endpoint(
             ok=False,
         )
 
-    # -----------------------------------------------------
-    # 3. Админ — устанавливаем напрямую
-    # -----------------------------------------------------
-
     if is_admin():
         ok, message = install_service()
 
@@ -1517,7 +1235,7 @@ def service_install_endpoint(
             user,
             message,
         )
-        
+
         invalidate_status_cache()
 
         return _render_service_action(
@@ -1526,10 +1244,6 @@ def service_install_endpoint(
             message,
             ok=ok,
         )
-
-    # -----------------------------------------------------
-    # 4. Не админ — UAC
-    # -----------------------------------------------------
 
     ok = relaunch_elevated(["--install-service"])
 
@@ -1541,8 +1255,6 @@ def service_install_endpoint(
             ok=False,
         )
 
-    # Освобождаем порт: после UAC служба стартует и будет
-    # биндиться на тот же host:port.
     _schedule_self_exit()
 
     logging.info(
@@ -1550,7 +1262,7 @@ def service_install_endpoint(
         "пользователем %s",
         user,
     )
-    
+
     invalidate_status_cache()
 
     return _render_service_action(
@@ -1561,6 +1273,7 @@ def service_install_endpoint(
         "и запущена.",
         ok=True,
     )
+
 
 # =========================================================
 # SERVICE START
@@ -1606,7 +1319,7 @@ def service_start_endpoint(
             user,
             message,
         )
-        
+
         invalidate_status_cache()
 
         return templates.TemplateResponse(
@@ -1656,6 +1369,7 @@ def service_start_endpoint(
 # =========================================================
 # SERVICE RESTART
 # =========================================================
+
 @app.post("/service/restart", response_class=HTMLResponse)
 def service_restart_endpoint(
     request: Request,
@@ -1672,11 +1386,6 @@ def service_restart_endpoint(
             },
         )
 
-    # -----------------------------------------------------
-    # Если мы сами служба — отложенный перезапуск,
-    # чтобы успеть отдать ответ клиенту.
-    # -----------------------------------------------------
-
     if get_status().get("service_mode", False):
         ok, message = schedule_restart()
 
@@ -1685,7 +1394,7 @@ def service_restart_endpoint(
             "пользователем %s: %s",
             user, message,
         )
-        
+
         invalidate_status_cache()
 
         return templates.TemplateResponse(
@@ -1697,11 +1406,6 @@ def service_restart_endpoint(
                 "ok": ok,
             },
         )
-
-    # -----------------------------------------------------
-    # Интерактивная копия. Если админ — schedule_restart()
-    # сам разберётся (он отложенный и безопасный).
-    # -----------------------------------------------------
 
     if is_admin():
         ok, message = schedule_restart()
@@ -1710,7 +1414,7 @@ def service_restart_endpoint(
             "Перезапуск службы пользователем %s: %s",
             user, message,
         )
-        
+
         invalidate_status_cache()
 
         return templates.TemplateResponse(
@@ -1723,11 +1427,6 @@ def service_restart_endpoint(
             },
         )
 
-    # -----------------------------------------------------
-    # Не админ — UAC. Дочерний процесс вызовет
-    # --restart-service.
-    # -----------------------------------------------------
-
     ok = relaunch_elevated(["--restart-service"])
 
     logging.info(
@@ -1735,7 +1434,7 @@ def service_restart_endpoint(
         "пользователем %s: %s",
         user, ok,
     )
-    
+
     invalidate_status_cache()
 
     return templates.TemplateResponse(
@@ -1754,7 +1453,8 @@ def service_restart_endpoint(
             "ok": ok,
         },
     )
-    
+
+
 # =========================================================
 # SERVICE STOP
 # =========================================================
@@ -1764,9 +1464,6 @@ def service_stop_endpoint(
     request: Request,
     user: str = Depends(require_auth),
 ):
-    # -----------------------------------------------------
-    # Если служба не зарегистрирована — останавливать нечего.
-    # -----------------------------------------------------
 
     if not is_service_registered():
         return templates.TemplateResponse(
@@ -1779,12 +1476,6 @@ def service_stop_endpoint(
             },
         )
 
-    # -----------------------------------------------------
-    # Мы сами — служба. Нельзя гасить задачу напрямую,
-    # иначе web-процесс умрёт до отправки ответа.
-    # Используем отложенную остановку.
-    # -----------------------------------------------------
-
     if get_status().get("service_mode", False):
         ok, message = schedule_stop()
 
@@ -1793,7 +1484,7 @@ def service_stop_endpoint(
             "пользователем %s: %s",
             user, message,
         )
-        
+
         invalidate_status_cache()
 
         return templates.TemplateResponse(
@@ -1805,11 +1496,6 @@ def service_stop_endpoint(
                 "ok": ok,
             },
         )
-
-    # -----------------------------------------------------
-    # Мы интерактивная копия и админ — можно гасить задачу
-    # напрямую, текущий процесс не пострадает.
-    # -----------------------------------------------------
 
     if is_admin():
         ok, message = stop_service()
@@ -1818,7 +1504,7 @@ def service_stop_endpoint(
             "Остановка службы пользователем %s: %s",
             user, message,
         )
-        
+
         invalidate_status_cache()
 
         return templates.TemplateResponse(
@@ -1831,11 +1517,6 @@ def service_stop_endpoint(
             },
         )
 
-    # -----------------------------------------------------
-    # Не админ — запрашиваем UAC. Дочерний процесс вызовет
-    # --stop-service и корректно остановит задачу.
-    # -----------------------------------------------------
-
     ok = relaunch_elevated(["--stop-service"])
 
     logging.info(
@@ -1843,7 +1524,7 @@ def service_stop_endpoint(
         "пользователем %s: %s",
         user, ok,
     )
-    
+
     invalidate_status_cache()
 
     return templates.TemplateResponse(
@@ -1863,9 +1544,11 @@ def service_stop_endpoint(
         },
     )
 
+
 # =========================================================
 # SERVICE UNINSTALL
 # =========================================================
+
 @app.post(
     "/service/uninstall",
     response_class=HTMLResponse,
@@ -1874,9 +1557,6 @@ def service_uninstall_endpoint(
     request: Request,
     user: str = Depends(require_auth),
 ):
-    # -----------------------------------------------------
-    # 1. Precondition — нечего удалять
-    # -----------------------------------------------------
 
     if not is_service_registered():
         return _render_service_action(
@@ -1885,11 +1565,6 @@ def service_uninstall_endpoint(
             "Служба не зарегистрирована.",
             ok=True,
         )
-
-    # -----------------------------------------------------
-    # 2. Мы сами — служба. Прямое удаление убьёт наш процесс
-    #    до отправки ответа, поэтому — отложенно.
-    # -----------------------------------------------------
 
     if is_service_process():
         ok, message = schedule_uninstall()
@@ -1900,7 +1575,7 @@ def service_uninstall_endpoint(
             user,
             message,
         )
-        
+
         invalidate_status_cache()
 
         return _render_service_action(
@@ -1909,10 +1584,6 @@ def service_uninstall_endpoint(
             message,
             ok=ok,
         )
-
-    # -----------------------------------------------------
-    # 3. Админ — удаляем напрямую (мы не служба, нас не убьёт)
-    # -----------------------------------------------------
 
     if is_admin():
         ok, message = uninstall_service()
@@ -1922,7 +1593,7 @@ def service_uninstall_endpoint(
             user,
             message,
         )
-        
+
         invalidate_status_cache()
 
         return _render_service_action(
@@ -1931,10 +1602,6 @@ def service_uninstall_endpoint(
             message,
             ok=ok,
         )
-
-    # -----------------------------------------------------
-    # 4. Не админ — UAC
-    # -----------------------------------------------------
 
     ok = relaunch_elevated(["--uninstall-service"])
 
@@ -1951,7 +1618,7 @@ def service_uninstall_endpoint(
         "пользователем %s",
         user,
     )
-    
+
     invalidate_status_cache()
 
     return _render_service_action(
@@ -1961,6 +1628,7 @@ def service_uninstall_endpoint(
         "После подтверждения UAC служба будет удалена.",
         ok=True,
     )
+
 
 # =========================================================
 # ADD ROUTER
@@ -2104,7 +1772,7 @@ async def save_router_endpoint(
         )
 
     new_router["storage"] = _parse_storage_form(form, {})
-    
+
     plugin_data = (
         plugin_manager
         ._plugins[
@@ -2161,7 +1829,7 @@ async def save_router_endpoint(
         device_type,
         ip,
     )
-    
+
     invalidate_status_cache()
 
     return RedirectResponse(
@@ -2290,7 +1958,7 @@ def run_now_endpoint(
 
 
 # =========================================================
-# BACKUPS
+# BACKUPS (legacy redirect)
 # =========================================================
 
 @app.get(
@@ -2305,142 +1973,12 @@ def backups_page(
         require_auth
     ),
 ):
-
-    plugin = (
-        plugin_manager
-        ._plugins
-        .get(device_type)
-        if plugin_manager
-        else None
-    )
-
-    if (
-        not plugin
-        or index < 0
-        or index >= len(
-            plugin.get(
-                "routers",
-                []
-            )
-        )
-    ):
-
-        return HTMLResponse(
-            "<h3>Устройство не найдено</h3>",
-            status_code=404,
-        )
-
-    router = (
-        plugin["routers"][index]
-    )
-
-    # Если git включён — переадресуем на историю версий
-    storage_cfg = router.get("storage") or {}
-    if (storage_cfg.get("git") or {}).get("enabled"):
-        return RedirectResponse(
-            url=f"/git/{device_type}/{index}",
-            status_code=307,
-        )
-
-    backup_path = Path(
-        router.get(
-            "backup_path",
-            "backups",
-        )
-    )
-
-    if not backup_path.is_absolute():
-
-        backup_path = (
-            BASE_DIR
-            / backup_path
-        )
-
-    grouped_backups = (
-        defaultdict(list)
-    )
-
-
-
-    if (
-        backup_path.exists()
-        and backup_path.is_dir()
-    ):
-
-        for item in sorted(
-            backup_path.iterdir(),
-            reverse=True,
-        ):
-
-            # Только датированные подкаталоги.
-            # Файлы в корне (config.rsc, config.backup)
-            # и служебные каталоги (.git) не показываем.
-            if not item.is_dir():
-                continue
-
-            if not DATE_DIR_REGEX.match(item.name):
-                continue
-
-            folder_name = item.name
-
-            try:
-                files_in_dir = sorted(
-                    [
-                        f
-                        for f in item.iterdir()
-                        if f.is_file()
-                    ],
-                    key=lambda x: x.name,
-                )
-            except OSError:
-                continue
-
-            for f in files_in_dir:
-
-                try:
-                    size_bytes = f.stat().st_size
-                except OSError:
-                    continue
-
-                if size_bytes >= 1024:
-                    size_str = f"{size_bytes / 1024:.1f} KB"
-                else:
-                    size_str = f"{size_bytes} B"
-
-                rel_path = f"{folder_name}/{f.name}"
-
-                grouped_backups[folder_name].append({
-                    "name": f.name,
-                    "rel_path": rel_path,
-                    "size": size_str,
-                })
-
-
-
-
-    return templates.TemplateResponse(
-        request,
-        "backups.html",
-        {
-            "device_type":
-                device_type,
-
-            "index":
-                index,
-
-            "router":
-                router,
-
-            "grouped_backups":
-                dict(
-                    grouped_backups
-                ),
-
-            "backup_path":
-                str(
-                    backup_path
-                ),
-        },
+    # Версионирование полностью в git.
+    # Страница «Архивы» оставлена как редирект для совместимости
+    # с закладками пользователей.
+    return RedirectResponse(
+        url=f"/git/{device_type}/{index}",
+        status_code=307,
     )
 
 
@@ -2501,7 +2039,7 @@ async def save_scheduler_config(
         "планировщика: %s",
         scheduler.get_status_text(),
     )
-    
+
     invalidate_status_cache()
 
     return RedirectResponse(
@@ -2511,7 +2049,7 @@ async def save_scheduler_config(
 
 
 # =========================================================
-# DOWNLOAD BACKUP
+# DOWNLOAD BACKUP (flat layout only)
 # =========================================================
 
 @app.get(
@@ -2611,7 +2149,7 @@ def download_backup(
 
 
 # =========================================================
-# GIT: HISTORY
+# GIT: HELPERS
 # =========================================================
 
 def _get_git_storage_for(device_type: str, index: int):
@@ -2633,6 +2171,10 @@ def _get_git_storage_for(device_type: str, index: int):
 
     return router, backup_path, GitStorage(backup_path)
 
+
+# =========================================================
+# GIT: HISTORY
+# =========================================================
 
 @app.get(
     "/git/{device_type}/{index}",
@@ -2720,7 +2262,6 @@ def git_download_file(
     if not git_available() or not storage.is_initialized():
         raise HTTPException(404, "Репозиторий git недоступен")
 
-    # Защита от path traversal
     if "/" in filename or "\\" in filename or ".." in filename:
         raise HTTPException(400, "Некорректное имя файла")
 
@@ -2786,6 +2327,7 @@ async def git_set_note(
         status_code=303,
     )
 
+
 # =========================================================
 # GIT: DIFF
 # =========================================================
@@ -2817,7 +2359,6 @@ def git_diff_page(
             status_code=404,
         )
 
-    # Разбираем короткие SHA в полные
     history = storage.get_history(limit=500)
     by_short = {c["short"]: c["sha"] for c in history}
     by_full = {c["sha"]: c["sha"] for c in history}
@@ -2838,8 +2379,6 @@ def git_diff_page(
             status_code=404,
         )
 
-    # Список файлов, которые вообще могут быть в diff.
-    # Берём объединение файлов из обоих коммитов.
     filenames = sorted(set(commit_a["files"]) | set(commit_b["files"]))
 
     try:
@@ -2851,7 +2390,6 @@ def git_diff_page(
         )
         diffs = {"(ошибка)": f"Не удалось построить diff: {exc}"}
 
-    # Парсим diff на строки для подсветки
     parsed_diffs = {}
     for name, text in diffs.items():
         lines = []
@@ -2902,6 +2440,7 @@ def git_diff_page(
             "stats": stats,
         },
     )
+
 
 # =========================================================
 # MAIN LOG
@@ -3007,6 +2546,7 @@ def logs_service_endpoint(
             "stream": stream,
         },
     )
+
 
 # =========================================================
 # DEVICE LOG
@@ -3159,12 +2699,10 @@ def edit_router(
             "<h3>Устройство не найдено</h3>",
             status_code=404,
         )
+
     router = copy.deepcopy(
         plugin["routers"][index]
     )
-
-    # Гарантируем секцию storage в памяти
-    _ensure_storage_section(router)
 
     return templates.TemplateResponse(
         request,
@@ -3183,6 +2721,7 @@ def edit_router(
                 _storage_backends_for_template(),
         },
     )
+
 
 # =========================================================
 # UPDATE ROUTER
@@ -3260,8 +2799,6 @@ async def update_router(
             detail="Устройство не найдено",
         )
 
-    # Сохраняем старый роутер — из него берём пароли,
-    # если пользователь не ввёл новые (оставил поле пустым).
     old_router = routers_list[index]
 
     if ssh_pass:
@@ -3326,10 +2863,9 @@ async def update_router(
             "port"
         ] = port
 
-    # Хранилища (git, ftp, smb, ...)
     old_storage = old_router.get("storage") or {}
     updated_router["storage"] = _parse_storage_form(form, old_storage)
-    
+
     routers_list[
         index
     ] = updated_router
@@ -3376,7 +2912,7 @@ async def update_router(
         index,
         ip,
     )
-    
+
     invalidate_status_cache()
 
     return RedirectResponse(

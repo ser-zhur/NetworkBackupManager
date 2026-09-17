@@ -177,22 +177,25 @@ class StorageManager:
     # -----------------------------------------------------
     # ПРИМЕНЕНИЕ К УСТРОЙСТВУ
     # -----------------------------------------------------
-
     def enabled_for(self, router: dict) -> list[StorageBackend]:
         """
         Возвращает backend'ы, включённые в конфиге устройства.
 
-        Порядок: сначала authority (git), потом остальные
-        в порядке регистрации. Это критично — результат
-        git.push() определяет ctx.changed для остальных.
+        Backend'ы с always_enabled (git) включаются всегда,
+        вне зависимости от cfg.get("enabled").
         """
         storage_cfg = router.get("storage") or {}
         if not isinstance(storage_cfg, dict):
-            return []
+            storage_cfg = {}
 
         result: list[StorageBackend] = []
         for backend in self._backends.values():
-            cfg = storage_cfg.get(backend.id)
+            cfg = storage_cfg.get(backend.id) or {}
+
+            if backend.always_enabled:
+                result.append(backend)
+                continue
+
             if not isinstance(cfg, dict):
                 continue
             if not cfg.get("enabled"):
@@ -202,16 +205,12 @@ class StorageManager:
         # Сортировка: authority первым
         result.sort(key=lambda b: (not b.is_authority, b.id))
         return result
-
+    
     def defaults_for_new_router(self) -> dict:
-        """
-        Дефолтная секция storage для нового устройства.
-
-        По решению: git включён, остальные выключены.
-        """
         storage: dict = {}
         for backend in self._backends.values():
-            cfg = {"enabled": backend.is_authority}
+            enabled = backend.always_enabled or backend.is_authority
+            cfg = {"enabled": enabled}
             for f in backend.fields:
                 if f.default != "":
                     cfg[f.name] = f.default

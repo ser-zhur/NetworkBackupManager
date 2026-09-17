@@ -1,16 +1,20 @@
 import os
 import logging
-from datetime import datetime
+
 import paramiko
 import socket
+
 
 def backup_pfsense_ssh(router):
     host = router["host"]
     port = router.get("port", 22)
     username = router.get("username", "root")
-    
+
     current_plugin_dir = os.path.dirname(os.path.abspath(__file__))
-    key_filename = router.get("ssh_key", router.get("private_key", "id_rsa.key"))
+    key_filename = router.get(
+        "ssh_key",
+        router.get("private_key", "id_rsa.key"),
+    )
 
     if os.path.isabs(key_filename):
         key_path = key_filename
@@ -39,10 +43,11 @@ def backup_pfsense_ssh(router):
             f"Проверьте права файла (например, chmod 600)."
         )
 
-    backup_path = router["backup_path"]
+    # Git-only: файл всегда пишется плоско в backup_path
+    # с фиксированным именем config.xml.
+    backup_dir = router["backup_path"]
+    local_filename = "config.xml"
 
-    today = datetime.now().strftime("%Y-%m-%d")
-    backup_dir = os.path.join(backup_path, today)
     os.makedirs(backup_dir, exist_ok=True)
 
     logging.info("📡 Подключение к pfSense %s:%s по SSH", host, port)
@@ -51,26 +56,34 @@ def backup_pfsense_ssh(router):
         key = paramiko.RSAKey.from_private_key_file(key_path)
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(hostname=host, port=port, username=username, pkey=key, timeout=10)
+        ssh.connect(
+            hostname=host,
+            port=port,
+            username=username,
+            pkey=key,
+            timeout=10,
+        )
 
         sftp = ssh.open_sftp()
         remote_file = "/cf/conf/config.xml"
-        local_file = os.path.join(backup_dir, f"{host.replace(':', '_')}_{today}.xml")
+        local_file = os.path.join(backup_dir, local_filename)
 
         sftp.get(remote_file, local_file)
         sftp.close()
         ssh.close()
 
-        # Приводим к абсолютному пути
         full_path = os.path.abspath(local_file)
 
-        logging.info("✅ Бэкап pfSense сохранён: %s", full_path)    
+        logging.info("✅ Бэкап pfSense сохранён: %s", full_path)
         return [full_path]
- 
 
     except (paramiko.SSHException, socket.error) as e:
-        logging.error("❌ Сбой подключения к pfSense %s:%s: %s", host, port, e)
+        logging.error(
+            "❌ Сбой подключения к pfSense %s:%s: %s",
+            host, port, e,
+        )
         raise e
+
 
 def run_backup(router_config):
     """Единая точка входа для плагина pfSense"""

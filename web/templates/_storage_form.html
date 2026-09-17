@@ -36,18 +36,34 @@
                 {% endif %}
             </div>
 
-            <label class="relative inline-flex items-center cursor-pointer shrink-0">
-                <input type="checkbox"
-                       name="storage_{{ backend.id }}_enabled"
-                       value="true"
-                       {% if cfg.get('enabled') %}checked{% endif %}
-                       class="sr-only peer">
-                <div class="w-11 h-6 bg-gray-200 dark:bg-slate-700 rounded-full
-                            peer-checked:bg-brand-600 transition
-                            after:content-[''] after:absolute after:top-0.5 after:left-0.5
-                            after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all
-                            peer-checked:after:translate-x-5"></div>
-            </label>
+            {% if backend.always_enabled %}
+                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium
+                             bg-emerald-100 dark:bg-emerald-900/60
+                             text-emerald-700 dark:text-emerald-300 shrink-0">
+                    ● Всегда включено
+                </span>
+            {% else %}
+            {% if backend.always_enabled %}
+                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium
+                             bg-emerald-100 dark:bg-emerald-900/60
+                             text-emerald-700 dark:text-emerald-300 shrink-0">
+                    ● Всегда включено
+                </span>
+            {% else %}
+                <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                    <input type="checkbox"
+                           name="storage_{{ backend.id }}_enabled"
+                           value="true"
+                           {% if cfg.get('enabled') %}checked{% endif %}
+                           class="sr-only peer">
+                    <div class="w-11 h-6 bg-gray-200 dark:bg-slate-700 rounded-full
+                                peer-checked:bg-brand-600 transition
+                                after:content-[''] after:absolute after:top-0.5 after:left-0.5
+                                after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all
+                                peer-checked:after:translate-x-5"></div>
+                </label>
+            {% endif %}
+            {% endif %}
         </div>
 
         {% if backend.fields %}

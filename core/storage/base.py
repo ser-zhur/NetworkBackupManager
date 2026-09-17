@@ -169,6 +169,10 @@ class StorageBackend:
     supports_delete: bool = False
     supports_notes: bool = False
 
+    # always_enabled — backend нельзя отключить.
+    # Используется для git: без него приложение не работает.
+    always_enabled: bool = False
+
     # =====================================================
     # Обязательные методы — переопределяются наследниками
     # =====================================================

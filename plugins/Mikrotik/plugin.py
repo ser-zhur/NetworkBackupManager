@@ -770,11 +770,12 @@ def backup_router(router):
     """
     Определяет версию RouterOS и запускает
     соответствующий механизм резервного копирования.
+
+    Файлы пишутся плоско в backup_path:
+    config.rsc, config.backup.
     """
 
     backup_path = router["backup_path"]
-
-    # Если путь относительный — привязываем его к каталогу плагина
 
     if not os.path.isabs(backup_path):
         current_plugin_dir = os.path.dirname(
@@ -785,46 +786,19 @@ def backup_router(router):
             backup_path,
         )
 
-    # Нормализуем (убираем ./ ../ и т.п.)
     backup_path = os.path.abspath(backup_path)
 
-    today = datetime.now().strftime("%Y-%m-%d")
+    host = router.get("host", "unknown")
+    version = str(router.get("version", "7"))
 
-    local_dir = os.path.join(
-        backup_path,
-        today,
-    )
-
-    version = str(
-        router.get(
-            "version",
-            "7",
-        )
-    )
+    os.makedirs(backup_path, exist_ok=True)
 
     if version.startswith("6"):
+        logging.info("RouterOS 6 detected: %s", host)
+        return backup_router_ros6(router, backup_path)
 
-        logging.info(
-            "RouterOS 6 detected: %s",
-            router.get("host"),
-        )
-
-        return backup_router_ros6(
-            router,
-            local_dir,
-        )
-
-    logging.info(
-        "RouterOS 7 detected: %s",
-        router.get("host"),
-    )
-
-    return backup_router_ros7(
-        router,
-        local_dir,
-    )
-
-
+    logging.info("RouterOS 7 detected: %s", host)
+    return backup_router_ros7(router, backup_path)
 def run_backup(router):
     """
     Точка входа PluginManager.

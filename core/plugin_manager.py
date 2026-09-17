@@ -3,17 +3,15 @@
 # =========================================================
 
 import os
-import re
 import copy
-import shutil
 import importlib
 import importlib.util
 import json
 import logging
+import threading
+
 from datetime import datetime
 from pathlib import Path
-
-import threading
 
 from core.secure_storage import SecureStorage
 from core.context import (
@@ -31,23 +29,11 @@ from concurrent.futures import (
 )
 
 
-# =========================================================
-# КОНСТАНТЫ РОТАЦИИ
-# =========================================================
-
-# Формат каталогов бэкапов: YYYY-MM-DD
-DATE_DIR_REGEX = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
-# Сколько пустых каталогов разрешено хранить (сверх max_backups).
-# Пустые каталоги - это следы неудачных попыток бэкапа.
-# Их не удаляем сразу, чтобы было видно, что бэкап пытался запуститься,
-# но и не даём им бесконечно накапливаться.
-MAX_EMPTY_DIRS = 5
-
 # Lock для атомарного read-modify-write data/state.json.
 # Параллельные бэкапы пишут в один файл — без блокировки
 # возможны потери записей.
 _STATE_LOCK = threading.Lock()
+
 
 class PluginManager:
     def __init__(self, storage_manager=None):
@@ -128,157 +114,6 @@ class PluginManager:
                 )
 
     # =====================================================
-    # ROTATION HELPERS
-    # =====================================================
-
-    @staticmethod
-    def _resolve_backup_root(backup_path):
-        """
-        Приводит путь к абсолютному.
-
-        Если путь относительный - считаем от BASE_DIR.
-        """
-        if not backup_path:
-            return None
-
-        root = Path(backup_path)
-
-        if not root.is_absolute():
-            root = BASE_DIR / root
-
-        return root
-
-    @staticmethod
-    def _is_empty_dir(path):
-        """
-        True, если в каталоге нет ни одного файла (только подкаталоги
-        тоже считаются "пустыми", если в них нет файлов).
-
-        Ошибки доступа трактуем как "пустой" - безопаснее не удалять.
-        """
-        try:
-            for entry in path.iterdir():
-                if entry.is_file():
-                    return False
-                if entry.is_dir():
-                    # Рекурсивная проверка вложенных каталогов
-                    if not PluginManager._is_empty_dir(entry):
-                        return False
-            return True
-        except (PermissionError, OSError):
-            return True
-
-    # =====================================================
-    # ROTATION
-    # =====================================================
-
-    def _rotate_local(self, backup_path, max_backups):
-        """
-        Локальная ротация бэкапов.
-
-        Удаляет самые старые подкаталоги формата YYYY-MM-DD,
-        содержащие хотя бы один файл.
-
-        Пустые каталоги НЕ учитываются в лимите max_backups,
-        но при накоплении сверх MAX_EMPTY_DIRS - удаляются
-        отдельным проходом.
-        """
-
-        root = self._resolve_backup_root(backup_path)
-
-        if root is None or not root.exists() or not root.is_dir():
-            return
-
-        max_backups = int(max_backups)
-
-        date_dirs = []   # непустые каталоги формата YYYY-MM-DD
-        empty_dirs = []  # пустые каталоги формата YYYY-MM-DD
-
-        try:
-            for item in root.iterdir():
-
-                if not item.is_dir():
-                    continue
-
-                if not DATE_DIR_REGEX.match(item.name):
-                    continue
-
-                if self._is_empty_dir(item):
-                    empty_dirs.append(item)
-                else:
-                    date_dirs.append(item)
-
-        except (PermissionError, OSError) as exc:
-            logging.error(
-                "Ошибка чтения каталога бэкапов %s: %s",
-                root,
-                exc,
-            )
-            return
-
-        # -------------------------------------------------
-        # Сортируем по имени каталога.
-        # Лексикографическая сортировка YYYY-MM-DD = хронологическая.
-        # Это надёжнее, чем mtime, который может меняться
-        # от антивируса или индексатора.
-        # -------------------------------------------------
-
-        date_dirs.sort(key=lambda p: p.name)
-        empty_dirs.sort(key=lambda p: p.name)
-
-        # -------------------------------------------------
-        # 1. Удаляем самые старые НЕПУСТЫЕ, пока их больше max_backups
-        # -------------------------------------------------
-
-        excess = len(date_dirs) - max_backups
-
-        if excess > 0:
-
-            for old_dir in date_dirs[:excess]:
-
-                try:
-                    shutil.rmtree(old_dir, ignore_errors=False)
-
-                    logging.info(
-                        "🗑 Удалена старая локальная копия: %s",
-                        old_dir,
-                    )
-
-                except Exception as exc:
-                    logging.error(
-                        "Ошибка удаления %s: %s",
-                        old_dir,
-                        exc,
-                    )
-
-        # -------------------------------------------------
-        # 2. Удаляем самые старые ПУСТЫЕ, пока их больше MAX_EMPTY_DIRS
-        # -------------------------------------------------
-
-        excess_empty = len(empty_dirs) - MAX_EMPTY_DIRS
-
-        if excess_empty > 0:
-
-            for empty_dir in empty_dirs[:excess_empty]:
-
-                try:
-                    # На всякий случай: удаляем только если всё ещё пуст
-                    if self._is_empty_dir(empty_dir):
-                        shutil.rmtree(empty_dir, ignore_errors=True)
-
-                        logging.info(
-                            "🗑 Удалён пустой каталог: %s",
-                            empty_dir,
-                        )
-
-                except Exception as exc:
-                    logging.error(
-                        "Ошибка удаления пустого каталога %s: %s",
-                        empty_dir,
-                        exc,
-                    )
-
-    # =====================================================
     # STORAGE HELPERS
     # =====================================================
 
@@ -287,9 +122,8 @@ class PluginManager:
         """
         Приводит список путей к словарю {имя_в_репо: Path}.
 
-        Плагины возвращают разные имена (host_YYYY-MM-DD.rsc),
-        а в git-репо мы хотим видеть фиксированные
-        config.rsc / config.backup / config.xml.
+        Плагины возвращают разные имена, а в git-репо мы хотим
+        видеть фиксированные config.rsc / config.backup / config.xml.
         """
         result = {}
         for p in created_files or []:
@@ -320,7 +154,6 @@ class PluginManager:
             if value:
                 result[field.name] = self.storage.decrypt(value)
         return result
-
 
     def _push_to_storages(
         self,
@@ -431,62 +264,6 @@ class PluginManager:
         # ---- сохраняем в state.json ----
         self._save_backend_state(ctx.device_id, results)
 
-        # ---- cleanup: если git-коммит прошёл, удаляем
-        #      временный датированный каталог ----
-        self._cleanup_staging_for_git(
-            ctx=ctx,
-            results=results,
-            storage_cfg=storage_cfg,
-        )
-
-    def _cleanup_staging_for_git(
-        self,
-        ctx,
-        results: dict,
-        storage_cfg: dict,
-    ) -> None:
-        """
-        Если git-бэкенд включён и его push прошёл успешно —
-        удаляем датированный каталог, из которого мы только
-        что скопировали файлы в корень backup_path.
-
-        Не трогаем каталог, если:
-          - git выключен;
-          - git-бэкенда нет в results;
-          - git вернул ok=False (файлы не сохранены — терять нельзя).
-        """
-        git_cfg = (storage_cfg or {}).get("git") or {}
-        if not git_cfg.get("enabled"):
-            return
-
-        git_result = results.get("git")
-        if git_result is None or not git_result.ok:
-            return
-
-        # Ищем датированный каталог среди файлов
-        parents = set()
-        for path in ctx.files.values():
-            try:
-                p = Path(path).resolve()
-            except Exception:
-                continue
-            parent = p.parent
-            if DATE_DIR_REGEX.match(parent.name):
-                parents.add(parent)
-
-        for parent in parents:
-            try:
-                shutil.rmtree(parent, ignore_errors=True)
-                logging.info(
-                    "git: удалён временный каталог %s",
-                    parent,
-                )
-            except Exception as exc:
-                logging.warning(
-                    "git: не удалось удалить %s: %s",
-                    parent, exc,
-                )
-
     @staticmethod
     def _log_storage_result(backend_id: str, result) -> None:
         if result.details and result.details.get("skipped"):
@@ -512,18 +289,6 @@ class PluginManager:
     def _save_backend_state(device_id: str, results: dict) -> None:
         """
         Обновляет data/state.json по одному устройству.
-
-        Структура:
-
-            {
-              "mikrotik/192.168.88.1": {
-                "last_run": "2026-09-16 03:00:12",
-                "backends": {
-                  "git": {"ok": true, "message": "...", "skipped": false},
-                  ...
-                }
-              }
-            }
         """
         with _STATE_LOCK:
             state = load_json(STATE_FILE, {})
@@ -567,7 +332,6 @@ class PluginManager:
 
         tasks = []
 
-        # Подготавливаем список заданий
         for device_type, data in self._plugins.items():
 
             plugin_func = data["func"]
@@ -597,7 +361,8 @@ class PluginManager:
         failed = 0
 
         def worker(task):
-            # Импорт локальный — чтобы не создавать цикл на этапе импорта модуля.
+            # Импорт локальный — чтобы не создавать цикл
+            # на этапе импорта модуля.
             from core.logger import (
                 set_device_context,
                 clear_device_context,
@@ -612,7 +377,6 @@ class PluginManager:
             set_device_context(f"{device_type}/{ip}")
 
             try:
-                max_backups = router.get("max_backups", 7)
                 backup_path = router["backup_path"]
 
                 secure_router = copy.deepcopy(router)
@@ -632,16 +396,8 @@ class PluginManager:
                     )
                     return ip
 
-                storage_cfg = router.get("storage") or {}
-                git_enabled = bool(
-                    (storage_cfg.get("git") or {}).get("enabled")
-                )
-
-                # Ротация датированных папок — только если git выключен
-                if not git_enabled:
-                    self._rotate_local(backup_path, max_backups)
-
-                # ---- новые storage backends ----
+                # ---- push в storage backends (git всегда,
+                #      остальные — по конфигу) ----
                 try:
                     self._push_to_storages(
                         device_type=device_type,
