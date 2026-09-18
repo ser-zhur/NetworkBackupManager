@@ -43,14 +43,7 @@
                     ● Всегда включено
                 </span>
             {% else %}
-            {% if backend.always_enabled %}
-                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium
-                             bg-emerald-100 dark:bg-emerald-900/60
-                             text-emerald-700 dark:text-emerald-300 shrink-0">
-                    ● Всегда включено
-                </span>
-            {% else %}
-                <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                 <label class="relative inline-flex items-center cursor-pointer shrink-0">
                     <input type="checkbox"
                            name="storage_{{ backend.id }}_enabled"
                            value="true"
@@ -62,7 +55,6 @@
                                 after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all
                                 peer-checked:after:translate-x-5"></div>
                 </label>
-            {% endif %}
             {% endif %}
         </div>
 

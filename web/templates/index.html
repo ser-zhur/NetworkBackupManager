@@ -41,20 +41,6 @@
         .scroll-thin::-webkit-scrollbar { width: 6px; height: 6px; }
         .scroll-thin::-webkit-scrollbar-thumb { background: rgba(120,120,120,.35); border-radius: 4px; }
         .scroll-thin::-webkit-scrollbar-thumb:hover { background: rgba(120,120,120,.6); }
-        .hist-cell {
-            width: 100%; aspect-ratio: 1/1; border-radius: 3px;
-            transition: transform .12s ease, box-shadow .12s ease;
-            cursor: pointer; position: relative;
-        }
-        .hist-cell:hover {
-            transform: scale(1.4);
-            box-shadow: 0 0 0 2px rgba(59,130,246,.55);
-            z-index: 2;
-        }
-        .hist-ok   { background: #10b981; }
-        .hist-fail { background: #ef4444; }
-        .hist-none { background: #cbd5e1; }
-        .dark .hist-none { background: #334155; }
         @keyframes spin { to { transform: rotate(360deg); } }
         .spinner {
             display: inline-block; width: 14px; height: 14px;
@@ -271,7 +257,7 @@ const panel = document.getElementById('detail-panel');
 
 async function selectDevice(id) {
     // Подсветка в списке
-    document.querySelectorAll('[data-device-id]').forEach(el => {
+    document.querySelectorAll('.device-item[data-device-id]').forEach(el => {
         const isActive = el.dataset.deviceId === id;
         el.classList.toggle('bg-brand-50/60', isActive);
         el.classList.toggle('dark:bg-brand-950/30', isActive);
@@ -296,6 +282,14 @@ async function selectDevice(id) {
         if (!res.ok) throw new Error('HTTP ' + res.status);
         panel.innerHTML = await res.text();
     } catch (e) {
+        // Если страница уже уходит (пользователь нажал кнопку
+        // бэкапа, обновил страницу, перешёл по ссылке) —
+        // fetch отменяется браузером, и мы получаем
+        // TypeError: NetworkError. Не мигаем ошибкой.
+        if (e && (e.name === 'AbortError' || e instanceof TypeError)) {
+            return;
+        }
+
         panel.innerHTML = `<div class="bg-white dark:bg-slate-900 rounded-2xl border border-rose-300 dark:border-rose-800 p-6 text-rose-700 dark:text-rose-300">
             Не удалось загрузить устройство: ${e.message}
         </div>`;
@@ -305,7 +299,7 @@ async function selectDevice(id) {
     }
 }
 
-document.querySelectorAll('[data-device-id]').forEach(btn => {
+document.querySelectorAll('.device-item[data-device-id]').forEach(btn => {
     btn.addEventListener('click', () => selectDevice(btn.dataset.deviceId));
 });
 
@@ -362,7 +356,7 @@ function disableAllBackups() {
 
 document.getElementById('device-search').addEventListener('input', (e) => {
     const q = e.target.value.trim().toLowerCase();
-    document.querySelectorAll('[data-device-id]').forEach(el => {
+    document.querySelectorAll('.device-item[data-device-id]').forEach(el => {
         const text = el.textContent.toLowerCase();
         el.style.display = text.includes(q) ? '' : 'none';
     });
@@ -388,6 +382,26 @@ async function refreshSystemInfo() {
 }
 
 setInterval(refreshSystemInfo, 30000);
+
+// ============================================================
+// ВОССТАНОВЛЕНИЕ ИЗ BFCACHE
+// ============================================================
+//
+// При уходе со страницы браузер может поместить её в
+// back-forward cache. При возврате «Назад» восстанавливается
+// исходное DOM-состояние, включая задизейбленные кнопки
+// со спиннером (например, после запуска бэкапа).
+//
+// event.persisted === true означает именно восстановление
+// из bfcache. Перезагружаем страницу, чтобы сервер отрисовал
+// кнопки по актуальному состоянию.
+
+window.addEventListener('pageshow', (event) => {
+    if (event.persisted) {
+        window.location.reload();
+    }
+});
+
 </script>
 
 </body>
