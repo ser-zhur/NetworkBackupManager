@@ -19,13 +19,16 @@
 import difflib
 import json
 import logging
+import re
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
 try:
     from dulwich import porcelain
+    from dulwich.objects import Blob, Commit, Tree
     from dulwich.repo import Repo
     from dulwich.walk import Walker
     DULWICH_AVAILABLE = True
@@ -45,13 +48,47 @@ _AUTHOR_EMAIL = "nbm@local"
 _NOTES_FILENAME = "nbm_notes.json"
 
 
+# Первая строка .rsc от MikroTik — служебная. Форматы
+# ROS 6 и 7 различаются:
+#
+#   ROS 6:  # sep/17/2026 12:45:17 by RouterOS 6.49.21
+#   ROS 7:  # 2026-09-17 14:41:00 by RouterOS 7.24.2
+#
+# Используется ТОЛЬКО для сравнения. В git сохраняется
+# исходный файл целиком — то, что скачано с роутера.
+_TIMESTAMP_LINE_RE = re.compile(
+    r"^#\s+"
+    r"\S+"                    # дата
+    r"\s+"
+    r"\d{1,2}:\d{2}:\d{2}"    # время
+    r"\s+by\s+RouterOS\b"
+)
+
+
+def _normalize_rsc(data: bytes) -> bytes:
+    """
+    Удаляет первую строку timestamp из .rsc. Применяется
+    только для сравнения — чтобы новый бэкап не считался
+    изменением, если поменялась лишь дата экспорта.
+    """
+    if not data:
+        return data
+
+    try:
+        text = data.decode("utf-8", errors="replace")
+    except Exception:
+        return data
+
+    lines = text.splitlines(keepends=True)
+
+    if lines and _TIMESTAMP_LINE_RE.match(lines[0]):
+        return "".join(lines[1:]).encode("utf-8")
+
+    return data
+
+
 # =========================================================
 # БЛОКИРОВКИ
-# =========================================================
-#
-# Параллельные бэкапы разных устройств пишут каждый в свой
-# репозиторий, но два бэкапа одного устройства могут идти
-# одновременно. Для каждого repo_path держим свой Lock.
 # =========================================================
 
 _locks: dict[str, threading.Lock] = {}
@@ -133,21 +170,12 @@ class GitStorage:
         commit_sha: bytes,
         filename: str,
     ) -> bytes | None:
-        """
-        Содержимое filename из коммита commit_sha.
-
-        В dulwich Tree.__getitem__ возвращает кортеж
-        (mode, sha). Раньше (до 1.x) — просто sha.
-        Унифицируем оба варианта.
-        """
+        """Содержимое filename из коммита commit_sha."""
         try:
             commit = repo[commit_sha]
             tree = repo[commit.tree]
-
             entry = tree[filename.encode()]
 
-            # dulwich ≥ 1.x: entry = (mode, sha)
-            # dulwich < 1.x:  entry = sha
             if isinstance(entry, tuple):
                 _, blob_sha = entry
             else:
@@ -156,9 +184,16 @@ class GitStorage:
             blob = repo[blob_sha]
             return blob.data
 
-        except Exception:
-            # Ключ отсутствует, битый объект, что угодно —
-            # для нас это «файла в этом коммите нет».
+        except Exception as exc:
+            logger.warning(
+                "git._read_blob(%s, %s): FAILED (%s): %s",
+                commit_sha.decode(errors="replace")
+                if isinstance(commit_sha, bytes)
+                else str(commit_sha),
+                filename,
+                type(exc).__name__,
+                exc,
+            )
             return None
 
     def _list_files_at(
@@ -172,7 +207,6 @@ class GitStorage:
             tree = repo[commit.tree]
             result = []
             for name, mode, _sha in tree.iteritems():
-                # mode для regular file = 0o100644 (или 0o100755)
                 if (mode & 0o170000) == 0o100000:
                     result.append(name.decode())
             return sorted(result)
@@ -190,19 +224,19 @@ class GitStorage:
         message: str,
     ) -> tuple[bool, bool, str]:
         """
-        Сравнивает текстовые файлы с HEAD и, если есть отличия,
-        копирует ВСЕ файлы в репо и делает коммит.
+        Сравнивает текстовые файлы с HEAD и, если есть
+        отличия (с игнорированием служебных строк),
+        коммитит содержимое рабочего дерева.
 
-        Возвращает (ok, created, human_message):
-
-            ok=True,  created=True   — коммит создан
-            ok=True,  created=False  — изменений нет (норма)
-            ok=False, created=False  — ошибка git
-        """ 
+        Дерево git строится напрямую через dulwich.objects —
+        без porcelain.add / porcelain.commit. Это исключает
+        проблему, когда индекс остаётся устаревшим и коммит
+        фиксирует старое содержимое.
+        """
 
         if not DULWICH_AVAILABLE:
             return False, False, "git: dulwich недоступен"
-    
+
         text_files = set(text_files)
 
         with self._lock:
@@ -210,7 +244,6 @@ class GitStorage:
             try:
                 head_sha = self._head_sha(repo)
 
-                # Первый коммит — всегда
                 if head_sha is None:
                     changed = True
                 else:
@@ -219,11 +252,36 @@ class GitStorage:
                         src = files.get(name)
                         if src is None or not src.exists():
                             continue
+
                         new_data = src.read_bytes()
                         old_data = self._read_blob(
                             repo, head_sha, name
                         )
-                        if old_data != new_data:
+
+                        if name.endswith(".rsc"):
+                            new_cmp = _normalize_rsc(new_data)
+                            old_cmp = (
+                                _normalize_rsc(old_data)
+                                if old_data is not None
+                                else None
+                            )
+                        else:
+                            new_cmp = new_data
+                            old_cmp = old_data
+
+                        logger.info(
+                            "git[%s]: compare %s: "
+                            "old=%s bytes, new=%d bytes, "
+                            "equal=%s",
+                            self.repo_path.name,
+                            name,
+                            len(old_data) if old_data is not None
+                            else "None",
+                            len(new_data),
+                            old_cmp == new_cmp,
+                        )
+
+                        if old_cmp != new_cmp:
                             changed = True
                             break
 
@@ -234,37 +292,110 @@ class GitStorage:
                     )
                     return True, False, "Изменений не обнаружено"
 
-                # Копируем рабочие файлы в репо
-                written: list[str] = []
+                # -------------------------------------------------
+                # Строим tree и commit явно, без porcelain.
+                # Каждый файл попадает в дерево ровно в том виде,
+                # в котором он лежит на диске.
+                # -------------------------------------------------
+
+                blob_ids: dict[str, bytes] = {}
+
                 for name, src in files.items():
                     if not src.exists():
                         continue
-                    dst = self.repo_path / name
-                    if dst.resolve() != src.resolve():
-                        dst.write_bytes(src.read_bytes())
-                    written.append(name)
 
-                if not written:
+                    data = src.read_bytes()
+                    blob = Blob.from_string(data)
+                    repo.object_store.add_object(blob)
+                    blob_ids[name] = blob.id
+
+                    logger.info(
+                        "git[%s]: staged %s (%d bytes, blob=%s)",
+                        self.repo_path.name,
+                        name,
+                        len(data),
+                        blob.id.decode()[:7],
+                    )
+
+                if not blob_ids:
                     return False, False, "Нет файлов для коммита"
 
-                porcelain.add(str(self.repo_path), paths=written)
+                tree = Tree()
+                for name, blob_id in blob_ids.items():
+                    tree.add(
+                        name.encode("utf-8"),
+                        0o100644,
+                        blob_id,
+                    )
 
-                author = _author_bytes()
-                porcelain.commit(
-                    str(self.repo_path),
-                    message=message.encode("utf-8"),
-                    author=author,
-                    committer=author,
-                )
+                repo.object_store.add_object(tree)
 
-                new_sha = self._head_sha(repo)
-                short = new_sha.decode()[:7] if new_sha else "?"
+                now = int(time.time())
+                author_bytes = _author_bytes()
+
+                commit = Commit()
+                commit.tree = tree.id
+                commit.parents = [head_sha] if head_sha else []
+                commit.author = author_bytes
+                commit.committer = author_bytes
+                commit.commit_time = now
+                commit.author_time = now
+                commit.commit_timezone = 0
+                commit.author_timezone = 0
+                commit.message = message.encode("utf-8")
+                commit.encoding = b"UTF-8"
+
+                repo.object_store.add_object(commit)
+
+                # Обновляем текущую ветку (master по умолчанию
+                # после porcelain.init). HEAD символически
+                # указывает на refs/heads/master.
+                try:
+                    repo.refs[b"refs/heads/master"] = commit.id
+                except Exception as exc:
+                    logger.error(
+                        "git[%s]: не удалось обновить refs/heads/master: %s",
+                        self.repo_path.name,
+                        exc,
+                    )
+                    return False, False, (
+                        f"Ошибка обновления HEAD: {exc}"
+                    )
+
+                short = commit.id.decode()[:7]
                 logger.info(
                     "git[%s]: коммит %s — %s",
                     self.repo_path.name,
                     short,
                     message,
                 )
+
+                # Диагностика: сразу же читаем содержимое
+                # из только что созданного коммита, чтобы
+                # убедиться, что сохранено именно то, что
+                # лежит на диске.
+                try:
+                    verify = self._read_blob(
+                        repo, commit.id, "config.rsc"
+                    )
+                    if verify is not None:
+                        logger.info(
+                            "git[%s]: verify HEAD config.rsc = "
+                            "%d bytes (blob=%s)",
+                            self.repo_path.name,
+                            len(verify),
+                            blob_ids.get(
+                                "config.rsc", b"?"
+                            ).decode()[:7]
+                            if isinstance(
+                                blob_ids.get("config.rsc"),
+                                bytes,
+                            )
+                            else "?",
+                        )
+                except Exception:
+                    pass
+
                 return True, True, f"Создан коммит {short}"
 
             except Exception as exc:
@@ -283,20 +414,6 @@ class GitStorage:
     # -----------------------------------------------------
 
     def get_history(self, limit: int = 50) -> list:
-        """
-        Список коммитов (свежие сверху):
-
-        [{
-            "sha": "abc...",
-            "short": "abc1234",
-            "message": "...",
-            "author": "...",
-            "time": "2026-09-16 03:00:00",
-            "ts": 1757980000,
-            "files": ["config.rsc", "config.backup"],
-        }, ...]
-        """
-
         if not self.is_initialized():
             return []
 
@@ -328,7 +445,9 @@ class GitStorage:
                         ),
                         "time": _to_local_str(commit.commit_time),
                         "ts": commit.commit_time,
-                        "files": self._list_files_at(repo, commit.id),
+                        "files": self._list_files_at(
+                            repo, commit.id
+                        ),
                     })
 
                 return result
@@ -340,7 +459,6 @@ class GitStorage:
     # -----------------------------------------------------
 
     def get_file_at(self, sha: str, filename: str) -> bytes | None:
-        """Байты файла из указанного коммита."""
         if not self.is_initialized():
             return None
 
@@ -362,7 +480,6 @@ class GitStorage:
                 repo.close()
 
     def list_files(self) -> list[str]:
-        """Список файлов в HEAD."""
         if not self.is_initialized():
             return []
 
@@ -386,17 +503,11 @@ class GitStorage:
         sha_b: str,
         filenames: Iterable[str],
     ) -> dict:
-        """
-        Unified diff по каждому файлу.
-
-        Возвращает {filename: diff_text}.
-        """
         result = {}
         for name in filenames:
             old = self.get_file_at(sha_a, name) or b""
             new = self.get_file_at(sha_b, name) or b""
 
-            # Бинарные — просто пометим
             if b"\x00" in old or b"\x00" in new:
                 result[name] = (
                     f"Binary file "
@@ -424,14 +535,8 @@ class GitStorage:
         return result
 
     # -----------------------------------------------------
-    # NOTES (пользовательские комментарии)
+    # NOTES
     # -----------------------------------------------------
-    #
-    # Хранятся в .git/nbm_notes.json:
-    #
-    #     {"<sha>": "комментарий", ...}
-    #
-    # =====================================================
 
     def _notes_path(self) -> Path:
         return self.repo_path / ".git" / _NOTES_FILENAME
@@ -441,7 +546,9 @@ class GitStorage:
         if not path.exists():
             return {}
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(
+                path.read_text(encoding="utf-8")
+            )
             if not isinstance(data, dict):
                 return {}
             return {str(k): str(v) for k, v in data.items()}
@@ -462,7 +569,9 @@ class GitStorage:
             path = self._notes_path()
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(
-                json.dumps(notes, ensure_ascii=False, indent=2),
+                json.dumps(
+                    notes, ensure_ascii=False, indent=2
+                ),
                 encoding="utf-8",
             )
 

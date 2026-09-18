@@ -151,12 +151,6 @@ def wait_for_files_ros6(
 
 
 def backup_router_ros6(router, local_dir):
-    """
-    Резервное копирование MikroTik RouterOS 6.
-    Используется системный ssh/scp — ROS6 требует
-    старые SSH-алгоритмы.
-    """
-
     host = router["host"]
     user = router.get("username", "admin")
     port = router.get("port", 22)
@@ -315,14 +309,6 @@ def _connect_ros7(
     key_path,
     ssh_password="",
 ):
-    """
-    Подключение к MikroTik RouterOS 7.
-
-    Paramiko + ROS7 работает через rsa-sha2-256.
-    На ROS6-роутере handshake не пройдёт — это
-    используется для автоопределения версии.
-    """
-
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(
         paramiko.AutoAddPolicy()
@@ -349,13 +335,6 @@ def _connect_ros7(
 
 
 def backup_router_ros7(router, local_dir, client=None):
-    """
-    Резервное копирование MikroTik RouterOS 7.
-
-    Если client передан — использует его и не закрывает.
-    Если client=None — создаёт свой и закрывает по завершении.
-    """
-
     host = router["host"]
     user = router.get("username", "admin")
     port = router.get("port", 22)
@@ -385,7 +364,6 @@ def backup_router_ros7(router, local_dir, client=None):
 
         os.makedirs(local_dir, exist_ok=True)
 
-        # ---- CREATE BACKUP ----
         stdin, stdout, stderr = client.exec_command(
             "/system backup save name=auto-backup"
         )
@@ -398,7 +376,6 @@ def backup_router_ros7(router, local_dir, client=None):
                 + (error or f"exit code {exit_status}")
             )
 
-        # ---- CREATE EXPORT ----
         stdin, stdout, stderr = client.exec_command(
             "/export file=auto-export"
         )
@@ -411,7 +388,6 @@ def backup_router_ros7(router, local_dir, client=None):
                 + (error or f"exit code {exit_status}")
             )
 
-        # ---- WAIT FILES ----
         if not wait_for_files_ros7(
             client,
             ["auto-backup.backup", "auto-export.rsc"],
@@ -421,7 +397,6 @@ def backup_router_ros7(router, local_dir, client=None):
                 "Файлы backup/export не появились на роутере"
             )
 
-        # ---- SCP DOWNLOAD ----
         created_files = []
 
         with SCPClient(client.get_transport()) as scp:
@@ -451,7 +426,6 @@ def backup_router_ros7(router, local_dir, client=None):
 
                 created_files.append(destination)
 
-        # ---- REMOVE TEMPORARY FILES ----
         try:
             client.exec_command(
                 "/file remove auto-backup.backup; "
@@ -482,13 +456,9 @@ def backup_router(router):
     """
     Резервное копирование MikroTik.
 
-    Версия RouterOS определяется автоматически:
-      1. Пробуем подключиться как к ROS7 (Paramiko, rsa-sha2-256).
-      2. Если handshake/auth не удался — откат на ROS6
-         (системный ssh/scp со старыми алгоритмами).
-
+    Версия RouterOS определяется автоматически.
     Файлы пишутся плоско в backup_path:
-    config.rsc, config.backup.
+    config.rsc, config.backup — ровно то, что скачано.
     """
 
     backup_path = router["backup_path"]
@@ -538,10 +508,6 @@ def backup_router(router):
         except Exception:
             pass
 
-
-def run_backup(router):
-    """Точка входа PluginManager."""
-    return backup_router(router)
 
 def run_backup(router):
     """Точка входа PluginManager."""
