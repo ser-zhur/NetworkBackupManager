@@ -224,39 +224,66 @@ class GitStorage:
                 if head_sha is None:
                     changed = True
                 else:
-                    changed = False
-                    for name in text_files:
-                        src = files.get(name)
-                        if src is None or not src.exists():
-                            continue
+                    # Отбираем текстовые файлы, которые
+                    # реально существуют на диске. Сравнивать
+                    # имеет смысл только их.
+                    comparable = [
+                        name for name in text_files
+                        if name in files and files[name].exists()
+                    ]
 
-                        new_data = src.read_bytes()
-                        old_data = self._read_blob(
-                            repo, head_sha, name
-                        )
-
-                        new_cmp = normalize(name, new_data)
-                        old_cmp = (
-                            normalize(name, old_data)
-                            if old_data is not None
-                            else None
-                        )
-
+                    if not comparable:
+                        # Нет ни одного текстового файла для
+                        # сравнения — значит устройство отдаёт
+                        # binary-only либо текст по какой-то
+                        # причине отсутствует.
+                        #
+                        # Политика: коммитим всегда. Binary-файлы
+                        # (например, MikroTik .backup) содержат
+                        # внутренние timestamp-ы и почти всегда
+                        # уникальны, а git дедуплицирует blob-ы —
+                        # накладные расходы малы (один commit
+                        # ~200 байт).
                         logger.info(
-                            "git[%s]: compare %s: "
-                            "old=%s bytes, new=%d bytes, "
-                            "equal=%s",
+                            "git[%s]: нет текстовых файлов "
+                            "для сравнения (%d файлов всего) — "
+                            "коммит создаётся безусловно",
                             self.repo_path.name,
-                            name,
-                            len(old_data) if old_data is not None
-                            else "None",
-                            len(new_data),
-                            old_cmp == new_cmp,
+                            len(files),
                         )
+                        changed = True
+                    else:
+                        changed = False
+                        for name in comparable:
+                            src = files[name]
+                            new_data = src.read_bytes()
+                            old_data = self._read_blob(
+                                repo, head_sha, name
+                            )
 
-                        if old_cmp != new_cmp:
-                            changed = True
-                            break
+                            new_cmp = normalize(name, new_data)
+                            old_cmp = (
+                                normalize(name, old_data)
+                                if old_data is not None
+                                else None
+                            )
+
+                            logger.info(
+                                "git[%s]: compare %s: "
+                                "old=%s bytes, new=%d bytes, "
+                                "equal=%s",
+                                self.repo_path.name,
+                                name,
+                                len(old_data)
+                                if old_data is not None
+                                else "None",
+                                len(new_data),
+                                old_cmp == new_cmp,
+                            )
+
+                            if old_cmp != new_cmp:
+                                changed = True
+                                break
 
                 if not changed:
                     logger.info(

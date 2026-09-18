@@ -64,12 +64,18 @@ class GitStorageBackend(StorageBackend):
 
         storage = GitStorage(ctx.backup_path)
 
-        # Файлы для сравнения — текстовые. Бинарные
-        # (.backup, .xml больших размеров) сравниваются
-        # побайтово, нормализация к ним не применяется.
+        # Расширения, содержимое которых имеет смысл сравнивать
+        # с нормализацией. Всё остальное (в т.ч. .backup, .img,
+        # .bin) трактуется как binary и коммитится безусловно.
+        _TEXT_EXTS = (
+            ".rsc", ".xml", ".conf", ".cfg", ".txt",
+            ".json", ".yaml", ".yml",
+            ".ini", ".toml",
+        )
+
         text_files = [
             name for name in ctx.files
-            if name.endswith((".rsc", ".xml", ".conf", ".cfg", ".txt"))
+            if name.endswith(_TEXT_EXTS)
         ]
 
         from datetime import datetime as _dt
