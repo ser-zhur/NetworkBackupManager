@@ -953,26 +953,33 @@ def execute_device_backup_task(
 
         created_files = backup_func(secure_router)
 
-        if created_files:
-            # Push в storage backends (git всегда, остальные — по конфигу)
-            if hasattr(plugin_manager, "_push_to_storages"):
-                try:
-                    plugin_manager._push_to_storages(
-                        device_type=device_type,
-                        index=index,
-                        device_host=ip_disp,
-                        router=secure_router,
-                        backup_path=Path(
-                            secure_router.get("backup_path")
-                        ),
-                        created_files=created_files,
-                    )
-                except Exception as exc:
-                    logging.error(
-                        "storage: ошибка диспетчеризации: %s",
-                        exc,
-                        exc_info=True,
-                    )
+        # created_files может быть [] — «нет изменений», успех.
+        # Плагин, у которого что-то сломалось, обязан кинуть исключение.
+        if created_files is None:
+            raise RuntimeError(
+                f"Плагин {device_type} вернул None вместо списка"
+            )
+
+        # Push в storage backends (git всегда, остальные — по конфигу).
+        # Пустой список _push_to_storages обработает сам.
+        if hasattr(plugin_manager, "_push_to_storages"):
+            try:
+                plugin_manager._push_to_storages(
+                    device_type=device_type,
+                    index=index,
+                    device_host=ip_disp,
+                    router=secure_router,
+                    backup_path=Path(
+                        secure_router.get("backup_path")
+                    ),
+                    created_files=created_files,
+                )
+            except Exception as exc:
+                logging.error(
+                    "storage: ошибка диспетчеризации: %s",
+                    exc,
+                    exc_info=True,
+                )
 
         logging.info("✅ [Фон] Бэкап успешно завершен для %s", ip_disp)
 

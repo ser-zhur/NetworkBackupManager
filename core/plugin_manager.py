@@ -4,6 +4,7 @@
 
 import os
 import copy
+import math
 import importlib
 import importlib.util
 import json
@@ -26,7 +27,7 @@ from core.storage.base import identity_normalize
 from concurrent.futures import (
     ThreadPoolExecutor,
     as_completed,
-    TimeoutError,
+    TimeoutError as FuturesTimeoutError,
 )
 
 
@@ -197,13 +198,48 @@ class PluginManager:
         if not backends:
             return
 
-        files = self._normalize_created_files(created_files)
-        if not files:
-            logging.warning(
-                "storage: нет файлов для отправки (%s)",
+
+        # ---- Контракт плагина ----
+        # created_files — список путей.
+        #   []  → «нет изменений» (успех, выгрузка не требуется).
+        #   None → нарушение контракта, ошибка.
+        #   [...paths...] → обычная выгрузка.
+        #
+        # Разбор состояния — до нормализации, чтобы отличить
+        # «нет изменений» от «файлы битые/пустые».
+        if created_files is None:
+            logging.error(
+                "storage: плагин вернул None вместо списка (%s)",
                 device_host,
             )
             return
+
+        if not created_files:
+            from core.storage.base import PushResult
+
+            results = {
+                b.id: PushResult.skipped("Изменений не обнаружено")
+                for b in backends
+            }
+            self._save_backend_state(
+                f"{device_type}/{index}",
+                results,
+            )
+            logging.info(
+                "storage: изменений нет, выгрузка не требуется (%s)",
+                device_host,
+            )
+            return
+
+        files = self._normalize_created_files(created_files)
+        if not files:
+            # created_files непуст, но нормализация ничего не дала —
+            # это уже внутренняя проблема (пути битые, файлы исчезли).
+            logging.warning(
+                "storage: нет валидных файлов для отправки (%s)",
+                device_host,
+            )
+            return        
 
         storage_cfg = router.get("storage") or {}
 
@@ -380,14 +416,23 @@ class PluginManager:
             logging.warning("⚠ Нет устройств для бэкапа")
             return
 
+
+        # Общий wall-clock таймаут на весь прогон.
+        # Executor обрабатывает задачи батчами по MAX_WORKERS,
+        # поэтому даём каждому батчу свой BACKUP_TIMEOUT.
+        batches = max(1, math.ceil(total / MAX_WORKERS))
+        overall_timeout = BACKUP_TIMEOUT * batches
+
         logging.info(
-            "🚀 Запуск бэкапа %s устройств (параллельно: %s)",
+            "🚀 Запуск бэкапа %s устройств "
+            "(параллельно: %s, общий таймаут: %s сек)",
             total,
             MAX_WORKERS,
+            overall_timeout,
         )
 
         success = 0
-        failed = 0
+        failed = 0        
 
         def worker(task):
             # Импорт локальный — чтобы не создавать цикл
@@ -419,11 +464,10 @@ class PluginManager:
 
                 created_files = plugin_func(secure_router)
 
-                if not created_files:
-                    logging.warning(
-                        "⚠ Файлы не созданы: %s", ip
-                    )
-                    return ip
+                # created_files == [] — «нет изменений», это нормальный успех.
+                # Разбор и запись состояния — внутри _push_to_storages.
+                # Плагин, у которого что-то сломалось, обязан поднять
+                # исключение, а не возвращать [].
 
                 # ---- push в storage backends (git всегда,
                 #      остальные — по конфигу) ----
@@ -450,40 +494,64 @@ class PluginManager:
             finally:
                 clear_device_context()
 
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-
+        executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+        try:
             future_map = {
                 executor.submit(worker, task): task
                 for task in tasks
             }
 
-            for future in as_completed(future_map):
+            processed: set = set()
 
+            try:
+                for future in as_completed(
+                    future_map,
+                    timeout=overall_timeout,
+                ):
+                    processed.add(future)
+                    task = future_map[future]
+                    ip = task["router"].get(
+                        "ip",
+                        task["router"].get("host", "Unknown"),
+                    )
+
+                    try:
+                        future.result()
+                        success += 1
+                    except Exception as e:
+                        failed += 1
+                        logging.error(
+                            "❌ Ошибка бэкапа %s: %s",
+                            ip,
+                            e,
+                       )
+
+            except FuturesTimeoutError:
+                logging.error(
+                    "⏰ Общий таймаут бэкапа истёк (%s сек)",
+                    overall_timeout,
+                )
+
+            # Всё, что не завершилось к моменту таймаута,
+            # помечаем как провал. cancel() снимет с очереди
+            # те задачи, что ещё не стартовали; уже запущенные
+            # потоки отменить нельзя, но мы хотя бы не блокируемся.
+            still_pending = set(future_map) - processed
+            for future in still_pending:
                 task = future_map[future]
-
                 ip = task["router"].get(
                     "ip",
                     task["router"].get("host", "Unknown"),
                 )
+                logging.error("⏰ Таймаут бэкапа: %s", ip)
+                future.cancel()
 
-                try:
-                    future.result(timeout=BACKUP_TIMEOUT)
-                    success += 1
+            failed += len(still_pending)
 
-                except TimeoutError:
-                    failed += 1
-                    logging.error(
-                        "⏰ Таймаут бэкапа: %s",
-                        ip,
-                    )
-
-                except Exception as e:
-                    failed += 1
-                    logging.error(
-                        "❌ Ошибка бэкапа %s: %s",
-                        ip,
-                        e,
-                    )
+        finally:
+            # Не ждём зависшие потоки: лучше потерять слот
+            # в пуле, чем заблокировать весь прогон.
+            executor.shutdown(wait=False)
 
         logging.info(
             "🏁 Бэкап завершён. Успешно: %s, ошибок: %s, всего: %s",
