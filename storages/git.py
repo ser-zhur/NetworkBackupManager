@@ -5,6 +5,10 @@
 # Локальное git-версионирование.
 # Authority — единственный, кто решает «изменилось или нет».
 #
+# Нормализация содержимого файлов для сравнения приходит
+# из плагина через ctx.normalize. Сам storage про форматы
+# ничего не знает: что передали — то и сравнивает.
+#
 # =========================================================
 
 from core.storage.base import (
@@ -12,6 +16,7 @@ from core.storage.base import (
     StorageField,
     PushContext,
     PushResult,
+    identity_normalize,
 )
 from core.git_storage import (
     GitStorage,
@@ -42,45 +47,45 @@ class GitStorageBackend(StorageBackend):
 
     is_authority = True
     is_local = True
+    always_enabled = True
     stores_history = True
     supports_download = True
     supports_delete = True
     supports_notes = True
-    always_enabled = True
 
     def test(self, config: dict) -> PushResult:
         if not git_available():
-            return PushResult.failure(
-                "dulwich не установлен"
-            )
+            return PushResult.failure("dulwich не установлен")
         return PushResult.success("git доступен")
 
-    def push(
-        self,
-        config: dict,
-        ctx: PushContext,
-    ) -> PushResult:
+    def push(self, config: dict, ctx: PushContext) -> PushResult:
         if not git_available():
             return PushResult.failure("dulwich не установлен")
 
         storage = GitStorage(ctx.backup_path)
 
-        # Файлы для сравнения — текстовые
+        # Файлы для сравнения — текстовые. Бинарные
+        # (.backup, .xml больших размеров) сравниваются
+        # побайтово, нормализация к ним не применяется.
         text_files = [
             name for name in ctx.files
-            if name.endswith((".rsc", ".xml"))
+            if name.endswith((".rsc", ".xml", ".conf", ".cfg", ".txt"))
         ]
 
         from datetime import datetime as _dt
         msg = f"Backup {_dt.now().strftime('%Y-%m-%d %H:%M')}"
 
+        # Нормализатор из плагина. Если плагин его не объявил
+        # — identity (сравнение по сырым байтам).
+        normalize_fn = ctx.normalize or identity_normalize
+
         ok, created, message = storage.commit_if_changed(
             files=ctx.files,
             text_files=text_files,
             message=msg,
+            normalize=normalize_fn,
         )
 
-        # Реальная ошибка git (не «нет изменений»)
         if not ok:
             return PushResult(
                 ok=False,
@@ -88,7 +93,6 @@ class GitStorageBackend(StorageBackend):
                 details={"changed": False},
             )
 
-        # Изменений нет — нормальный пропуск
         if not created:
             return PushResult(
                 ok=True,
@@ -96,7 +100,6 @@ class GitStorageBackend(StorageBackend):
                 details={"changed": False, "skipped": True},
             )
 
-        # Коммит создан
         return PushResult(
             ok=True,
             message=message,

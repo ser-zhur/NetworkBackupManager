@@ -22,6 +22,7 @@ from core.context import (
     save_json,
 )
 from core.storage import PushContext
+from core.storage.base import identity_normalize
 from concurrent.futures import (
     ThreadPoolExecutor,
     as_completed,
@@ -95,9 +96,27 @@ class PluginManager:
                                     (BASE_DIR / p).resolve()
                                 )
 
+                # Ищем нормализатор, объявленный плагином.
+                # Если его нет — используем identity.
+                normalize_fn = getattr(
+                    module, "normalize_for_compare", None,
+                )
+
+                if normalize_fn is None:
+                    normalize_fn = identity_normalize
+
+                elif not callable(normalize_fn):
+                    logging.warning(
+                        "🔌 %s: normalize_for_compare "
+                        "не callable, использую identity",
+                        device_type,
+                    )
+                    normalize_fn = identity_normalize
+
                 self._plugins[device_type] = {
                     "func": module.run_backup,
                     "routers": routers_data,
+                    "normalize": normalize_fn,
                 }
 
                 logging.info(
@@ -188,6 +207,16 @@ class PluginManager:
 
         storage_cfg = router.get("storage") or {}
 
+        # Достаём нормализатор, объявленный плагином
+        # (для MikroTik — удаляет первую строку с timestamp
+        # из .rsc при сравнении).
+        plugin = self._plugins.get(device_type)
+        normalize_fn = (
+            plugin.get("normalize", identity_normalize)
+            if plugin
+            else identity_normalize
+        )
+
         ctx = PushContext(
             device_id=f"{device_type}/{index}",
             device_host=device_host,
@@ -196,8 +225,8 @@ class PluginManager:
             files=files,
             changed=None,
             run_time=datetime.now(),
+            normalize=normalize_fn,
         )
-
         results = {}
 
         # ---- authority первым ----

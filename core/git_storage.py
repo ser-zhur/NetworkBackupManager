@@ -14,17 +14,20 @@
 #     ├── config.backup
 #     └── config.xml
 #
+# GitStorage ничего не знает про форматы конкретных
+# устройств. Нормализация содержимого для сравнения
+# приходит снаружи — в commit_if_changed(normalize=...).
+#
 # =========================================================
 
 import difflib
 import json
 import logging
-import re
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 try:
     from dulwich import porcelain
@@ -48,42 +51,15 @@ _AUTHOR_EMAIL = "nbm@local"
 _NOTES_FILENAME = "nbm_notes.json"
 
 
-# Первая строка .rsc от MikroTik — служебная. Форматы
-# ROS 6 и 7 различаются:
+# =========================================================
+# NORMALIZE
+# =========================================================
 #
-#   ROS 6:  # sep/17/2026 12:45:17 by RouterOS 6.49.21
-#   ROS 7:  # 2026-09-17 14:41:00 by RouterOS 7.24.2
-#
-# Используется ТОЛЬКО для сравнения. В git сохраняется
-# исходный файл целиком — то, что скачано с роутера.
-_TIMESTAMP_LINE_RE = re.compile(
-    r"^#\s+"
-    r"\S+"                    # дата
-    r"\s+"
-    r"\d{1,2}:\d{2}:\d{2}"    # время
-    r"\s+by\s+RouterOS\b"
-)
+# Локальная реализация identity — чтобы модуль не зависел
+# от core.storage (там уже импортируется GitStorage).
+# =========================================================
 
-
-def _normalize_rsc(data: bytes) -> bytes:
-    """
-    Удаляет первую строку timestamp из .rsc. Применяется
-    только для сравнения — чтобы новый бэкап не считался
-    изменением, если поменялась лишь дата экспорта.
-    """
-    if not data:
-        return data
-
-    try:
-        text = data.decode("utf-8", errors="replace")
-    except Exception:
-        return data
-
-    lines = text.splitlines(keepends=True)
-
-    if lines and _TIMESTAMP_LINE_RE.match(lines[0]):
-        return "".join(lines[1:]).encode("utf-8")
-
+def _identity(filename: str, data: bytes) -> bytes:
     return data
 
 
@@ -146,7 +122,6 @@ class GitStorage:
         return (self.repo_path / ".git").is_dir()
 
     def _open_repo(self) -> "Repo":
-        """Открывает репо, при необходимости создаёт его."""
         if not self.is_initialized():
             self.repo_path.mkdir(parents=True, exist_ok=True)
             porcelain.init(str(self.repo_path))
@@ -157,7 +132,6 @@ class GitStorage:
         return Repo(str(self.repo_path))
 
     def _head_sha(self, repo: "Repo") -> bytes | None:
-        """SHA HEAD или None, если история пуста."""
         try:
             head = repo.head()
             return head or None
@@ -170,7 +144,6 @@ class GitStorage:
         commit_sha: bytes,
         filename: str,
     ) -> bytes | None:
-        """Содержимое filename из коммита commit_sha."""
         try:
             commit = repo[commit_sha]
             tree = repo[commit.tree]
@@ -201,7 +174,6 @@ class GitStorage:
         repo: "Repo",
         commit_sha: bytes,
     ) -> list[str]:
-        """Список файлов (regular files) в дереве коммита."""
         try:
             commit = repo[commit_sha]
             tree = repo[commit.tree]
@@ -222,20 +194,25 @@ class GitStorage:
         files: dict,
         text_files: Iterable[str],
         message: str,
+        normalize: Callable[[str, bytes], bytes] | None = None,
     ) -> tuple[bool, bool, str]:
         """
         Сравнивает текстовые файлы с HEAD и, если есть
-        отличия (с игнорированием служебных строк),
-        коммитит содержимое рабочего дерева.
+        отличия (с учётом нормализации), коммитит содержимое
+        рабочего дерева.
 
-        Дерево git строится напрямую через dulwich.objects —
-        без porcelain.add / porcelain.commit. Это исключает
-        проблему, когда индекс остаётся устаревшим и коммит
-        фиксирует старое содержимое.
+        normalize — функция (filename, data) -> data_for_compare.
+        Применяется ТОЛЬКО для сравнения. В git попадают
+        исходные байты.
+
+        Возвращает (ok, created, human_message).
         """
 
         if not DULWICH_AVAILABLE:
             return False, False, "git: dulwich недоступен"
+
+        if normalize is None:
+            normalize = _identity
 
         text_files = set(text_files)
 
@@ -258,16 +235,12 @@ class GitStorage:
                             repo, head_sha, name
                         )
 
-                        if name.endswith(".rsc"):
-                            new_cmp = _normalize_rsc(new_data)
-                            old_cmp = (
-                                _normalize_rsc(old_data)
-                                if old_data is not None
-                                else None
-                            )
-                        else:
-                            new_cmp = new_data
-                            old_cmp = old_data
+                        new_cmp = normalize(name, new_data)
+                        old_cmp = (
+                            normalize(name, old_data)
+                            if old_data is not None
+                            else None
+                        )
 
                         logger.info(
                             "git[%s]: compare %s: "
@@ -295,7 +268,7 @@ class GitStorage:
                 # -------------------------------------------------
                 # Строим tree и commit явно, без porcelain.
                 # Каждый файл попадает в дерево ровно в том виде,
-                # в котором он лежит на диске.
+                # в котором он лежит на диске (raw, без нормализации).
                 # -------------------------------------------------
 
                 blob_ids: dict[str, bytes] = {}
@@ -347,14 +320,12 @@ class GitStorage:
 
                 repo.object_store.add_object(commit)
 
-                # Обновляем текущую ветку (master по умолчанию
-                # после porcelain.init). HEAD символически
-                # указывает на refs/heads/master.
                 try:
                     repo.refs[b"refs/heads/master"] = commit.id
                 except Exception as exc:
                     logger.error(
-                        "git[%s]: не удалось обновить refs/heads/master: %s",
+                        "git[%s]: не удалось обновить "
+                        "refs/heads/master: %s",
                         self.repo_path.name,
                         exc,
                     )
@@ -369,32 +340,6 @@ class GitStorage:
                     short,
                     message,
                 )
-
-                # Диагностика: сразу же читаем содержимое
-                # из только что созданного коммита, чтобы
-                # убедиться, что сохранено именно то, что
-                # лежит на диске.
-                try:
-                    verify = self._read_blob(
-                        repo, commit.id, "config.rsc"
-                    )
-                    if verify is not None:
-                        logger.info(
-                            "git[%s]: verify HEAD config.rsc = "
-                            "%d bytes (blob=%s)",
-                            self.repo_path.name,
-                            len(verify),
-                            blob_ids.get(
-                                "config.rsc", b"?"
-                            ).decode()[:7]
-                            if isinstance(
-                                blob_ids.get("config.rsc"),
-                                bytes,
-                            )
-                            else "?",
-                        )
-                except Exception:
-                    pass
 
                 return True, True, f"Создан коммит {short}"
 

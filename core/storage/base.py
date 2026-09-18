@@ -16,10 +16,38 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+
+# =========================================================
+# NORMALIZE — типовая функция сравнения
+# =========================================================
+#
+# Плагин может объявить функцию normalize_for_compare,
+# которая получает (имя_файла, содержимое) и возвращает
+# содержимое, приведённое к «сравнимому» виду.
+#
+# Применяется ТОЛЬКО для решения «изменилось или нет».
+# В git (или другое хранилище) попадает исходное
+# содержимое без изменений.
+#
+# Пример: MikroTik .rsc начинается со строки
+# "# <дата> <время> by RouterOS", которая меняется
+# при каждом экспорте. Плагин удаляет эту строку —
+# и два последовательных бэкапа считаются идентичными,
+# если конфиг не менялся.
+#
+# =========================================================
+
+NormalizeFn = Callable[[str, bytes], bytes]
+
+
+def identity_normalize(filename: str, data: bytes) -> bytes:
+    """Нормализатор по умолчанию — возвращает данные как есть."""
+    return data
 
 
 # =========================================================
@@ -52,8 +80,6 @@ class StorageField:
     help: str = ""
 
     def __post_init__(self):
-        # Валидация типа на этапе объявления — лучше упасть
-        # при импорте backend'а, чем потом в UI.
         allowed = {
             "text", "password", "number", "bool",
             "select", "path",
@@ -95,8 +121,8 @@ class PushResult:
 
     @classmethod
     def skipped(cls, message: str = "Пропущено") -> "PushResult":
-        # ok=False, но это не «ошибка» — backend сообщает,
-        # что операция намеренно не выполнена.
+        # ok=True, но это не «успешная выгрузка» —
+        # операция намеренно не выполнена.
         return cls(True, message, {"skipped": True})
 
 
@@ -111,7 +137,8 @@ class PushContext:
     передаваемый в StorageBackend.push().
 
     Включает и метаданные устройства, и сами файлы,
-    и вердикт git-хранилища (изменилось ли что-то).
+    и вердикт git-хранилища (изменилось ли что-то),
+    и нормализатор от плагина.
     """
 
     device_id: str            # "mikrotik/0"
@@ -121,6 +148,11 @@ class PushContext:
     files: dict[str, Path]    # {"config.rsc": Path(...), ...}
     changed: bool | None      # вердикт authority (git); None если git выключен
     run_time: datetime
+
+    # Нормализатор, объявленный плагином. Используется
+    # для сравнения «изменилось или нет». В git попадают
+    # исходные данные без изменений.
+    normalize: NormalizeFn = identity_normalize
 
 
 # =========================================================
@@ -155,46 +187,30 @@ class StorageBackend:
     # ---- Capabilities ----
     #
     # is_authority — единственный backend, который решает
-    #                «изменилось или нет» (git). Остальные
-    #                видят вердикт в ctx.changed.
-    # is_local     — работает с локальной ФС, не требует
-    #                сети.
-    # stores_history, supports_download, supports_delete,
+    #                «изменилось или нет» (git).
+    # is_local     — работает с локальной ФС, не требует сети.
+    # always_enabled — backend нельзя отключить (git).
+    # stores_history / supports_download / supports_delete /
     # supports_notes — что умеет backend сверх push.
     #
     is_authority: bool = False
     is_local: bool = False
+    always_enabled: bool = False
     stores_history: bool = False
     supports_download: bool = False
     supports_delete: bool = False
     supports_notes: bool = False
 
-    # always_enabled — backend нельзя отключить.
-    # Используется для git: без него приложение не работает.
-    always_enabled: bool = False
-
     # =====================================================
-    # Обязательные методы — переопределяются наследниками
+    # Обязательные методы
     # =====================================================
 
     def test(self, config: dict) -> PushResult:
-        """Проверить соединение / доступность хранилища."""
         raise NotImplementedError(
             f"{self.__class__.__name__}.test() не реализован"
         )
 
-    def push(
-        self,
-        config: dict,
-        ctx: PushContext,
-    ) -> PushResult:
-        """
-        Выгрузить файлы в хранилище.
-
-        Возвращает PushResult. Если backend обнаружил,
-        что загружать нечего (например, changes_only и
-        не было изменений), возвращает PushResult.skipped().
-        """
+    def push(self, config: dict, ctx: PushContext) -> PushResult:
         raise NotImplementedError(
             f"{self.__class__.__name__}.push() не реализован"
         )
@@ -203,65 +219,29 @@ class StorageBackend:
     # Опциональные методы — по умолчанию заглушки
     # =====================================================
 
-    def history(
-        self,
-        config: dict,
-        ctx: PushContext,
-        limit: int = 50,
-    ) -> list[dict]:
-        """
-        Список версий (свежие сверху). Только если
-        stores_history == True.
-        """
+    def history(self, config: dict, ctx: PushContext, limit: int = 50) -> list[dict]:
         return []
 
-    def download(
-        self,
-        config: dict,
-        ctx: PushContext,
-        version_id: str,
-        filename: str,
-    ) -> bytes | None:
-        """Байты конкретной версии файла."""
+    def download(self, config: dict, ctx: PushContext, version_id: str, filename: str) -> bytes | None:
         return None
 
-    def delete(
-        self,
-        config: dict,
-        ctx: PushContext,
-        version_id: str,
-    ) -> PushResult:
-        """Удалить версию."""
+    def delete(self, config: dict, ctx: PushContext, version_id: str) -> PushResult:
         return PushResult.failure("Удаление не поддерживается")
 
-    def set_note(
-        self,
-        config: dict,
-        ctx: PushContext,
-        version_id: str,
-        note: str,
-    ) -> PushResult:
-        """Установить пользовательский комментарий."""
-        return PushResult.failure(
-            "Комментарии не поддерживаются"
-        )
+    def set_note(self, config: dict, ctx: PushContext, version_id: str, note: str) -> PushResult:
+        return PushResult.failure("Комментарии не поддерживаются")
 
     # =====================================================
-    # Утилиты для наследников
+    # Утилиты
     # =====================================================
 
-    def _should_skip_for_changes(
-        self,
-        config: dict,
-        ctx: PushContext,
-    ) -> bool:
+    def _should_skip_for_changes(self, config: dict, ctx: PushContext) -> bool:
         """
         Общая логика для mode == "changes_only".
 
         Если git выключен (ctx.changed is None) — не
-        пропускаем (дружелюбное поведение, п.3).
-
-        Если git включён и изменений нет — пропускаем.
+        пропускаем. Если git включён и изменений нет —
+        пропускаем.
         """
         if config.get("mode") != "changes_only":
             return False
@@ -270,12 +250,6 @@ class StorageBackend:
         return ctx.changed is False
 
     def log(self, level: str, msg: str, *args):
-        """
-        Удобный лог внутри backend'а.
-
-        Формат уже учитывается глобальным logger'ом,
-        device context берётся из thread-local.
-        """
         import logging
         lg = logging.getLogger(f"storage.{self.id}")
         getattr(lg, level)(msg, *args)
