@@ -532,8 +532,18 @@ def _device_filter_tag(device_type: str, index: int) -> str | None:
     """
     Возвращает тег вида '<device_type>/<host>' для фильтрации
     строк app.log, или None, если устройство не найдено.
+
+    device_type приводится к нижнему регистру: ключи в
+    plugin_manager._plugins хранятся в lower-case (см.
+    discover_and_load_plugins), а URL может прийти с любым
+    регистром — например, /logs/device/Mikrotik/0.
     """
-    if not plugin_manager or device_type not in plugin_manager._plugins:
+    if not plugin_manager:
+        return None
+
+    device_type = device_type.lower()
+
+    if device_type not in plugin_manager._plugins:
         return None
 
     routers = plugin_manager._plugins[device_type].get("routers", [])
@@ -2698,6 +2708,10 @@ def device_logs(
         require_auth
     ),
 ):
+
+    # Нормализуем регистр: ключи _plugins — lower-case.
+    # URL может прийти как /logs/device/Mikrotik/0.
+    device_type = device_type.lower()
 
     device_name = (
         f"{device_type} #{index}"

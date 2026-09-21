@@ -1233,6 +1233,14 @@ def _install_linux_service() -> tuple[bool, str]:
         _shell_quote(part) for part in [executable, *args]
     )
 
+    # KillMode=process — при остановке службы systemd убивает
+    # только главный процесс, а не всю cgroup. Это критично для
+    # отложенных действий (schedule_stop, schedule_restart): они
+    # запускают bash-скрипт, который должен пережить остановку
+    # основного приложения и вызвать systemctl stop/restart.
+    #
+    # Без KillMode=process systemd отправит SIGTERM всей cgroup
+    # и убьёт отложенный скрипт до того, как он сработает.
     unit_content = f"""[Unit]
 Description={DESCRIPTION}
 After=network.target
@@ -1244,6 +1252,7 @@ WorkingDirectory={work_dir}
 ExecStart={quoted}
 Restart=on-failure
 RestartSec=5
+KillMode=process
 
 [Install]
 WantedBy=multi-user.target
