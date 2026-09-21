@@ -504,6 +504,14 @@ def install_service_cli() -> int:
     ok, message = install_service()
     print(message)
 
+    # После успешной регистрации служба уже запущена
+    # (см. _install_windows_service → start_service).
+    # Открываем браузер из этой же elevated-копии:
+    # исходный launcher уже завершился и сделать это
+    # не может.
+    if ok:
+        open_browser_when_ready()
+
     return 0 if ok else 1
 
 
@@ -543,6 +551,9 @@ def start_service_cli() -> int:
 
     ok, message = start_service()
     print(message)
+
+    if ok:
+        open_browser_when_ready()
 
     return 0 if ok else 1
 
@@ -587,6 +598,13 @@ def restart_service_cli() -> int:
 
     ok, message = schedule_restart()
     print(message)
+
+    # schedule_restart из внешнего процесса запускает
+    # отложенный Restart-Service в detached-PowerShell.
+    # Дадим службе успеть подняться, прежде чем
+    # открывать браузер.
+    if ok:
+        open_browser_when_ready()
 
     return 0 if ok else 1
 

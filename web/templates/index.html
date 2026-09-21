@@ -196,26 +196,39 @@ document.querySelectorAll('.device-item[data-device-id]').forEach(btn => {
 // ============================================================
 
 function bindRunBackup() {
-    const btn = document.getElementById('run-backup-btn');
-    if (!btn) return;
+    const form = document.getElementById('run-backup-form');
+    if (!form) return;
 
-    btn.addEventListener('click', () => {
-        if (btn.disabled) return;
+    // Обработчик на submit, а не на click: даёт возможность
+    // отменить отправку (при двойном клике, пока кнопка
+    // ещё не успела задизейблиться) и не мешает браузеру
+    // самому обработать 303-редирект сервера.
+    form.addEventListener('submit', (e) => {
+        const btn = form.querySelector('#run-backup-btn');
+        if (!btn) return;
+
+        if (btn.disabled) {
+            e.preventDefault();
+            return;
+        }
+
         btn.disabled = true;
         btn.querySelector('.btn-idle').classList.add('hidden');
         const busy = btn.querySelector('.btn-busy');
         busy.classList.remove('hidden');
         busy.classList.add('inline-flex');
 
-        const id = btn.dataset.deviceId; // "mikrotik/0"
-        const [type, idx] = id.split('/');
-
-        // Перенаправление на существующий endpoint одиночного бэкапа
-        window.location.href = `/run-progress/${type}/${idx}`;
+        // Не вызываем e.preventDefault() — пусть форма
+        // отправится, браузер сам перейдёт по 303-редиректу
+        // на /logs/device/<type>/<index>.
     });
 }
 
-bindRunBackup();
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', bindRunBackup);
+} else {
+    bindRunBackup();
+}
 
 
 // ============================================================

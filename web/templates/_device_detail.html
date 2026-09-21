@@ -44,17 +44,22 @@
             </div>
 
             <div class="flex flex-wrap items-center gap-2">
-                <button id="run-backup-btn"
-                        data-device-id="{{ d.id }}"
-                        class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium
-                               bg-brand-600 hover:bg-brand-700 text-white shadow-sm transition
-                               disabled:opacity-70 disabled:cursor-not-allowed">
-                    <span class="btn-idle inline-flex items-center gap-2">🔄 Запустить бэкап</span>
-                    <span class="btn-busy hidden items-center gap-2">
-                        <span class="spinner"></span>
-                        <span>Выполняется…</span>
-                    </span>
-                </button>
+                <form id="run-backup-form"
+                      action="/run-progress/{{ d.type }}/{{ d.index }}"
+                      method="POST"
+                      class="inline-flex">
+                    <button id="run-backup-btn"
+                            type="submit"
+                            class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium
+                                   bg-brand-600 hover:bg-brand-700 text-white shadow-sm transition
+                                   disabled:opacity-70 disabled:cursor-not-allowed">
+                        <span class="btn-idle inline-flex items-center gap-2">🔄 Запустить бэкап</span>
+                        <span class="btn-busy hidden items-center gap-2">
+                            <span class="spinner"></span>
+                            <span>Выполняется…</span>
+                        </span>
+                    </button>
+                </form>
                 <a href="/logs/device/{{ d.type }}/{{ d.index }}"
                    class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium
                           bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700

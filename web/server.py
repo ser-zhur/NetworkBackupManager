@@ -844,6 +844,11 @@ def _build_device_payload(
             )
 
     # ---- Метрики из git ----
+    # ---- Метрики из git (последний успешный бэкап) ----
+    #
+    # git хранит только успешные версии — коммит создаётся
+    # лишь когда конфиг реально изменился. Это делает
+    # git-историю правильным источником для last_success.
     if git_commits:
         last = git_commits[0]
         try:
@@ -856,12 +861,40 @@ def _build_device_payload(
             age_days = None
 
         backup_count = len(git_commits)
-        last_attempt_date = last_date
-        last_attempt_ok = True
     else:
         last_date = None
         age_days = None
         backup_count = 0
+
+    # ---- Метрики из state.json (последняя попытка) ----
+    #
+    # state.json пишется plugin_manager._save_backend_state()
+    # при каждом запуске бэкапа — вне зависимости от того,
+    # создан коммит или нет. Это позволяет видеть результат
+    # неудачных попыток, которых в git-истории не будет.
+    #
+    # last_attempt_ok:
+    #   None  — попыток ещё не было
+    #   True  — все включённые backend'ы вернули ok=True
+    #           (skipped тоже ok=True: «нет изменений» = успех)
+    #   False — хотя бы один backend вернул ok=False
+    device_state = _load_device_state(f"{device_type}/{index}")
+
+    last_run_str = device_state.get("last_run") or ""
+    backends_state = device_state.get("backends") or {}
+
+    if last_run_str:
+        last_attempt_date = last_run_str
+        if backends_state:
+            last_attempt_ok = all(
+                bool(b.get("ok"))
+                for b in backends_state.values()
+            )
+        else:
+            # Бэкенды не задействованы, но попытка была —
+            # считаем её успешной.
+            last_attempt_ok = True
+    else:
         last_attempt_date = None
         last_attempt_ok = None
 
@@ -952,7 +985,7 @@ def _build_device_payload(
         "git_recent": git_recent,
         "storage_rows": _build_storage_rows(
             router,
-            _load_device_state(f"{device_type}/{index}"),
+            device_state,
         ),
     }
 
@@ -1887,7 +1920,7 @@ async def save_router_endpoint(
 # SINGLE BACKUP
 # =========================================================
 
-@app.get(
+@app.post(
     "/run-progress/{device_type}/{index}"
 )
 def run_backup(
