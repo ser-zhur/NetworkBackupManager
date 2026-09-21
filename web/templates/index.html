@@ -183,6 +183,7 @@ async function selectDevice(id) {
     } finally {
         panel.style.opacity = '1';
         bindRunBackup();
+        refreshBackupStatus();
     }
 }
 
@@ -197,12 +198,9 @@ document.querySelectorAll('.device-item[data-device-id]').forEach(btn => {
 
 function bindRunBackup() {
     const form = document.getElementById('run-backup-form');
-    if (!form) return;
+    if (!form || form.dataset.bound === '1') return;
+    form.dataset.bound = '1';
 
-    // Обработчик на submit, а не на click: даёт возможность
-    // отменить отправку (при двойном клике, пока кнопка
-    // ещё не успела задизейблиться) и не мешает браузеру
-    // самому обработать 303-редирект сервера.
     form.addEventListener('submit', (e) => {
         const btn = form.querySelector('#run-backup-btn');
         if (!btn) return;
@@ -217,17 +215,115 @@ function bindRunBackup() {
         const busy = btn.querySelector('.btn-busy');
         busy.classList.remove('hidden');
         busy.classList.add('inline-flex');
-
-        // Не вызываем e.preventDefault() — пусть форма
-        // отправится, браузер сам перейдёт по 303-редиректу
-        // на /logs/device/<type>/<index>.
     });
 }
 
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', bindRunBackup);
-} else {
+
+// ============================================================
+// СОСТОЯНИЕ БЭКАПОВ — POLLING
+// ============================================================
+//
+// Раз в BACKUP_POLL_MS опрашиваем /api/backup-status и
+// синхронизируем кнопки «Запустить бэкап» в карточке:
+//   • если бэкап идёт — спиннер, кнопка disabled;
+//   • если завершился — кнопка снова активна.
+//
+// Это снимает залипание спиннера после возврата на главную
+// через «назад» или после bfcache-восстановления.
+
+const BACKUP_POLL_MS = 3000;
+async function refreshBackupStatus() {
+    let data;
+    try {
+        const res = await fetch('/api/backup-status');
+        if (!res.ok) return;
+        data = await res.json();
+    } catch (e) {
+        return;
+    }
+
+    const running = !!data.running;
+    const mass = !!data.mass;
+    const deviceSet = new Set(data.devices || []);
+
+    // ---- Кнопки «Запустить бэкап» в карточках устройств ----
+    document.querySelectorAll('[data-run-backup-device]').forEach(form => {
+        const deviceId = form.dataset.runBackupDevice;
+        const btn = form.querySelector('button[type="submit"]');
+        if (!btn) return;
+
+        const idle = btn.querySelector('.btn-idle');
+        const busy = btn.querySelector('.btn-busy');
+        if (!idle || !busy) return;
+
+        const deviceBusy = mass || deviceSet.has(deviceId);
+
+        if (deviceBusy) {
+            btn.disabled = true;
+            idle.classList.add('hidden');
+            busy.classList.remove('hidden');
+            busy.classList.add('inline-flex');
+        } else {
+            btn.disabled = false;
+            idle.classList.remove('hidden');
+            busy.classList.add('hidden');
+            busy.classList.remove('inline-flex');
+        }
+    });
+
+    // ---- Кнопка «Запустить все бэкапы» в шапке ----
+    // Синхронизируем её состояние по флагу running, а не mass:
+    // /run-now проверяет is_backup_running(), который истинен
+    // и при одиночном бэкапе. Значит если идёт хоть что-то,
+    // массовый запуск сервер всё равно проигнорирует —
+    // кнопку логичнее заблокировать.
+    //
+    // Это снимает залипание спиннера после bfcache-возврата
+    // со страницы /logs/main: DOM восстанавливается с
+    // подменённым содержимым кнопки от disableAllBackups().
+    const runAllBtn = document.getElementById('run-all-btn');
+    if (runAllBtn) {
+        if (running) {
+            runAllBtn.disabled = true;
+
+            // Снимаем «зелёный» набор, ставим «серый».
+            // opacity-70 вместо opacity-60 — как в шаблоне,
+            // чтобы не было рассинхрона между SSR и JS.
+            runAllBtn.classList.remove(
+                'bg-emerald-600', 'hover:bg-emerald-700', 'shadow-sm'
+            );
+            runAllBtn.classList.add(
+                'bg-gray-400', 'cursor-not-allowed', 'opacity-70'
+            );
+
+            runAllBtn.innerHTML =
+                '<span class="spinner"></span> Идёт бэкап...';
+        } else {
+            runAllBtn.disabled = false;
+
+            // Обратная замена: серое → зелёное.
+            runAllBtn.classList.remove(
+                'bg-gray-400', 'cursor-not-allowed', 'opacity-70'
+            );
+            runAllBtn.classList.add(
+                'bg-emerald-600', 'hover:bg-emerald-700', 'shadow-sm'
+            );
+
+            runAllBtn.innerHTML = '▶ Запустить все бэкапы';
+        }
+    }
+}
+
+function initBackupUI() {
     bindRunBackup();
+    refreshBackupStatus();
+    setInterval(refreshBackupStatus, BACKUP_POLL_MS);
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initBackupUI);
+} else {
+    initBackupUI();
 }
 
 
@@ -237,16 +333,21 @@ if (document.readyState === 'loading') {
 
 function disableAllBackups() {
     const b = document.getElementById('run-all-btn');
-    if (b) {
-        b.disabled = true;
-        b.classList.add('opacity-60', 'cursor-not-allowed');
-        b.innerHTML = '<span class="spinner"></span> Запуск...';
-    }
-    const rb = document.getElementById('run-backup-btn');
-    if (rb) {
-        rb.disabled = true;
-        rb.classList.add('opacity-60', 'cursor-not-allowed');
-    }
+    if (!b) return;
+
+    b.disabled = true;
+    b.classList.remove(
+        'bg-emerald-600', 'hover:bg-emerald-700', 'shadow-sm'
+    );
+    b.classList.add(
+        'bg-gray-400', 'cursor-not-allowed', 'opacity-70'
+    );
+
+    // Текст чуть отличается от того, что ставит polling
+    // («Запуск...» vs «Идёт бэкап...») — это осознанно:
+    // в момент отправки формы бэкап ещё не стартовал,
+    // а когда стартует — polling подменит на «Идёт бэкап...».
+    b.innerHTML = '<span class="spinner"></span> Запуск...';
 }
 
 
@@ -292,13 +393,17 @@ setInterval(refreshSystemInfo, 30000);
 // исходное DOM-состояние, включая задизейбленные кнопки
 // со спиннером (например, после запуска бэкапа).
 //
-// event.persisted === true означает именно восстановление
-// из bfcache. Перезагружаем страницу, чтобы сервер отрисовал
-// кнопки по актуальному состоянию.
+// event.persisted === true означает восстановление из bfcache.
+// Обновляем статусы без полной перезагрузки: пользователь
+// не видит мигания, но кнопки получают актуальное состояние.
 
 window.addEventListener('pageshow', (event) => {
     if (event.persisted) {
-        window.location.reload();
+        // Страница восстановлена из bfcache — состояние
+        // кнопок могло устареть. Обновляем статусы без
+        // полной перезагрузки, чтобы не мигало.
+        refreshBackupStatus();
+        refreshSystemInfo();
     }
 });
 

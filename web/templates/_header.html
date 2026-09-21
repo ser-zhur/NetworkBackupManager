@@ -69,22 +69,25 @@
         <div class="flex flex-wrap items-center gap-2">
 
             {% if header_show_run_all %}
-                {% if is_backup_running %}
-                <button disabled class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium
-                                       bg-gray-400 text-white cursor-not-allowed opacity-70">
+            <form action="/run-now" method="POST" class="inline" onsubmit="disableAllBackups()">
+                <button type="submit"
+                        id="run-all-btn"
+                        {% if is_backup_running %}disabled{% endif %}
+                        class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium text-white transition
+                               {% if is_backup_running %}
+                               bg-gray-400 cursor-not-allowed opacity-70
+                               {% else %}
+                               bg-emerald-600 hover:bg-emerald-700 shadow-sm
+                               {% endif %}">
+                    {% if is_backup_running %}
                     <span class="spinner"></span> Идёт бэкап...
+                    {% else %}
+                    ▶ Запустить все бэкапы
+                    {% endif %}
                 </button>
-                {% else %}
-                <form action="/run-now" method="POST" class="inline" onsubmit="disableAllBackups()">
-                    <button type="submit" id="run-all-btn"
-                            class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium
-                                   bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition">
-                        ▶ Запустить все бэкапы
-                    </button>
-                </form>
-                {% endif %}
+            </form>
             {% endif %}
-
+            
             <div class="flex flex-wrap items-center gap-1.5">
                 {% if not header_is_home %}
                 <a href="/" class="px-3 py-2 rounded-lg text-xs font-medium

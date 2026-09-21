@@ -47,6 +47,7 @@
                 <form id="run-backup-form"
                       action="/run-progress/{{ d.type }}/{{ d.index }}"
                       method="POST"
+                      data-run-backup-device="{{ d.id }}"
                       class="inline-flex">
                     <button id="run-backup-btn"
                             type="submit"

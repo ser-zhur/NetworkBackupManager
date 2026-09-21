@@ -99,40 +99,67 @@ setup_logging()
 # =========================================================
 # BACKUP STATE
 # =========================================================
+#
+# Храним не просто счётчик, а конкретные device_id —
+# чтобы фронтенд мог синхронизировать кнопки «Запустить
+# бэкап» по каждому устройству отдельно.
+#
+# mass_backup_running — идёт общий прогон через /run-now.
+# В этом режиме все устройства считаются занятыми.
+#
+# active_backups — множество device_id одиночных бэкапов
+# (формат "mikrotik/0").
 
 backup_lock = threading.Lock()
 
-active_backups_count = 0
+active_backups: set[str] = set()
+mass_backup_running: bool = False
 
 
 def is_backup_running() -> bool:
+    """True, если идёт хоть один бэкап (одиночный или массовый)."""
+    with backup_lock:
+        return mass_backup_running or bool(active_backups)
+
+
+def is_backup_running_for(device_id: str) -> bool:
+    """True, если занято конкретное устройство или идёт массовый бэкап."""
+    with backup_lock:
+        return mass_backup_running or device_id in active_backups
+
+
+def get_backup_status() -> dict:
+    """Снимок состояния для /api/backup-status."""
+    with backup_lock:
+        return {
+            "running": mass_backup_running or bool(active_backups),
+            "mass": mass_backup_running,
+            "devices": sorted(active_backups),
+        }
+
+
+def backup_started(device_id: str | None = None):
+    """
+    device_id=None означает массовый бэкап (/run-now).
+    Иначе — одиночный, добавляет конкретный device_id.
+    """
+    global mass_backup_running
 
     with backup_lock:
-
-        return (
-            active_backups_count > 0
-        )
-
-
-def backup_started():
-
-    global active_backups_count
-
-    with backup_lock:
-
-        active_backups_count += 1
+        if device_id is None:
+            mass_backup_running = True
+        else:
+            active_backups.add(device_id)
 
 
-def backup_finished():
-
-    global active_backups_count
+def backup_finished(device_id: str | None = None):
+    global mass_backup_running
 
     with backup_lock:
-
-        if active_backups_count > 0:
-
-            active_backups_count -= 1
-
+        if device_id is None:
+            mass_backup_running = False
+        else:
+            active_backups.discard(device_id)
 
 # =========================================================
 # CORE
@@ -843,7 +870,6 @@ def _build_device_payload(
                 device_type, index, exc,
             )
 
-    # ---- Метрики из git ----
     # ---- Метрики из git (последний успешный бэкап) ----
     #
     # git хранит только успешные версии — коммит создаётся
@@ -1004,9 +1030,11 @@ def execute_device_backup_task(
         or f"#{index}"
     )
 
+    device_id = f"{device_type}/{index}"
+
     set_device_context(f"{device_type}/{host}")
 
-    backup_started()
+    backup_started(device_id)
     try:
         plugin = (
             plugin_manager._plugins.get(device_type)
@@ -1063,7 +1091,7 @@ def execute_device_backup_task(
         logging.error("❌ [Фон] Ошибка при бэкапе: %s", exc)
 
     finally:
-        backup_finished()
+        backup_finished(device_id)
         clear_device_context()
 
 
@@ -1183,6 +1211,23 @@ def api_system_info(user: str = Depends(require_auth)):
         "is_backup_running": is_backup_running(),
     }
 
+@app.get("/api/backup-status")
+def api_backup_status(user: str = Depends(require_auth)):
+    """
+    Текущее состояние бэкапов.
+
+    Ответ:
+        {
+          "running": true,
+          "mass": false,
+          "devices": ["mikrotik/0", "mikrotik/2"]
+        }
+
+    mass=true означает массовый прогон — все устройства
+    заняты. devices содержит device_id одиночных бэкапов.
+    Фронтенд использует это для дизейбла кнопок.
+    """
+    return get_backup_status()
 
 # =========================================================
 # API: TEST STORAGE BACKEND
@@ -1915,7 +1960,6 @@ async def save_router_endpoint(
         status_code=303,
     )
 
-
 # =========================================================
 # SINGLE BACKUP
 # =========================================================
@@ -1933,7 +1977,12 @@ def run_backup(
     ),
 ):
 
-    if is_backup_running():
+    device_id = f"{device_type}/{index}"
+
+    # Блокируем запуск, только если занято именно это
+    # устройство или идёт массовый прогон. Параллельный
+    # бэкап другого устройства — разрешён.
+    if is_backup_running_for(device_id):
 
         return RedirectResponse(
             url=(
@@ -2006,7 +2055,6 @@ def run_backup(
         ),
         status_code=303,
     )
-
 
 # =========================================================
 # ALL BACKUPS
