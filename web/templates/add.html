@@ -45,6 +45,23 @@
             </div>
 
             <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
+                    Название устройства
+                    <span class="text-xs text-gray-400 dark:text-slate-500 font-normal">(необязательно)</span>
+                </label>
+                <input type="text" name="name" maxlength="100"
+                       placeholder="Офис, склад, главный роутер..."
+                       class="w-full rounded-lg px-3 py-2 text-sm
+                              bg-gray-50 dark:bg-slate-950
+                              border border-gray-200 dark:border-slate-800
+                              placeholder-gray-400 dark:placeholder-slate-500
+                              focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+                <p class="mt-1 text-[11px] text-gray-500 dark:text-slate-400">
+                    Отображается в списке устройств и в шапке карточки. Если не задано — показывается адрес.
+                </p>
+            </div>
+
+            <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">IP-адрес / Хост:</label>
                 <input type="text" name="ip" placeholder="192.168.88.1" required
                        class="w-full rounded-lg px-3 py-2 text-sm font-mono
@@ -52,7 +69,6 @@
                               border border-gray-200 dark:border-slate-800
                               focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
             </div>
-
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                     <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Пользователь SSH:</label>

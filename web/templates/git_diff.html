@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
     {% include "_base_head.html" %}
-    <title>Diff {{ commit_a.short }}..{{ commit_b.short }} — {{ host }}</title>
+    <title>Diff {{ commit_a.short }}..{{ commit_b.short }} — {{ name or host }}</title>
     <style>
         .diff-line {
             display: block;
@@ -40,7 +40,13 @@
                 🔍 Сравнение версий
             </h1>
             <p class="text-sm text-gray-500 dark:text-slate-400 mt-1">
-                Устройство <span class="font-mono font-medium text-gray-700 dark:text-slate-200">{{ host }}</span>
+                Устройство
+                {% if name %}
+                    <span class="font-medium text-gray-700 dark:text-slate-200">{{ name }}</span>
+                    <span class="font-mono text-xs text-gray-500 dark:text-slate-400">({{ host }})</span>
+                {% else %}
+                    <span class="font-mono font-medium text-gray-700 dark:text-slate-200">{{ host }}</span>
+                {% endif %}
             </p>
         </div>
 

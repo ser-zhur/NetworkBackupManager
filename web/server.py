@@ -829,6 +829,14 @@ def _build_device_payload(
             gs = GitStorage(b_path_abs)
             if gs.is_initialized():
                 git_commits = gs.get_history(limit=200)
+
+                # Заметки хранятся отдельно от коммитов
+                # (в .git/nbm_notes.json). Подмешиваем их
+                # в те же словари, что уже пойдут в шаблон,
+                # чтобы не тянуть notes в контекст отдельно.
+                notes = gs.get_notes()
+                for c in git_commits:
+                    c["note"] = notes.get(c["sha"], "")
         except Exception as exc:
             logging.warning(
                 "git: не удалось прочитать историю %s/%s: %s",
@@ -873,6 +881,7 @@ def _build_device_payload(
         or router.get("address", "Не указан")
     )
 
+
     git_recent = []
     for c in git_commits[:3]:
         git_recent.append({
@@ -881,12 +890,46 @@ def _build_device_payload(
             "message": c["message"],
             "time": c["time"],
             "files": c["files"],
+            "note": c.get("note", ""),
         })
+
+    # ---- Версия прошивки ----
+    # Плагины не заполняют это поле автоматически —
+    # ожидаем, что пользователь вводит его вручную
+    # (см. add.html / edit.html) или что оно появится
+    # в routers.json из внешнего источника.
+    version = (
+        router.get("version")
+        or router.get("os_version")
+        or router.get("firmware")
+        or "—"
+    )
+
+    # ---- Включён ли git-бэкенд для этого устройства ----
+    # Логика зеркалит StorageManager.enabled_for():
+    #   • git помечен always_enabled → включён всегда;
+    #   • но если бэкенд не загрузился (например, dulwich
+    #     не установлен и manager.errors() его не собрал),
+    #     честнее показать «выключено», чем рисовать пустую
+    #     историю как будто всё в порядке.
+    git_backend = (
+        storage_manager.get("git")
+        if storage_manager is not None
+        else None
+    )
+    if git_backend is None:
+        git_enabled = False
+    elif git_backend.always_enabled:
+        git_enabled = True
+    else:
+        git_cfg = (router.get("storage") or {}).get("git") or {}
+        git_enabled = bool(git_cfg.get("enabled"))
 
     return {
         "id": f"{device_type}/{index}",
         "type": device_type,
         "index": index,
+        "name": router.get("name") or "",
         "host": ip_addr,
         "port": router.get("port", 22),
         "status": status,
@@ -904,6 +947,7 @@ def _build_device_payload(
             or router.get("private_key")
             or "id_rsa.key"
         ),
+        "git_enabled": git_enabled,
         "git_total": len(git_commits),
         "git_recent": git_recent,
         "storage_rows": _build_storage_rows(
@@ -911,7 +955,6 @@ def _build_device_payload(
             _load_device_state(f"{device_type}/{index}"),
         ),
     }
-
 
 # =========================================================
 # BACKUP TASKS
@@ -1688,6 +1731,7 @@ async def save_router_endpoint(
     form = await request.form()
 
     device_type = (form.get("device_type") or "").strip()
+    device_name = (form.get("name") or "").strip()[:100]
     ip = (form.get("ip") or "").strip()
     username = form.get("username") or "admin"
     ssh_pass = form.get("ssh_pass") or ""
@@ -1743,6 +1787,11 @@ async def save_router_endpoint(
         "max_backups":
             int(max_backups),
     }
+
+    # Название — опционально. Не пишем пустую строку
+    # в routers.json, чтобы файл оставался компактным.
+    if device_name:
+        new_router["name"] = device_name
 
     if (
         device_type.lower()
@@ -2217,6 +2266,7 @@ def git_history_page(
         or router.get("address")
         or f"устройство #{index}"
     )
+    name = router.get("name") or ""
 
     return templates.TemplateResponse(
         request,
@@ -2225,6 +2275,7 @@ def git_history_page(
             "device_type": device_type,
             "index": index,
             "host": host,
+            "name": name,
             "backup_path": str(backup_path),
             "commits": commits,
             "total": len(commits),
@@ -2409,6 +2460,7 @@ def git_diff_page(
         or router.get("address")
         or f"устройство #{index}"
     )
+    name = router.get("name") or ""
 
     stats = {
         "files": len([n for n, lines in parsed_diffs.items()
@@ -2430,6 +2482,7 @@ def git_diff_page(
             "device_type": device_type,
             "index": index,
             "host": host,
+            "name": name,
             "commit_a": commit_a,
             "commit_b": commit_b,
             "parsed_diffs": parsed_diffs,
@@ -2737,6 +2790,7 @@ async def update_router(
 ):
     form = await request.form()
 
+    device_name = (form.get("name") or "").strip()[:100]
     ip = (form.get("ip") or "").strip()
     username = form.get("username") or "admin"
     ssh_pass = form.get("ssh_pass") or ""
@@ -2820,6 +2874,12 @@ async def update_router(
         "max_backups":
             int(max_backups),
     }
+    
+    # Обновление name: словарь собирается заново, поэтому
+    # пустая строка означает «удалить имя» — ключ просто
+    # не попадёт в новый dict, что и требуется.
+    if device_name:
+        updated_router["name"] = device_name
 
     if (
         device_type.lower()

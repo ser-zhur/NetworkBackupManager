@@ -1,3 +1,17 @@
+{# ========================================================= #}
+{# PARTIAL: общий header приложения                          #}
+{#                                                            #}
+{# Параметры (все опциональны):                               #}
+{#   header_subtitle     — подпись под логотипом              #}
+{#   header_is_home      — True скрывает ссылку «🏠 Главная»   #}
+{#   header_show_status  — показать чипы статуса              #}
+{#   header_show_run_all — показать кнопку «Запустить все»    #}
+{#   header_show_add     — показать ссылку «+ Добавить»       #}
+{#                                                            #}
+{# При header_show_status требуются в контексте:              #}
+{#   service, scheduler_config, logs_size, is_backup_running  #}
+{# ========================================================= #}
+
 <header class="sticky top-0 z-20 bg-white/85 dark:bg-slate-900/85 backdrop-blur border-b border-gray-200 dark:border-slate-800">
     <div class="max-w-[1400px] mx-auto px-5 py-3 flex flex-wrap items-center gap-3">
 
@@ -11,33 +25,97 @@
             </div>
         </a>
 
+        {% if header_show_status %}
+        <div class="hidden md:flex items-center gap-2 text-[11px]" id="status-chips">
+            {% if service.registered and service.os_running %}
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-900">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                Служба работает
+            </span>
+            {% elif service.registered %}
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-900">
+                <span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+                Служба остановлена
+            </span>
+            {% else %}
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-400 border border-gray-200 dark:border-slate-700">
+                <span class="w-1.5 h-1.5 rounded-full bg-gray-400"></span>
+                Служба не установлена
+            </span>
+            {% endif %}
+
+            {% if scheduler_config.enabled %}
+                {% if scheduler_config.mode == 'daily' %}
+                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 border border-brand-200 dark:border-brand-900">
+                    ⏰ Автобэкап: ежедневно в {{ scheduler_config.daily_time }}
+                </span>
+                {% else %}
+                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 border border-brand-200 dark:border-brand-900">
+                    ⏰ Автобэкап: каждые {{ scheduler_config.interval_hours }} ч.
+                </span>
+                {% endif %}
+            {% else %}
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-400 border border-gray-200 dark:border-slate-700">
+                ⏰ Автобэкап выключен
+            </span>
+            {% endif %}
+
+
+        </div>
+        {% endif %}
+
         <div class="flex-1"></div>
 
-        <div class="flex items-center gap-1.5">
-            <a href="/"
-               class="hidden md:inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium
-                      bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
-                      border border-gray-200 dark:border-slate-700 transition">
-                🏠 Главная
-            </a>
-            <a href="/scheduler"
-               class="hidden md:inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium
-                      bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
-                      border border-gray-200 dark:border-slate-700 transition">
-                ⏰ Планировщик
-            </a>
-            <a href="/service"
-               class="hidden md:inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium
-                      bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
-                      border border-gray-200 dark:border-slate-700 transition">
-                ⚙ Служба
-            </a>
-            <a href="/logs/main"
-               class="hidden md:inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium
-                      bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
-                      border border-gray-200 dark:border-slate-700 transition">
-                📜 Логи
-            </a>
+        <div class="flex flex-wrap items-center gap-2">
+
+            {% if header_show_run_all %}
+                {% if is_backup_running %}
+                <button disabled class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium
+                                       bg-gray-400 text-white cursor-not-allowed opacity-70">
+                    <span class="spinner"></span> Идёт бэкап...
+                </button>
+                {% else %}
+                <form action="/run-now" method="POST" class="inline" onsubmit="disableAllBackups()">
+                    <button type="submit" id="run-all-btn"
+                            class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium
+                                   bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition">
+                        ▶ Запустить все бэкапы
+                    </button>
+                </form>
+                {% endif %}
+            {% endif %}
+
+            <div class="flex flex-wrap items-center gap-1.5">
+                {% if not header_is_home %}
+                <a href="/" class="px-3 py-2 rounded-lg text-xs font-medium
+                                  bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                                  border border-gray-200 dark:border-slate-700 transition">
+                    🏠 Главная
+                </a>
+                {% endif %}
+                <a href="/scheduler" class="px-3 py-2 rounded-lg text-xs font-medium
+                                           bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                                           border border-gray-200 dark:border-slate-700 transition">
+                    ⏰ Планировщик
+                </a>
+                <a href="/service" class="px-3 py-2 rounded-lg text-xs font-medium
+                                         bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                                         border border-gray-200 dark:border-slate-700 transition">
+                    ⚙ Служба
+                </a>
+                <a href="/logs/main" class="px-3 py-2 rounded-lg text-xs font-medium
+                                           bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                                           border border-gray-200 dark:border-slate-700 transition">
+                    📜 Общий лог
+                </a>
+                {% if header_show_add %}
+                <a href="/add" class="px-3 py-2 rounded-lg text-xs font-medium
+                                     bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                                     border border-gray-200 dark:border-slate-700 transition">
+                    + Добавить
+                </a>
+                {% endif %}
+            </div>
 
             <button id="theme-toggle" title="Переключить тему"
                     class="w-9 h-9 inline-flex items-center justify-center rounded-lg
@@ -46,6 +124,7 @@
                 <span class="dark:hidden">🌙</span>
                 <span class="hidden dark:inline">☀️</span>
             </button>
+
         </div>
     </div>
 </header>

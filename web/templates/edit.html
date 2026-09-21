@@ -22,11 +22,12 @@
                 <span>устройство #{{ index }}</span>
             </p>
         </div>
-        <a href="/" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
-                          bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
-                          border border-gray-200 dark:border-slate-700 transition">
-            ← Назад
-        </a>
+            <a href="/?selected={{ device_type }}/{{ index }}"
+               class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+                      bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                      border border-gray-200 dark:border-slate-700 transition">
+                ← К устройству
+            </a>
     </div>
 
     <form action="/update-router/{{ device_type }}/{{ index }}" method="POST" class="space-y-5">
@@ -36,6 +37,24 @@
             <h3 class="text-sm font-semibold text-gray-700 dark:text-slate-200 flex items-center gap-2">
                 🔌 1. Параметры подключения
             </h3>
+
+            <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
+                    Название устройства
+                    <span class="text-xs text-gray-400 dark:text-slate-500 font-normal">(необязательно)</span>
+                </label>
+                <input type="text" name="name" maxlength="100"
+                       value="{{ router.name or '' }}"
+                       placeholder="Офис, склад, главный роутер..."
+                       class="w-full rounded-lg px-3 py-2 text-sm
+                              bg-gray-50 dark:bg-slate-950
+                              border border-gray-200 dark:border-slate-800
+                              placeholder-gray-400 dark:placeholder-slate-500
+                              focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+                <p class="mt-1 text-[11px] text-gray-500 dark:text-slate-400">
+                    Оставьте пустым, чтобы показывать адрес.
+                </p>
+            </div>
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
@@ -54,7 +73,8 @@
                                   bg-gray-50 dark:bg-slate-950
                                   border border-gray-200 dark:border-slate-800
                                   focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
-                </div>            </div>
+                </div>
+            </div>
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>

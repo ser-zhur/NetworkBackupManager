@@ -1,4 +1,65 @@
 <script>
+// ============================================================
+// УПРАВЛЕНИЕ required ДЛЯ ПОЛЕЙ STORAGE BACKEND
+// ============================================================
+//
+// Поля, помеченные data-required="1", становятся обязательными
+// только когда бэкенд включён. Это позволяет сохранять форму
+// с выключенным FTP, не заполняя host/user.
+
+function syncStorageRequired(backendId) {
+    const section = document.querySelector(
+        `[data-backend-id="${backendId}"]`
+    );
+    if (!section) return;
+
+    const toggle = section.querySelector(
+        `input[name="storage_${backendId}_enabled"]`
+    );
+
+    // Бэкенды с always_enabled (git) чекбокса не имеют —
+    // их поля обязательны всегда, но у них required и нет.
+    // Если чекбокс есть, required управляется им.
+    const active = toggle ? toggle.checked : true;
+
+    section.querySelectorAll('[data-required="1"]').forEach(el => {
+        if (active) {
+            el.setAttribute('required', 'required');
+        } else {
+            el.removeAttribute('required');
+        }
+    });
+}
+
+function initStorageRequired() {
+    // Находим все секции бэкендов, у которых есть тумблер enabled
+    document.querySelectorAll('[data-backend-id]').forEach(section => {
+        const backendId = section.dataset.backendId;
+        const toggle = section.querySelector(
+            `input[name="storage_${backendId}_enabled"]`
+        );
+        if (!toggle) {
+            // always_enabled: снимаем required со всех полей,
+            // т.к. браузер не должен блокировать отправку
+            // из-за необязательных для этой формы значений.
+            // (Поля required у always_enabled сейчас отсутствуют,
+            //  но оставляем защиту на будущее.)
+            return;
+        }
+
+        toggle.addEventListener('change', () => {
+            syncStorageRequired(backendId);
+        });
+
+        syncStorageRequired(backendId);
+    });
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initStorageRequired);
+} else {
+    initStorageRequired();
+}
 async function testStorage(backendId, deviceType, index) {
     const resultEl = document.getElementById('storage-test-' + backendId);
     resultEl.textContent = 'Проверка…';

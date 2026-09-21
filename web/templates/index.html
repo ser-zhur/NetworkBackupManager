@@ -51,107 +51,14 @@
 </head>
 <body class="bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-slate-100 transition-colors">
 
-<header class="sticky top-0 z-20 bg-white/85 dark:bg-slate-900/85 backdrop-blur border-b border-gray-200 dark:border-slate-800">
-    <div class="px-5 py-3 flex flex-wrap items-center gap-3">
-        <div class="flex items-center gap-2 mr-3">
-            <div class="w-9 h-9 rounded-lg bg-brand-600 flex items-center justify-center text-white text-lg shadow-sm">🛡️</div>
-            <div class="leading-tight">
-                <div class="text-sm font-semibold">Network Backup Manager</div>
-                <div class="text-[11px] text-gray-500 dark:text-slate-400">Панель резервного копирования</div>
-            </div>
-        </div>
-
-        <div class="hidden md:flex items-center gap-2 text-[11px]" id="status-chips">
-            {% if service.registered and service.os_running %}
-            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-900">
-                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                Служба работает
-            </span>
-            {% elif service.registered %}
-            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-900">
-                <span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
-                Служба остановлена
-            </span>
-            {% else %}
-            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-400 border border-gray-200 dark:border-slate-700">
-                <span class="w-1.5 h-1.5 rounded-full bg-gray-400"></span>
-                Служба не установлена
-            </span>
-            {% endif %}
-
-            {% if scheduler_config.enabled %}
-                {% if scheduler_config.mode == 'daily' %}
-                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 border border-brand-200 dark:border-brand-900">
-                    ⏰ Автобэкап: ежедневно в {{ scheduler_config.daily_time }}
-                </span>
-                {% else %}
-                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 border border-brand-200 dark:border-brand-900">
-                    ⏰ Автобэкап: каждые {{ scheduler_config.interval_hours }} ч.
-                </span>
-                {% endif %}
-            {% else %}
-            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-400 border border-gray-200 dark:border-slate-700">
-                ⏰ Автобэкап выключен
-            </span>
-            {% endif %}
-
-            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-gray-100 dark:bg-slate-800 text-gray-700 dark:text-slate-300 border border-gray-200 dark:border-slate-700"
-                  title="Суммарный размер файлов в каталоге logs/">
-                📜 Логи: <b class="font-mono" id="logs-size">{{ logs_size }}</b>
-            </span>
-        </div>
-
-        <div class="flex-1"></div>
-
-        <div class="flex items-center gap-2">
-            {% if is_backup_running %}
-            <button disabled class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium
-                                   bg-gray-400 text-white cursor-not-allowed opacity-70">
-                <span class="spinner"></span> Идёт бэкап...
-            </button>
-            {% else %}
-            <form action="/run-now" method="POST" class="inline" onsubmit="disableAllBackups()">
-                <button type="submit" id="run-all-btn"
-                        class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium
-                               bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition">
-                    ▶ Запустить все бэкапы
-                </button>
-            </form>
-            {% endif %}
-
-            <div class="hidden md:flex items-center gap-1.5">
-                <a href="/scheduler" class="px-3 py-2 rounded-lg text-xs font-medium
-                                          bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
-                                          border border-gray-200 dark:border-slate-700 transition">
-                    ⏰ Планировщик
-                </a>
-                <a href="/service" class="px-3 py-2 rounded-lg text-xs font-medium
-                                          bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
-                                          border border-gray-200 dark:border-slate-700 transition">
-                    ⚙ Служба
-                </a>
-                <a href="/logs/main" class="px-3 py-2 rounded-lg text-xs font-medium
-                                           bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
-                                           border border-gray-200 dark:border-slate-700 transition">
-                    📜 Логи
-                </a>
-            </div>
-
-            <button id="theme-toggle" title="Переключить тему"
-                    class="w-9 h-9 inline-flex items-center justify-center rounded-lg
-                           bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
-                           border border-gray-200 dark:border-slate-700 transition">
-                <span class="dark:hidden">🌙</span>
-                <span class="hidden dark:inline">☀️</span>
-            </button>
-
-            <a href="/add" class="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium
-                                  bg-brand-600 hover:bg-brand-700 text-white shadow-sm transition">
-                + Добавить
-            </a>
-        </div>
-    </div>
-</header>
+{% with
+    header_show_status  = True,
+    header_show_run_all = True,
+    header_show_add     = True,
+    header_is_home      = True
+%}
+    {% include "_header.html" %}
+{% endwith %}
 
 <main class="max-w-[1400px] mx-auto px-5 py-5">
     <div class="grid grid-cols-1 lg:grid-cols-[340px_minmax(0,1fr)] gap-5">
@@ -184,7 +91,7 @@
                                     <span class="text-[11px] uppercase tracking-wide font-semibold text-gray-500 dark:text-slate-400">{{ d.type }}</span>
                                     <span class="text-[10px] px-1.5 py-0.5 rounded font-medium {{ m.badge }}">{{ m.label }}</span>
                                 </div>
-                                <div class="mt-0.5 font-mono text-sm font-medium truncate">{{ d.host }}</div>
+                                <div class="mt-0.5 text-sm font-medium truncate">{{ d.name or d.host }}</div>
                                 <div class="mt-0.5 text-[11px] text-gray-500 dark:text-slate-400 truncate">
                                     {% if d.last_success %}
                                         Последний: {{ d.last_success }} · {{ d.backup_count }} копий
@@ -228,26 +135,6 @@
 </main>
 
 <script>
-
-// ============================================================
-// ТЕМА
-// ============================================================
-// Начальная установка темы делается в <head> (см. IIFE).
-// Здесь только обработчик клика.
-
-const htmlEl = document.documentElement;
-
-const themeBtn = document.getElementById('theme-toggle');
-if (themeBtn) {
-    themeBtn.addEventListener('click', () => {
-        htmlEl.classList.toggle('dark');
-        localStorage.setItem(
-            'nbm-theme',
-            htmlEl.classList.contains('dark') ? 'dark' : 'light'
-        );
-    });
-}
-
 
 // ============================================================
 // ВЫБОР УСТРОЙСТВА (гибрид: SSR при первой загрузке, fetch при клике)

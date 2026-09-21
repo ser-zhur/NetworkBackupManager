@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
     {% include "_base_head.html" %}
-    <title>История версий — {{ host }} — Network Backup Manager</title>
+    <title>История версий — {{ name or host }} — Network Backup Manager</title>
 </head>
 <body class="bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-slate-100 transition-colors min-h-screen">
 
@@ -15,10 +15,10 @@
     <!-- Заголовок -->
     <div class="flex flex-wrap items-start justify-between gap-4 mb-6">
         <div class="min-w-0">
-            <h1 class="text-2xl font-bold text-gray-900 dark:text-slate-100 flex items-center gap-2">
+            <h1 class="text-2xl font-bold text-gray-900 dark:text-slate-100 flex flex-wrap items-center gap-2">
                 📜 История версий:
                 <span class="font-mono text-brand-600 dark:text-brand-400">
-                    {{ host }}
+                    {{ name or host }}
                 </span>
             </h1>
             <p class="text-xs text-gray-500 dark:text-slate-400 font-mono mt-1 flex flex-wrap items-center gap-2">
@@ -36,12 +36,6 @@
                       bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
                       border border-gray-200 dark:border-slate-700 transition">
                 ← К устройству
-            </a>
-            <a href="/"
-               class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
-                      bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
-                      border border-gray-200 dark:border-slate-700 transition">
-                🏠 Главная
             </a>
         </div>
     </div>
@@ -86,7 +80,7 @@
                 {% for c in commits %}
                     {% set prev = commits[loop.index0 + 1] if loop.index0 + 1 < commits|length else None %}
                 <li class="px-5 py-4 hover:bg-gray-50 dark:hover:bg-slate-800/40 transition">
-                    <div class="flex flex-wrap items-start justify-between gap-4">
+                    <div class="flex items-start gap-4">
 
                         <!-- Чекбокс выбора -->
                         <div class="flex items-center pt-1 shrink-0">
@@ -98,74 +92,70 @@
                                    onchange="updateCompareBar()">
                         </div>
 
-                        <div class="min-w-0 flex-1">
-                            <div class="flex flex-wrap items-center gap-3 mb-1">
-                                <code class="font-mono text-xs px-2 py-0.5 rounded
-                                             bg-brand-100 dark:bg-brand-900/60
-                                             text-brand-700 dark:text-brand-300 font-semibold">
-                                    {{ c.short }}
-                                </code>
-                                <span class="text-xs font-mono text-gray-500 dark:text-slate-400">
-                                    {{ c.time }}
-                                </span>
+                        <!-- Двухколоночный блок: инфа о коммите | заметка -->
+                        <div class="min-w-0 flex-1 flex flex-col md:flex-row md:items-stretch">
+
+                            {# ---- Левая колонка: информация о коммите + действия ---- #}
+                            <div class="min-w-0 flex-1 md:pr-4
+                                        {% if c.note %}md:border-r md:border-gray-100 dark:md:border-slate-800{% endif %}">
+                                <div class="flex flex-wrap items-center gap-3 mb-1">
+                                    <code class="font-mono text-xs px-2 py-0.5 rounded
+                                                 bg-brand-100 dark:bg-brand-900/60
+                                                 text-brand-700 dark:text-brand-300 font-semibold">
+                                        {{ c.short }}
+                                    </code>
+                                    <span class="text-sm font-medium text-gray-900 dark:text-slate-100">
+                                    {{ c.message }}
+                                    </span>
+                                </div>
+                                {% if c.files %}
+                                <div class="mt-2 flex flex-wrap items-center gap-2">
+                                    {% for f in c.files %}
+                                    <a href="/git/{{ device_type }}/{{ index }}/download/{{ c.sha }}/{{ f }}"
+                                       class="inline-flex items-center gap-1 text-[11px] font-mono px-2 py-1 rounded
+                                              bg-gray-100 dark:bg-slate-800
+                                              text-gray-700 dark:text-slate-300
+                                              hover:bg-brand-100 dark:hover:bg-brand-900/60
+                                              hover:text-brand-700 dark:hover:text-brand-300
+                                              border border-gray-200 dark:border-slate-700 transition">
+                                        ⬇ {{ f }}
+                                    </a>
+                                    {% endfor %}
+                                </div>
+                                {% endif %}
+
+                                <div class="mt-3 flex flex-wrap items-center gap-2">
+                                    {% if prev %}
+                                    <a href="/git/{{ device_type }}/{{ index }}/diff/{{ prev.sha }}/{{ c.sha }}"
+                                       title="Сравнить с предыдущей версией ({{ prev.short }})"
+                                       class="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg
+                                              bg-white dark:bg-slate-800
+                                              hover:bg-gray-100 dark:hover:bg-slate-700
+                                              border border-gray-200 dark:border-slate-700 transition">
+                                        🔍 <span class="font-mono">{{ prev.short }}</span>
+                                    </a>
+                                    {% endif %}
+
+                                </div>
                             </div>
 
-                            <div class="text-sm font-medium text-gray-900 dark:text-slate-100">
-                                {{ c.message }}
-                            </div>
-
-                            <div class="mt-1 text-[11px] text-gray-500 dark:text-slate-400">
-                                Автор: {{ c.author }}
-                            </div>
-
-                            {% if c.files %}
-                            <div class="mt-2 flex flex-wrap items-center gap-2">
-                                {% for f in c.files %}
-                                <a href="/git/{{ device_type }}/{{ index }}/download/{{ c.sha }}/{{ f }}"
-                                   class="inline-flex items-center gap-1 text-[11px] font-mono px-2 py-1 rounded
-                                          bg-gray-100 dark:bg-slate-800
-                                          text-gray-700 dark:text-slate-300
-                                          hover:bg-brand-100 dark:hover:bg-brand-900/60
-                                          hover:text-brand-700 dark:hover:text-brand-300
-                                          border border-gray-200 dark:border-slate-700 transition">
-                                    ⬇ {{ f }}
-                                </a>
-                                {% endfor %}
-                            </div>
-                            {% endif %}
-
+                            {# ---- Правая колонка: заметка (50%, без фона, с разделителем) ---- #}
                             {% if c.note %}
-                            <div class="mt-3 px-3 py-2 rounded-lg
-                                        bg-amber-50 dark:bg-amber-950/40
-                                        border border-amber-200 dark:border-amber-900
-                                        text-xs text-amber-900 dark:text-amber-200">
-                                💬 {{ c.note }}
+                            <div class="mt-3 md:mt-0 md:pl-4 md:w-1/2 md:shrink-0
+                                        text-xs text-gray-600 dark:text-slate-400
+                                        whitespace-pre-wrap break-words">
+                                <span class="mr-1 text-gray-400 dark:text-slate-500">💬</span>{{ c.note }}
                             </div>
                             {% endif %}
+                                    <button type="button"
+                                            onclick='editNote({{ c.sha | tojson }}, {{ c.note | tojson }})'
+                                            class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+                                            bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                                            border border-gray-200 dark:border-slate-700 transition">
+                                        💬 {{ 'Изменить' if c.note else 'Заметка' }}
+                                    </button>
+
                         </div>
-
-                        <div class="shrink-0 flex items-center gap-2">
-                            {% if prev %}
-                            <a href="/git/{{ device_type }}/{{ index }}/diff/{{ prev.sha }}/{{ c.sha }}"
-                               title="Сравнить с предыдущей версией ({{ prev.short }})"
-                               class="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg
-                                      bg-white dark:bg-slate-800
-                                      hover:bg-gray-100 dark:hover:bg-slate-700
-                                      border border-gray-200 dark:border-slate-700 transition">
-                                🔍 <span class="font-mono">{{ prev.short }}</span>
-                            </a>
-                            {% endif %}
-
-                            <button type="button"
-                                    onclick='editNote({{ c.sha | tojson }}, {{ c.note | tojson }})'
-                                    class="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg
-                                           bg-white dark:bg-slate-800
-                                           hover:bg-gray-100 dark:hover:bg-slate-700
-                                           border border-gray-200 dark:border-slate-700 transition">
-                                💬 {{ 'Изменить' if c.note else 'Заметка' }}
-                            </button>
-                        </div>
-
                     </div>
                 </li>
                 {% endfor %}
