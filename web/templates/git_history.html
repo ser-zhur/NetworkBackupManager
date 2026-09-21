@@ -10,7 +10,7 @@
     {% include "_header.html" %}
 {% endwith %}
 
-<main class="max-w-6xl mx-auto px-5 py-8 pb-32">
+<main class="max-w-6xl mx-auto px-5 py-8">
 
     <!-- Заголовок -->
     <div class="flex flex-wrap items-start justify-between gap-4 mb-6">
@@ -30,9 +30,43 @@
             </p>
         </div>
 
-        <div class="flex items-center gap-2">
+        <div class="flex flex-wrap items-center gap-2">
+
+            {# Счётчик выделенных коммитов — виден, когда что-то выбрано #}
+            <span id="compare-count-label"
+                  class="hidden items-center gap-1 px-3 h-9 rounded-lg text-xs font-medium
+                         bg-gray-100 dark:bg-slate-800
+                         text-gray-700 dark:text-slate-300
+                         border border-gray-200 dark:border-slate-700">
+                Выбрано: <b id="compare-count-value">0</b>/2
+            </span>
+
+            {# Кнопка очистки выделения — видна, когда что-то выбрано #}
+            <button type="button"
+                    id="compare-clear-btn"
+                    onclick="clearSelection()"
+                    title="Сбросить выделение"
+                    class="hidden items-center justify-center w-9 h-9 rounded-lg
+                           bg-white dark:bg-slate-800
+                           hover:bg-gray-100 dark:hover:bg-slate-700
+                           border border-gray-200 dark:border-slate-700 transition
+                           text-gray-500 dark:text-slate-400">
+                ✕
+            </button>
+
+            {# Кнопка «Сравнить» — неактивна, пока не выбрано ровно 2 #}
+            <button type="button"
+                    id="compare-btn"
+                    onclick="compareSelected()"
+                    disabled
+                    class="inline-flex items-center justify-center gap-2 px-4 h-9 rounded-lg text-sm font-medium
+                           bg-brand-600 hover:bg-brand-700 text-white shadow-sm transition
+                           disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-brand-600">
+                🔍 Сравнить
+            </button>
+
             <a href="/?selected={{ device_type }}/{{ index }}"
-               class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+               class="inline-flex items-center justify-center gap-2 px-4 h-9 rounded-lg text-sm font-medium
                       bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
                       border border-gray-200 dark:border-slate-700 transition">
                 ← К устройству
@@ -78,7 +112,6 @@
         <div class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm overflow-hidden">
             <ul class="divide-y divide-gray-100 dark:divide-slate-800">
                 {% for c in commits %}
-                    {% set prev = commits[loop.index0 + 1] if loop.index0 + 1 < commits|length else None %}
                 <li class="px-5 py-4 hover:bg-gray-50 dark:hover:bg-slate-800/40 transition">
                     <div class="flex items-start gap-4">
 
@@ -92,12 +125,13 @@
                                    onchange="updateCompareBar()">
                         </div>
 
-                        <!-- Двухколоночный блок: инфа о коммите | заметка -->
-                        <div class="min-w-0 flex-1 flex flex-col md:flex-row md:items-stretch">
+                        <!-- Трёхколоночный grid: инфа о коммите | заметка | кнопка -->
+                        <div class="min-w-0 flex-1
+                                    grid grid-cols-1 md:grid-cols-[1fr_2fr_8rem]
+                                    md:gap-4 md:items-stretch">
 
-                            {# ---- Левая колонка: информация о коммите + действия ---- #}
-                            <div class="min-w-0 flex-1 md:pr-4
-                                        {% if c.note %}md:border-r md:border-gray-100 dark:md:border-slate-800{% endif %}">
+                            {# ---- Колонка 1: информация о коммите ---- #}
+                            <div class="min-w-0 md:border-r md:border-gray-100 dark:md:border-slate-800">
                                 <div class="flex flex-wrap items-center gap-3 mb-1">
                                     <code class="font-mono text-xs px-2 py-0.5 rounded
                                                  bg-brand-100 dark:bg-brand-900/60
@@ -105,9 +139,10 @@
                                         {{ c.short }}
                                     </code>
                                     <span class="text-sm font-medium text-gray-900 dark:text-slate-100">
-                                    {{ c.message }}
+                                        {{ c.message }}
                                     </span>
                                 </div>
+
                                 {% if c.files %}
                                 <div class="mt-2 flex flex-wrap items-center gap-2">
                                     {% for f in c.files %}
@@ -123,39 +158,30 @@
                                     {% endfor %}
                                 </div>
                                 {% endif %}
-
-                                <div class="mt-3 flex flex-wrap items-center gap-2">
-                                    {% if prev %}
-                                    <a href="/git/{{ device_type }}/{{ index }}/diff/{{ prev.sha }}/{{ c.sha }}"
-                                       title="Сравнить с предыдущей версией ({{ prev.short }})"
-                                       class="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg
-                                              bg-white dark:bg-slate-800
-                                              hover:bg-gray-100 dark:hover:bg-slate-700
-                                              border border-gray-200 dark:border-slate-700 transition">
-                                        🔍 <span class="font-mono">{{ prev.short }}</span>
-                                    </a>
-                                    {% endif %}
-
-                                </div>
                             </div>
 
-                            {# ---- Правая колонка: заметка (50%, без фона, с разделителем) ---- #}
-                            {% if c.note %}
-                            <div class="mt-3 md:mt-0 md:pl-4 md:w-1/2 md:shrink-0
-                                        text-xs text-gray-600 dark:text-slate-400
-                                        whitespace-pre-wrap break-words">
-                                <span class="mr-1 text-gray-400 dark:text-slate-500">💬</span>{{ c.note }}
+                            {# ---- Колонка 2: заметка (без отступов слева) ---- #}
+                            {#  {{ c.note }} на одной строке с div — иначе whitespace-pre-wrap
+                                отрендерит отступ из шаблона.  #}
+                            <div class="mt-3 md:mt-0 min-w-0
+                                        text-xs text-gray-600 dark:text-slate-200
+                                        whitespace-pre-wrap break-words">{{ c.note }}</div>
+
+                            {# ---- Колонка 3: кнопка (всегда справа) ---- #}
+                            <div class="mt-3 md:mt-0 flex md:justify-end">
+                                <button type="button"
+                                        onclick='editNote({{ c.sha | tojson }}, {{ c.note | tojson }})'
+                                        class="shrink-0 inline-flex items-center justify-center gap-1.5 px-4 h-9 rounded-lg
+                                               text-sm font-medium
+                                               bg-white dark:bg-slate-800
+                                               hover:bg-gray-100 dark:hover:bg-slate-700
+                                               border border-gray-200 dark:border-slate-700 transition">
+                                    💬 {{ 'Изменить' if c.note else 'Заметка' }}
+                                </button>
                             </div>
-                            {% endif %}
-                                    <button type="button"
-                                            onclick='editNote({{ c.sha | tojson }}, {{ c.note | tojson }})'
-                                            class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
-                                            bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
-                                            border border-gray-200 dark:border-slate-700 transition">
-                                        💬 {{ 'Изменить' if c.note else 'Заметка' }}
-                                    </button>
 
                         </div>
+
                     </div>
                 </li>
                 {% endfor %}
@@ -170,45 +196,6 @@
     {% endif %}
 
 </main>
-
-<!-- Панель сравнения выбранных -->
-<div id="compare-bar"
-     class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 z-30
-            px-5 py-3 rounded-2xl shadow-xl
-            bg-white dark:bg-slate-900
-            border border-gray-200 dark:border-slate-700
-            flex items-center gap-4">
-
-    <div class="text-sm">
-        Выбрано: <b id="compare-count">0</b> из 2
-    </div>
-
-    <div id="compare-sha" class="hidden md:flex items-center gap-2 text-xs font-mono
-                                 text-gray-500 dark:text-slate-400">
-        <span id="compare-a" class="px-2 py-0.5 rounded bg-rose-100 dark:bg-rose-900/60 text-rose-700 dark:text-rose-300">-</span>
-        <span>→</span>
-        <span id="compare-b" class="px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300">-</span>
-    </div>
-
-    <button type="button"
-            onclick="compareSelected()"
-            id="compare-btn"
-            disabled
-            class="px-4 py-2 rounded-lg text-sm font-medium
-                   bg-brand-600 hover:bg-brand-700 text-white shadow-sm transition
-                   disabled:opacity-40 disabled:cursor-not-allowed">
-        🔍 Сравнить
-    </button>
-
-    <button type="button"
-            onclick="clearSelection()"
-            class="px-3 py-2 rounded-lg text-sm font-medium
-                   bg-white dark:bg-slate-800
-                   hover:bg-gray-100 dark:hover:bg-slate-700
-                   border border-gray-200 dark:border-slate-700 transition">
-        ✕
-    </button>
-</div>
 
 <!-- Диалог заметки -->
 <dialog id="note-dialog"
@@ -267,34 +254,39 @@ function editNote(sha, currentNote) {
 
 function updateCompareBar() {
     const selected = Array.from(document.querySelectorAll('.commit-selector:checked'));
-    const bar = document.getElementById('compare-bar');
-    const count = document.getElementById('compare-count');
-    const btn = document.getElementById('compare-btn');
+    const count = selected.length;
 
-    count.textContent = selected.length;
+    const countLabel = document.getElementById('compare-count-label');
+    const countValue = document.getElementById('compare-count-value');
+    const clearBtn   = document.getElementById('compare-clear-btn');
+    const compareBtn = document.getElementById('compare-btn');
 
-    if (selected.length === 0) {
-        bar.classList.add('hidden');
-        return;
+    if (count === 0) {
+        countLabel.classList.add('hidden');
+        countLabel.classList.remove('inline-flex');
+        clearBtn.classList.add('hidden');
+        clearBtn.classList.remove('inline-flex');
+    } else {
+        countLabel.classList.remove('hidden');
+        countLabel.classList.add('inline-flex');
+        clearBtn.classList.remove('hidden');
+        clearBtn.classList.add('inline-flex');
+        countValue.textContent = count;
     }
-    bar.classList.remove('hidden');
 
-    const a = selected[0] ? selected[0].dataset.short : '-';
-    const b = selected[1] ? selected[1].dataset.short : '-';
-    document.getElementById('compare-a').textContent = a;
-    document.getElementById('compare-b').textContent = b;
+    // Сравнивать можно ровно два коммита.
+    compareBtn.disabled = (count !== 2);
 
-    if (selected.length >= 2) {
-        document.querySelectorAll('.commit-selector').forEach(cb => {
+    // Когда выбрано два — остальные чекбоксы блокируем,
+    // чтобы нельзя было отметить третий.
+    const selectors = document.querySelectorAll('.commit-selector');
+    if (count >= 2) {
+        selectors.forEach(cb => {
             if (!cb.checked) cb.disabled = true;
         });
     } else {
-        document.querySelectorAll('.commit-selector').forEach(cb => {
-            cb.disabled = false;
-        });
+        selectors.forEach(cb => { cb.disabled = false; });
     }
-
-    btn.disabled = selected.length !== 2;
 }
 
 function clearSelection() {
@@ -324,6 +316,15 @@ function compareSelected() {
     window.location.href =
         `/git/{{ device_type }}/{{ index }}/diff/${shaA}/${shaB}`;
 }
+
+// На случай, если пользователь вернётся с diff-страницы по «назад»
+// в bfcache — состояние чекбоксов восстанавливается, а кнопка
+// «Сравнить» могла остаться выключенной из прошлой сессии.
+window.addEventListener('pageshow', (event) => {
+    if (event.persisted) {
+        updateCompareBar();
+    }
+});
 </script>
 
 </body>
