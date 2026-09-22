@@ -27,21 +27,27 @@
                 </span>
                 <span>·</span>
                 <span>Версий: <b class="text-gray-700 dark:text-slate-200">{{ total }}</b></span>
+                {% if total_marked %}
+                    <span>·</span>
+                    <span class="text-rose-600 dark:text-rose-400 font-medium">
+                        🗑 помечено: <b>{{ total_marked }}</b>
+                    </span>
+                {% endif %}
             </p>
         </div>
 
         <div class="flex flex-wrap items-center gap-2">
 
-            {# Счётчик выделенных коммитов — виден, когда что-то выбрано #}
+            {# Счётчик выделенных #}
             <span id="compare-count-label"
                   class="hidden items-center gap-1 px-3 h-9 rounded-lg text-xs font-medium
                          bg-gray-100 dark:bg-slate-800
                          text-gray-700 dark:text-slate-300
                          border border-gray-200 dark:border-slate-700">
-                Выбрано: <b id="compare-count-value">0</b>/2
+                Выбрано: <b id="compare-count-value">0</b>
             </span>
 
-            {# Кнопка очистки выделения — видна, когда что-то выбрано #}
+            {# Кнопка очистки выделения #}
             <button type="button"
                     id="compare-clear-btn"
                     onclick="clearSelection()"
@@ -54,7 +60,7 @@
                 ✕
             </button>
 
-            {# Кнопка «Сравнить» — неактивна, пока не выбрано ровно 2 #}
+            {# Сравнить — активна при ровно 2 выбранных #}
             <button type="button"
                     id="compare-btn"
                     onclick="compareSelected()"
@@ -65,6 +71,26 @@
                 🔍 Сравнить
             </button>
 
+            {# Удалить выбранное — активна при ≥1 выбранном #}
+            <button type="button"
+                    id="delete-selected-btn"
+                    onclick="deleteSelected()"
+                    disabled
+                    class="inline-flex items-center justify-center gap-2 px-4 h-9 rounded-lg text-sm font-medium
+                           bg-rose-600 hover:bg-rose-700 text-white shadow-sm transition
+                           disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-rose-600">
+                🗑 Удалить
+            </button>
+
+            {# Очистить старые #}
+            <button type="button"
+                    onclick="openCleanOld()"
+                    class="inline-flex items-center justify-center gap-2 px-4 h-9 rounded-lg text-sm font-medium
+                           bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                           border border-gray-200 dark:border-slate-700 transition">
+                🧹 Очистить старые…
+            </button>
+
             <a href="/?selected={{ device_type }}/{{ index }}"
                class="inline-flex items-center justify-center gap-2 px-4 h-9 rounded-lg text-sm font-medium
                       bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
@@ -73,6 +99,60 @@
             </a>
         </div>
     </div>
+
+    {# Ошибка sweep #}
+    {% if sweep_error %}
+    <div class="mb-5 px-4 py-3 rounded-xl
+                bg-rose-50 dark:bg-rose-950/40
+                border border-rose-200 dark:border-rose-900
+                text-sm text-rose-700 dark:text-rose-300
+                flex items-start gap-3">
+        <span class="text-lg shrink-0">⚠️</span>
+        <div class="min-w-0">
+            <b>Не удалось применить очистку</b>
+            <div class="mt-0.5 font-mono text-xs break-words">{{ sweep_error }}</div>
+        </div>
+    </div>
+    {% endif %}
+
+    {# Баннер помеченных #}
+    {% if total_marked %}
+    <div class="mb-5 px-4 py-3 rounded-xl
+                bg-amber-50 dark:bg-amber-950/40
+                border border-amber-200 dark:border-amber-900
+                flex flex-wrap items-center gap-3">
+        <span class="text-lg shrink-0">🗑</span>
+        <div class="flex-1 min-w-0 text-sm text-amber-900 dark:text-amber-200">
+            Помечено к удалению: <b>{{ total_marked }}</b>
+            {{ 'версия' if total_marked == 1 else 'версий' }}.
+            Файлы ещё на месте — удаление произойдёт только после применения.
+        </div>
+
+        <form action="/git/{{ device_type }}/{{ index }}/unmark-delete"
+              method="POST"
+              class="inline">
+            <input type="hidden" name="scope" value="all">
+            <button type="submit"
+                    class="inline-flex items-center gap-1.5 px-3 h-9 rounded-lg text-sm font-medium
+                           bg-white dark:bg-slate-800
+                           hover:bg-gray-100 dark:hover:bg-slate-700
+                           border border-amber-300 dark:border-amber-700 transition">
+                ↩ Отменить все
+            </button>
+        </form>
+
+        <form action="/git/{{ device_type }}/{{ index }}/sweep"
+              method="POST"
+              class="inline"
+              onsubmit="return confirm('Удалить {{ total_marked }} версий?\n\nДействие необратимо. Файлы этих версий будут удалены из истории.');">
+            <button type="submit"
+                    class="inline-flex items-center gap-1.5 px-4 h-9 rounded-lg text-sm font-medium
+                           bg-rose-600 hover:bg-rose-700 text-white shadow-sm transition">
+                ✓ Применить очистку
+            </button>
+        </form>
+    </div>
+    {% endif %}
 
     {% if not git_available %}
         <div class="bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 rounded-2xl p-8 text-center">
@@ -112,39 +192,66 @@
         <div class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm overflow-hidden">
             <ul class="divide-y divide-gray-100 dark:divide-slate-800">
                 {% for c in commits %}
-                <li class="px-5 py-4 hover:bg-gray-50 dark:hover:bg-slate-800/40 transition">
+                <li class="px-5 py-4 transition
+                           {% if c.marked %}
+                           bg-rose-50/50 dark:bg-rose-950/20
+                           {% else %}
+                           hover:bg-gray-50 dark:hover:bg-slate-800/40
+                           {% endif %}">
                     <div class="flex items-start gap-4">
 
                         <!-- Чекбокс выбора -->
                         <div class="flex items-center pt-1 shrink-0">
                             <input type="checkbox"
                                    class="commit-selector w-4 h-4 rounded
-                                          text-brand-600 focus:ring-brand-500 cursor-pointer"
+                                          text-brand-600 focus:ring-brand-500 cursor-pointer
+                                          disabled:cursor-not-allowed disabled:opacity-40"
                                    data-sha="{{ c.sha }}"
                                    data-short="{{ c.short }}"
-                                   onchange="updateCompareBar()">
+                                   {% if c.marked %}disabled{% endif %}
+                                   onchange="updateSelection()">
                         </div>
 
-                        <!-- Трёхколоночный grid: инфа о коммите | заметка | кнопка -->
-                        <div class="min-w-0 flex-1
-                                    grid grid-cols-1 md:grid-cols-[1fr_2fr_8rem]
-                                    md:gap-4 md:items-stretch">
+                        <!-- Двухколоночный блок: инфа о коммите | заметка + кнопка -->
+                        <div class="min-w-0 flex-1 flex flex-col md:flex-row md:items-stretch">
 
-                            {# ---- Колонка 1: информация о коммите ---- #}
-                            <div class="min-w-0 md:border-r md:border-gray-100 dark:md:border-slate-800">
+                            {# ---- Левая колонка: информация о коммите ---- #}
+                            <div class="min-w-0 flex-1 md:pr-4
+                                        md:border-r md:border-gray-100 dark:md:border-slate-800">
                                 <div class="flex flex-wrap items-center gap-3 mb-1">
                                     <code class="font-mono text-xs px-2 py-0.5 rounded
+                                                 {% if c.marked %}
+                                                 bg-rose-100 dark:bg-rose-900/60
+                                                 text-rose-700 dark:text-rose-300
+                                                 {% else %}
                                                  bg-brand-100 dark:bg-brand-900/60
-                                                 text-brand-700 dark:text-brand-300 font-semibold">
+                                                 text-brand-700 dark:text-brand-300
+                                                 {% endif %}
+                                                 font-semibold">
                                         {{ c.short }}
                                     </code>
-                                    <span class="text-sm font-medium text-gray-900 dark:text-slate-100">
+
+                                    {% if c.marked %}
+                                    <span class="text-[10px] font-bold uppercase tracking-wider
+                                                 px-2 py-0.5 rounded
+                                                 bg-rose-600 text-white">
+                                        🗑 помечено
+                                    </span>
+                                    {% endif %}
+
+                                    <span class="text-sm font-medium
+                                                 {% if c.marked %}
+                                                 text-gray-500 dark:text-slate-500 line-through
+                                                 {% else %}
+                                                 text-gray-900 dark:text-slate-100
+                                                 {% endif %}">
                                         {{ c.message }}
                                     </span>
                                 </div>
 
                                 {% if c.files %}
-                                <div class="mt-2 flex flex-wrap items-center gap-2">
+                                <div class="mt-2 flex flex-wrap items-center gap-2
+                                            {% if c.marked %}opacity-60{% endif %}">
                                     {% for f in c.files %}
                                     <a href="/git/{{ device_type }}/{{ index }}/download/{{ c.sha }}/{{ f }}"
                                        class="inline-flex items-center gap-1 text-[11px] font-mono px-2 py-1 rounded
@@ -160,28 +267,32 @@
                                 {% endif %}
                             </div>
 
-                            {# ---- Колонка 2: заметка (без отступов слева) ---- #}
-                            {#  {{ c.note }} на одной строке с div — иначе whitespace-pre-wrap
-                                отрендерит отступ из шаблона.  #}
-                            <div class="mt-3 md:mt-0 min-w-0
-                                        text-xs text-gray-600 dark:text-slate-200
-                                        whitespace-pre-wrap break-words">{{ c.note }}</div>
+                            {# ---- Правая колонка: заметка + кнопка ---- #}
+                            <div class="mt-3 md:mt-0 md:pl-4 md:w-[40%] md:shrink-0
+                                        flex items-start gap-3">
 
-                            {# ---- Колонка 3: кнопка (всегда справа) ---- #}
-                            <div class="mt-3 md:mt-0 flex md:justify-end">
+                                {% if c.note %}
+                                <div class="flex-1 min-w-0 text-xs text-gray-600 dark:text-slate-200
+                                            whitespace-pre-wrap break-words
+                                            {% if c.marked %}opacity-60{% endif %}">
+                                    {{ c.note }}
+                                </div>
+                                {% endif %}
+
                                 <button type="button"
                                         onclick='editNote({{ c.sha | tojson }}, {{ c.note | tojson }})'
+                                        {% if c.marked %}disabled{% endif %}
                                         class="shrink-0 inline-flex items-center justify-center gap-1.5 px-4 h-9 rounded-lg
                                                text-sm font-medium
                                                bg-white dark:bg-slate-800
                                                hover:bg-gray-100 dark:hover:bg-slate-700
-                                               border border-gray-200 dark:border-slate-700 transition">
+                                               border border-gray-200 dark:border-slate-700 transition
+                                               disabled:opacity-40 disabled:cursor-not-allowed">
                                     💬 {{ 'Изменить' if c.note else 'Заметка' }}
                                 </button>
                             </div>
 
                         </div>
-
                     </div>
                 </li>
                 {% endfor %}
@@ -238,7 +349,147 @@
     </form>
 </dialog>
 
+<!-- Диалог подтверждения удаления выбранных -->
+<dialog id="delete-confirm-dialog"
+        class="rounded-2xl p-6 max-w-md w-full
+               bg-white dark:bg-slate-900
+               text-gray-900 dark:text-slate-100
+               border border-gray-200 dark:border-slate-700
+               shadow-xl backdrop:bg-black/50">
+    <div class="flex items-start gap-3 mb-4">
+        <div class="text-3xl shrink-0">⚠️</div>
+        <div>
+            <h3 class="text-base font-semibold mb-1">Удалить версии?</h3>
+            <p class="text-sm text-gray-600 dark:text-slate-300">
+                Будет помечено к удалению:
+                <b id="delete-confirm-count">0</b>.
+            </p>
+        </div>
+    </div>
+
+    <div class="px-3 py-2 rounded-lg
+                bg-rose-50 dark:bg-rose-950/40
+                border border-rose-200 dark:border-rose-900
+                text-xs text-rose-800 dark:text-rose-300 mb-4">
+        Версии будут удалены из истории без возможности восстановления.
+        Файлы последнего бэкапа на диске не затрагиваются.
+    </div>
+
+    <div class="flex justify-end gap-2">
+        <button type="button"
+                onclick="document.getElementById('delete-confirm-dialog').close()"
+                class="px-4 py-2 rounded-lg text-sm font-medium
+                       bg-white dark:bg-slate-800
+                       hover:bg-gray-100 dark:hover:bg-slate-700
+                       border border-gray-200 dark:border-slate-700 transition">
+            Отмена
+        </button>
+        <button type="button"
+                onclick="submitDeleteForm()"
+                class="px-4 py-2 rounded-lg text-sm font-medium
+                       bg-rose-600 hover:bg-rose-700 text-white shadow-sm transition">
+            🗑 Пометить к удалению
+        </button>
+    </div>
+</dialog>
+
+<!-- Диалог «Очистить старые» -->
+<dialog id="clean-old-dialog"
+        class="rounded-2xl p-6 max-w-lg w-full
+               bg-white dark:bg-slate-900
+               text-gray-900 dark:text-slate-100
+               border border-gray-200 dark:border-slate-700
+               shadow-xl backdrop:bg-black/50">
+    <form method="POST"
+          action="/git/{{ device_type }}/{{ index }}/mark-older-than">
+        <h3 class="text-base font-semibold mb-1">Очистить старые версии</h3>
+        <p class="text-xs text-gray-500 dark:text-slate-400 mb-4">
+            Версии будут помечены к удалению. Удаление произойдёт
+            только после подтверждения на странице.
+        </p>
+
+        <div class="space-y-4">
+            <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
+                    Удалить версии старше даты:
+                </label>
+                <input type="date"
+                       name="older_than"
+                       id="clean-old-date"
+                       required
+                       class="w-full rounded-lg px-3 py-2 text-sm font-mono
+                              bg-gray-50 dark:bg-slate-950
+                              border border-gray-200 dark:border-slate-800
+                              focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+                <p class="mt-1 text-[11px] text-gray-500 dark:text-slate-400">
+                    По умолчанию — сегодня минус 365 дней.
+                </p>
+            </div>
+
+            <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
+                    Но всегда оставлять последние:
+                </label>
+                <div class="flex items-center gap-3">
+                    <input type="number"
+                           name="keep_last"
+                           value="20"
+                           min="0"
+                           max="10000"
+                           class="w-32 rounded-lg px-3 py-2 text-sm font-mono
+                                  bg-gray-50 dark:bg-slate-950
+                                  border border-gray-200 dark:border-slate-800
+                                  focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+                    <span class="text-sm text-gray-600 dark:text-slate-400">версий</span>
+                </div>
+                <p class="mt-1 text-[11px] text-gray-500 dark:text-slate-400">
+                    Защита от удаления всей истории, если бэкапы давно не делались.
+                </p>
+            </div>
+
+            <label class="flex items-center gap-3">
+                <input type="checkbox"
+                       name="keep_with_notes"
+                       value="true"
+                       checked
+                       class="text-brand-600 focus:ring-brand-500">
+                <span class="text-sm text-gray-700 dark:text-slate-300">
+                    Защищать версии с заметками
+                </span>
+            </label>
+        </div>
+
+        <div class="mt-5 flex justify-end gap-2">
+            <button type="button"
+                    onclick="document.getElementById('clean-old-dialog').close()"
+                    class="px-4 py-2 rounded-lg text-sm font-medium
+                           bg-white dark:bg-slate-800
+                           hover:bg-gray-100 dark:hover:bg-slate-700
+                           border border-gray-200 dark:border-slate-700 transition">
+                Отмена
+            </button>
+            <button type="submit"
+                    class="px-4 py-2 rounded-lg text-sm font-medium
+                           bg-rose-600 hover:bg-rose-700 text-white shadow-sm transition">
+                Пометить к удалению
+            </button>
+        </div>
+    </form>
+</dialog>
+
+<!-- Скрытая форма для отправки помеченных sha -->
+<form id="delete-form"
+      method="POST"
+      action="/git/{{ device_type }}/{{ index }}/mark-delete"
+      class="hidden">
+    <input type="hidden" name="shas" id="delete-form-shas" value="">
+</form>
+
 <script>
+// ============================================================
+// ЗАМЕТКА
+// ============================================================
+
 function editNote(sha, currentNote) {
     const form = document.getElementById('note-form');
     const shaInput = document.getElementById('note-sha');
@@ -252,15 +503,34 @@ function editNote(sha, currentNote) {
     noteInput.focus();
 }
 
-function updateCompareBar() {
-    const selected = Array.from(document.querySelectorAll('.commit-selector:checked'));
+// ============================================================
+// ВЫДЕЛЕНИЕ
+// ============================================================
+//
+// Один общий обработчик onchange у чекбоксов.
+// Обновляет:
+//   • счётчик и кнопку очистки
+//   • активность кнопки «Сравнить» (ровно 2)
+//   • активность кнопки «Удалить» (≥1)
+//   • блокировку остальных чекбоксов при 2 выбранных
+//     (только для режима сравнения)
+
+function updateSelection() {
+    const allSelectors = Array.from(
+        document.querySelectorAll('.commit-selector')
+    );
+    const selected = allSelectors.filter(
+        cb => cb.checked && !cb.disabled
+    );
     const count = selected.length;
 
     const countLabel = document.getElementById('compare-count-label');
     const countValue = document.getElementById('compare-count-value');
     const clearBtn   = document.getElementById('compare-clear-btn');
     const compareBtn = document.getElementById('compare-btn');
+    const deleteBtn  = document.getElementById('delete-selected-btn');
 
+    // Счётчик
     if (count === 0) {
         countLabel.classList.add('hidden');
         countLabel.classList.remove('inline-flex');
@@ -274,55 +544,136 @@ function updateCompareBar() {
         countValue.textContent = count;
     }
 
-    // Сравнивать можно ровно два коммита.
+    // Активность кнопок
     compareBtn.disabled = (count !== 2);
+    deleteBtn.disabled  = (count === 0);
 
-    // Когда выбрано два — остальные чекбоксы блокируем,
-    // чтобы нельзя было отметить третий.
-    const selectors = document.querySelectorAll('.commit-selector');
-    if (count >= 2) {
-        selectors.forEach(cb => {
-            if (!cb.checked) cb.disabled = true;
+    // Блокировка «третьего» — только для сравнения.
+    // Для удаления можно выбирать сколько угодно.
+    // Поэтому применяем блокировку только когда
+    // сравнение станет возможно.
+    if (count === 2) {
+        allSelectors.forEach(cb => {
+            if (!cb.checked && !cb.dataset.permanentlyDisabled) {
+                cb.disabled = true;
+            }
         });
-    } else {
-        selectors.forEach(cb => { cb.disabled = false; });
+    } else if (count < 2) {
+        // Разблокируем тех, кого заблокировали
+        // из-за «ровно 2 выбранных».
+        allSelectors.forEach(cb => {
+            if (cb.dataset.permanentlyDisabled === '1') return;
+            cb.disabled = false;
+        });
     }
+    // count > 2: не трогаем блокировку, пользователь
+    // уже выбрал больше, чем нужно для сравнения. Кнопка
+    // «Удалить» активна, «Сравнить» — нет.
 }
 
 function clearSelection() {
     document.querySelectorAll('.commit-selector').forEach(cb => {
+        if (cb.dataset.permanentlyDisabled === '1') return;
         cb.checked = false;
         cb.disabled = false;
     });
-    updateCompareBar();
+    updateSelection();
 }
+
+// ============================================================
+// СРАВНЕНИЕ
+// ============================================================
 
 function compareSelected() {
-    const selected = Array.from(document.querySelectorAll('.commit-selector:checked'));
-    if (selected.length !== 2) return;
+    const selected = Array.from(
+        document.querySelectorAll('.commit-selector:checked')
+    ).filter(cb => !cb.disabled || cb.dataset.permanentlyDisabled !== '1');
 
-    // В списке свежие сверху. Коммит с большим индексом в DOM — старее.
-    // Для diff: «было» = старее (A), «стало» = свежее (B).
+    // Берём только «истинно выбранные» (не заблокированные)
+    const trulyChecked = Array.from(
+        document.querySelectorAll('.commit-selector')
+    ).filter(cb => cb.checked && cb.dataset.permanentlyDisabled !== '1');
+
+    if (trulyChecked.length !== 2) return;
+
     const all = Array.from(document.querySelectorAll('.commit-selector'));
-    const idx1 = all.indexOf(selected[0]);
-    const idx2 = all.indexOf(selected[1]);
+    const idx1 = all.indexOf(trulyChecked[0]);
+    const idx2 = all.indexOf(trulyChecked[1]);
 
-    const olderCb = idx1 > idx2 ? selected[0] : selected[1];
-    const newerCb = idx1 > idx2 ? selected[1] : selected[0];
-
-    const shaA = olderCb.dataset.sha;
-    const shaB = newerCb.dataset.sha;
+    const olderCb = idx1 > idx2 ? trulyChecked[0] : trulyChecked[1];
+    const newerCb = idx1 > idx2 ? trulyChecked[1] : trulyChecked[0];
 
     window.location.href =
-        `/git/{{ device_type }}/{{ index }}/diff/${shaA}/${shaB}`;
+        `/git/{{ device_type }}/{{ index }}/diff/` +
+        `${olderCb.dataset.sha}/${newerCb.dataset.sha}`;
 }
 
-// На случай, если пользователь вернётся с diff-страницы по «назад»
-// в bfcache — состояние чекбоксов восстанавливается, а кнопка
-// «Сравнить» могла остаться выключенной из прошлой сессии.
+// ============================================================
+// УДАЛЕНИЕ
+// ============================================================
+
+function deleteSelected() {
+    const selected = Array.from(
+        document.querySelectorAll('.commit-selector')
+    ).filter(cb => cb.checked && cb.dataset.permanentlyDisabled !== '1');
+
+    if (selected.length === 0) return;
+
+    document.getElementById('delete-confirm-count').textContent =
+        selected.length;
+
+    document.getElementById('delete-confirm-dialog').showModal();
+}
+
+function submitDeleteForm() {
+    const selected = Array.from(
+        document.querySelectorAll('.commit-selector')
+    ).filter(cb => cb.checked && cb.dataset.permanentlyDisabled !== '1');
+
+    const shas = selected.map(cb => cb.dataset.sha).join(',');
+
+    document.getElementById('delete-form-shas').value = shas;
+    document.getElementById('delete-form').submit();
+}
+
+// ============================================================
+// ОЧИСТКА СТАРЫХ
+// ============================================================
+
+function openCleanOld() {
+    // По умолчанию: сегодня минус 365 дней
+    const today = new Date();
+    today.setDate(today.getDate() - 365);
+    const iso = today.toISOString().slice(0, 10);
+
+    document.getElementById('clean-old-date').value = iso;
+
+    document.getElementById('clean-old-dialog').showModal();
+}
+
+// ============================================================
+// ИНИЦИАЛИЗАЦИЯ ПРИ ЗАГРУЗКЕ
+// ============================================================
+
+document.addEventListener('DOMContentLoaded', () => {
+    // Запоминаем «постоянно выключенные» (помеченные) —
+    // их нельзя переключить.
+    document.querySelectorAll('.commit-selector').forEach(cb => {
+        if (cb.disabled) {
+            cb.dataset.permanentlyDisabled = '1';
+        }
+    });
+
+    updateSelection();
+});
+
+// ============================================================
+// BFCACHE
+// ============================================================
+
 window.addEventListener('pageshow', (event) => {
     if (event.persisted) {
-        updateCompareBar();
+        updateSelection();
     }
 });
 </script>

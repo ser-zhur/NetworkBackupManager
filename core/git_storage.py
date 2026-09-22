@@ -504,18 +504,27 @@ class GitStorage:
     # -----------------------------------------------------
     # HISTORY
     # -----------------------------------------------------
-
-    def get_history(self, limit: int = 50) -> list:
+    
+    def get_history(
+        self,
+        limit: int = 50,
+        include_marked: bool = False,
+    ) -> list:
         """
-        История коммитов без помеченных к удалению.
+        История коммитов.
 
-        Помеченные (см. mark_deleted) не показываются в UI,
-        но физически остаются в .git до rebuild_history.
+        include_marked=False (default) — помеченные к удалению
+        исключаются. Используется на главной странице, в
+        retention и на странице diff: пользователю там не
+        нужны «полуудалённые» версии.
 
-        Важно: Walker не имеет собственного лимита —
-        останавливаемся после сбора limit валидных записей.
-        Иначе на репе, где первые 50 коммитов помечены,
-        вернулось бы 0 вместо 50.
+        include_marked=True — все коммиты, включая помеченные.
+        Каждый получает флаг 'marked'. Используется на странице
+        /git/.../, где пользователь управляет пометками и
+        должен видеть, что уже отмечено.
+
+        Walker не имеет собственного лимита — останавливаемся
+        после сбора limit валидных записей.
         """
         if not self.is_initialized():
             return []
@@ -538,8 +547,9 @@ class GitStorage:
                 for entry in walker:
                     commit = entry.commit
                     sha = commit.id.decode()
+                    is_marked = sha in deleted
 
-                    if sha in deleted:
+                    if is_marked and not include_marked:
                         continue
 
                     result.append({
@@ -556,6 +566,7 @@ class GitStorage:
                         "files": self._list_files_at(
                             repo, commit.id
                         ),
+                        "marked": is_marked,
                     })
 
                     if len(result) >= limit:

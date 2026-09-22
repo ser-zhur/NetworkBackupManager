@@ -90,6 +90,13 @@ from core.git_storage import (
     is_available as git_available,
 )
 
+from core.maintenance import (
+    apply_retention,
+    mark_deleted as maint_mark_deleted,
+    unmark_deleted as maint_unmark_deleted,
+    sweep_repo,
+)
+
 # =========================================================
 # LOGGING
 # =========================================================
@@ -2333,15 +2340,22 @@ def git_history_page(
             status_code=404,
         )
 
-    commits = []
+        commits = []
     notes = {}
     available = git_available()
     initialized = storage.is_initialized() if available else False
+    total_marked = 0
 
     if initialized:
         try:
-            commits = storage.get_history(limit=limit)
+            # include_marked=True — показываем помеченные,
+            # чтобы пользователь видел, что попадёт под sweep.
+            commits = storage.get_history(
+                limit=limit,
+                include_marked=True,
+            )
             notes = storage.get_notes()
+            total_marked = len(storage.get_deleted_shas())
         except Exception as exc:
             logging.error(
                 "git: ошибка чтения истории %s/%s: %s",
@@ -2370,9 +2384,13 @@ def git_history_page(
             "backup_path": str(backup_path),
             "commits": commits,
             "total": len(commits),
+            "total_marked": total_marked,
             "limit": limit,
             "git_available": available,
             "git_initialized": initialized,
+            "sweep_error": request.query_params.get(
+                "sweep_error", ""
+            ),
         },
     )
 
@@ -2465,6 +2483,242 @@ async def git_set_note(
         status_code=303,
     )
 
+# =========================================================
+# GIT: MARK DELETE
+# =========================================================
+
+@app.post(
+    "/git/{device_type}/{index}/mark-delete",
+)
+async def git_mark_delete(
+    device_type: str,
+    index: int,
+    request: Request,
+    user: str = Depends(require_auth),
+):
+    """
+    Помечает выбранные версии к удалению.
+
+    Физического удаления не происходит — только запись
+    sha в .git/nbm_deleted.json. Пользователь увидит
+    изменения сразу (строки станут приглушёнными).
+    Реальное удаление — через /sweep.
+    """
+    router, backup_path, storage = _get_git_storage_for(
+        device_type, index
+    )
+    if router is None:
+        raise HTTPException(404, "Устройство не найдено")
+
+    if not git_available() or not storage.is_initialized():
+        raise HTTPException(404, "Репозиторий git недоступен")
+
+    form = await request.form()
+    shas_raw = form.get("shas") or ""
+    shas = {
+        s.strip()
+        for s in shas_raw.split(",")
+        if s.strip()
+    }
+
+    if shas:
+        added = maint_mark_deleted(backup_path, shas)
+        logging.info(
+            "git[%s/%s]: помечено к удалению %d версий "
+            "(запрос от %s)",
+            device_type, index, added, user,
+        )
+
+    return RedirectResponse(
+        url=f"/git/{device_type}/{index}",
+        status_code=303,
+    )
+
+
+@app.post(
+    "/git/{device_type}/{index}/unmark-delete",
+)
+async def git_unmark_delete(
+    device_type: str,
+    index: int,
+    request: Request,
+    user: str = Depends(require_auth),
+):
+    """
+    Снимает пометки. scope=all — очищает всё.
+    Иначе — по списку shas в поле.
+    """
+    router, backup_path, storage = _get_git_storage_for(
+        device_type, index
+    )
+    if router is None:
+        raise HTTPException(404, "Устройство не найдено")
+
+    if not git_available() or not storage.is_initialized():
+        raise HTTPException(404, "Репозиторий git недоступен")
+
+    form = await request.form()
+    scope = form.get("scope") or "selected"
+
+    if scope == "all":
+        removed = maint_unmark_deleted(backup_path, None)
+    else:
+        shas_raw = form.get("shas") or ""
+        shas = {
+            s.strip()
+            for s in shas_raw.split(",")
+            if s.strip()
+        }
+        removed = maint_unmark_deleted(backup_path, shas) if shas else 0
+
+    if removed:
+        logging.info(
+            "git[%s/%s]: снято %d пометок (запрос от %s)",
+            device_type, index, removed, user,
+        )
+
+    return RedirectResponse(
+        url=f"/git/{device_type}/{index}",
+        status_code=303,
+    )
+
+
+@app.post(
+    "/git/{device_type}/{index}/sweep",
+)
+async def git_sweep(
+    device_type: str,
+    index: int,
+    user: str = Depends(require_auth),
+):
+    """
+    Физически пересобирает историю: удаляет помеченные
+    коммиты, перепривязывает parent-указатели, освобождает
+    объекты через git gc (если git есть в PATH).
+    """
+    from urllib.parse import quote
+
+    router, backup_path, storage = _get_git_storage_for(
+        device_type, index
+    )
+    if router is None:
+        raise HTTPException(404, "Устройство не найдено")
+
+    if not git_available() or not storage.is_initialized():
+        raise HTTPException(404, "Репозиторий git недоступен")
+
+    ok, msg = sweep_repo(backup_path)
+
+    if ok:
+        logging.info(
+            "git[%s/%s]: sweep — %s (запрос от %s)",
+            device_type, index, msg, user,
+        )
+        return RedirectResponse(
+            url=f"/git/{device_type}/{index}",
+            status_code=303,
+        )
+
+    logging.error(
+        "git[%s/%s]: sweep не удался — %s",
+        device_type, index, msg,
+    )
+
+    return RedirectResponse(
+        url=(
+            f"/git/{device_type}/{index}"
+            f"?sweep_error={quote(msg)}"
+        ),
+        status_code=303,
+    )
+
+
+@app.post(
+    "/git/{device_type}/{index}/mark-older-than",
+)
+async def git_mark_older_than(
+    device_type: str,
+    index: int,
+    request: Request,
+    user: str = Depends(require_auth),
+):
+    """
+    Помечает версии старше указанной даты.
+
+    Параметры формы:
+        older_than       — YYYY-MM-DD
+        keep_last        — int, минимум сохраняемых
+        keep_with_notes  — 'true' | отсутствует
+    """
+    router, backup_path, storage = _get_git_storage_for(
+        device_type, index
+    )
+    if router is None:
+        raise HTTPException(404, "Устройство не найдено")
+
+    if not git_available() or not storage.is_initialized():
+        raise HTTPException(404, "Репозиторий git недоступен")
+
+    form = await request.form()
+
+    older_than_str = (form.get("older_than") or "").strip()
+    keep_last_str = (form.get("keep_last") or "20").strip()
+    keep_with_notes = form.get("keep_with_notes") == "true"
+
+    # Парсинг даты
+    older_than_date = None
+    if older_than_str:
+        try:
+            older_than_date = datetime.strptime(
+                older_than_str, "%Y-%m-%d"
+            )
+        except ValueError:
+            logging.warning(
+                "git[%s/%s]: некорректная дата %r",
+                device_type, index, older_than_str,
+            )
+            return RedirectResponse(
+                url=f"/git/{device_type}/{index}",
+                status_code=303,
+            )
+
+    if older_than_date is None:
+        return RedirectResponse(
+            url=f"/git/{device_type}/{index}",
+            status_code=303,
+        )
+
+    try:
+        keep_last = max(0, int(keep_last_str))
+    except (TypeError, ValueError):
+        keep_last = 20
+
+    # Переводим дату в «дней назад» для apply_retention
+    age_days = (datetime.now() - older_than_date).days
+    if age_days < 1:
+        age_days = 1
+
+    marked = apply_retention(
+        backup_path,
+        {
+            "keep_last": keep_last,
+            "max_age_days": age_days,
+            "keep_with_notes": keep_with_notes,
+        },
+    )
+
+    logging.info(
+        "git[%s/%s]: помечено %d версий старше %s "
+        "(keep_last=%d, keep_with_notes=%s, запрос от %s)",
+        device_type, index,
+        len(marked), older_than_str,
+        keep_last, keep_with_notes, user,
+    )
+
+    return RedirectResponse(
+        url=f"/git/{device_type}/{index}",
+        status_code=303,
+    )
 
 # =========================================================
 # GIT: DIFF
@@ -2497,7 +2751,14 @@ def git_diff_page(
             status_code=404,
         )
 
-    history = storage.get_history(limit=500)
+    # include_marked=True — пользователь может сравнить
+    # версию, уже помеченную к удалению: например, чтобы
+    # убедиться, что удаляет именно то, что хотел.
+    history = storage.get_history(
+        limit=500,
+        include_marked=True,
+    )
+    
     by_short = {c["short"]: c["sha"] for c in history}
     by_full = {c["sha"]: c["sha"] for c in history}
 
