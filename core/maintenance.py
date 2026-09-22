@@ -94,6 +94,61 @@ def sweep_repo(repo_path) -> tuple[bool, str]:
 
     return True, msg
 
+def _iter_devices(plugin_manager):
+    """
+    Итератор по всем устройствам с заполненным backup_path.
+
+    yield (device_id, device_type, index, router, backup_path).
+
+    backup_path — абсолютный Path. Молча пропускает
+    устройства без backup_path и с неразрешимым путём.
+    """
+    from core.context import BASE_DIR
+
+    if plugin_manager is None:
+        return
+
+    for device_type, plugin_data in plugin_manager._plugins.items():
+        routers = plugin_data.get("routers", [])
+        for idx, router in enumerate(routers):
+            raw = router.get("backup_path", "")
+            if not raw:
+                continue
+
+            backup_path = Path(raw)
+            if not backup_path.is_absolute():
+                backup_path = (BASE_DIR / backup_path).resolve()
+
+            yield (
+                f"{device_type}/{idx}",
+                device_type,
+                idx,
+                router,
+                backup_path,
+            )
+
+
+def _ensure_plugin_manager(plugin_manager=None):
+    """
+    Возвращает переданный plugin_manager или загружает
+    новый. None в случае неудачи.
+    """
+    if plugin_manager is not None:
+        return plugin_manager
+
+    try:
+        from core.plugin_manager import PluginManager
+        pm = PluginManager()
+        pm.discover_and_load_plugins()
+        return pm
+    except Exception as exc:
+        logger.error(
+            "maintenance: не удалось загрузить PluginManager: %s",
+            exc,
+            exc_info=True,
+        )
+        return None
+
 
 def sweep_all_devices(plugin_manager=None) -> dict:
     """
@@ -101,56 +156,145 @@ def sweep_all_devices(plugin_manager=None) -> dict:
 
     Возвращает {device_id: (ok, message)}.
     """
+    plugin_manager = _ensure_plugin_manager(plugin_manager)
     if plugin_manager is None:
-        try:
-            from core.plugin_manager import PluginManager
-            pm = PluginManager()
-            pm.discover_and_load_plugins()
-            plugin_manager = pm
-        except Exception as exc:
-            logger.error(
-                "maintenance: не удалось загрузить PluginManager: %s",
-                exc,
-                exc_info=True,
-            )
-            return {}
+        return {}
 
     results: dict = {}
 
-    for device_type, plugin_data in plugin_manager._plugins.items():
-        routers = plugin_data.get("routers", [])
-        for idx, router in enumerate(routers):
-            device_id = f"{device_type}/{idx}"
+    for device_id, _dt, _idx, _router, backup_path in (
+        _iter_devices(plugin_manager)
+    ):
+        if not backup_path.exists():
+            continue
 
-            raw_path = router.get("backup_path", "")
-            if not raw_path:
-                continue
-
-            backup_path = Path(raw_path)
-            if not backup_path.is_absolute():
-                from core.context import BASE_DIR
-                backup_path = (BASE_DIR / backup_path).resolve()
-
-            if not backup_path.exists():
-                continue
-
-            try:
-                ok, msg = sweep_repo(backup_path)
-                results[device_id] = (ok, msg)
-                if not ok:
-                    logger.warning(
-                        "maintenance: %s — %s",
-                        device_id, msg,
-                    )
-            except Exception as exc:
-                logger.error(
-                    "maintenance: %s — исключение: %s",
-                    device_id, exc,
-                    exc_info=True,
+        try:
+            ok, msg = sweep_repo(backup_path)
+            results[device_id] = (ok, msg)
+            if not ok:
+                logger.warning(
+                    "maintenance: %s — %s",
+                    device_id, msg,
                 )
-                results[device_id] = (False, str(exc))
+        except Exception as exc:
+            logger.error(
+                "maintenance: %s — исключение: %s",
+                device_id, exc,
+                exc_info=True,
+            )
+            results[device_id] = (False, str(exc))
 
     return results
+
+
+
+def post_backup_cleanup(plugin_manager=None) -> dict:
+    """
+    Вызывается после завершения массового бэкапа
+    (планового или ручного).
+
+    Последовательность:
+        1. Если retention.enabled — применяет политику
+           ко всем устройствам (только пометки).
+        2. Если retention.auto_sweep — физически удаляет
+           помеченные версии через sweep_all_devices.
+
+    Возвращает словарь со статистикой:
+        {"marked": int, "removed": int, "errors": int}
+
+    Все исключения логируются, но не поднимаются наружу:
+    операция обслуживания не должна ломать основной сценарий.
+    """
+    from core.context import CONFIG_FILE, load_json
+
+    stats = {"marked": 0, "removed": 0, "errors": 0}
+
+    try:
+        config = load_json(CONFIG_FILE, {})
+        retention = config.get("retention") or {}
+    except Exception as exc:
+        logger.error(
+            "cleanup: не удалось прочитать config.json: %s",
+            exc, exc_info=True,
+        )
+        stats["errors"] += 1
+        return stats
+
+    if not retention.get("enabled"):
+        logger.debug(
+            "cleanup: retention выключен, пропуск"
+        )
+        return stats
+
+    plugin_manager = _ensure_plugin_manager(plugin_manager)
+    if plugin_manager is None:
+        stats["errors"] += 1
+        return stats
+
+    # ---- Шаг 1: пометки ----
+
+    logger.info("🧹 Автоочистка: пометка старых версий...")
+
+    for device_id, _dt, _idx, _router, backup_path in (
+        _iter_devices(plugin_manager)
+    ):
+        if not backup_path.exists():
+            continue
+
+        try:
+            marked = apply_retention(backup_path, retention)
+            stats["marked"] += len(marked)
+        except Exception as exc:
+            stats["errors"] += 1
+            logger.error(
+                "cleanup[%s]: пометка упала: %s",
+                device_id, exc, exc_info=True,
+            )
+
+    # ---- Шаг 2: физическое удаление ----
+
+    if retention.get("auto_sweep"):
+        logger.info(
+            "🧹 Автоочистка: удаление помеченных версий..."
+        )
+
+        try:
+            results = sweep_all_devices(plugin_manager)
+
+            for device_id, (ok, msg) in results.items():
+                if not ok:
+                    stats["errors"] += 1
+                    logger.warning(
+                        "cleanup[%s]: sweep — %s",
+                        device_id, msg,
+                    )
+                    continue
+
+                if "Удалено коммитов:" in msg:
+                    try:
+                        n = int(
+                            msg.split("Удалено коммитов:")[1]
+                            .split(";")[0]
+                            .strip()
+                        )
+                        stats["removed"] += n
+                    except (IndexError, ValueError):
+                        pass
+        except Exception as exc:
+            stats["errors"] += 1
+            logger.error(
+                "cleanup: sweep упал: %s",
+                exc, exc_info=True,
+            )
+
+    if stats["marked"] or stats["removed"] or stats["errors"]:
+        logger.info(
+            "🧹 Автоочистка завершена: "
+            "помечено %d, удалено %d, ошибок %d",
+            stats["marked"], stats["removed"], stats["errors"],
+        )
+
+    return stats
 
 
 # =========================================================

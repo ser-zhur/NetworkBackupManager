@@ -1142,7 +1142,6 @@ def execute_device_backup_task(
         backup_finished(device_id)
         clear_device_context()
 
-
 def execute_all_backups_task():
 
     backup_started()
@@ -1152,6 +1151,18 @@ def execute_all_backups_task():
         if plugin_manager:
 
             plugin_manager.run_all_backups()
+
+            # Автоочистка истории (пометка + опционально
+            # sweep). Все ошибки логируются внутри.
+            try:
+                from core.maintenance import post_backup_cleanup
+                post_backup_cleanup(plugin_manager)
+            except Exception as cleanup_exc:
+                logging.error(
+                    "❌ [Фон] Ошибка автоочистки: %s",
+                    cleanup_exc,
+                    exc_info=True,
+                )
 
     except Exception as exc:
 

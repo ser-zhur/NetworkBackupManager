@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 
 from core.context import (
     SCHEDULER_FILE,
+    CONFIG_FILE,
     load_json,
     save_json,
 )
@@ -102,6 +103,23 @@ class BackupScheduler:
                                 self.save_config()
 
                                 logging.info("✅ Автоматический бэкап завершён.")
+
+                                # Автоочистка истории (пометка
+                                # старых + опционально sweep).
+                                # Все ошибки логируются внутри.
+                                try:
+                                    from core.maintenance import (
+                                        post_backup_cleanup,
+                                    )
+                                    post_backup_cleanup(
+                                        self.plugin_manager
+                                    )
+                                except Exception as cleanup_exc:
+                                    logging.error(
+                                        "❌ Ошибка автоочистки: %s",
+                                        cleanup_exc,
+                                        exc_info=True,
+                                    )
 
                             except Exception as e:
                                 logging.error(f"❌ Ошибка автоматического бэкапа: {e}")
