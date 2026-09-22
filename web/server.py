@@ -76,6 +76,8 @@ from core.context import (
     WEB_DIR,
     AUTH_FILE,
     STATE_FILE,
+    CONFIG_FILE,
+    save_json,
     load_json,
 )
 
@@ -95,6 +97,7 @@ from core.maintenance import (
     mark_deleted as maint_mark_deleted,
     unmark_deleted as maint_unmark_deleted,
     sweep_repo,
+    sweep_all_devices,
 )
 
 # =========================================================
@@ -838,7 +841,35 @@ def _resolve_backup_path(backup_path) -> Path:
         path = BASE_DIR / path
     return path
 
+def _iter_device_backup_paths():
+    """
+    Итератор по всем устройствам.
 
+    yield (device_id, device_type, index, router, backup_path)
+
+    Пропускает устройства без backup_path. backup_path —
+    абсолютный Path. Гарантированно не падает, если
+    plugin_manager=None.
+    """
+    if not plugin_manager:
+        return
+
+    for device_type, plugin_data in plugin_manager._plugins.items():
+        routers = plugin_data.get("routers", [])
+        for idx, router in enumerate(routers):
+            raw = router.get("backup_path", "")
+            if not raw:
+                continue
+
+            yield (
+                f"{device_type}/{idx}",
+                device_type,
+                idx,
+                router,
+                _resolve_backup_path(raw),
+            )
+            
+            
 def classify_device(age_days, last_attempt_ok) -> str:
     """ok / warn / fail / none."""
     if last_attempt_ok is False:
@@ -3324,6 +3355,281 @@ async def update_router(
 
     return RedirectResponse(
         url="/",
+        status_code=303,
+    )
+
+# =========================================================
+# RETENTION
+# =========================================================
+
+def _collect_maintenance_stats() -> list:
+    """
+    Данные для таблицы на /retention.
+
+    По каждому устройству: количество версий, сколько
+    помечено, размер репы.
+    """
+    rows = []
+
+    for device_id, device_type, idx, router, backup_path in (
+        _iter_device_backup_paths()
+    ):
+        row = {
+            "device_id": device_id,
+            "device_type": device_type,
+            "index": idx,
+            "name": router.get("name") or "",
+            "host": router.get("host") or router.get("ip") or "",
+            "total": 0,
+            "marked": 0,
+            "size": "—",
+            "repo_exists": backup_path.exists(),
+            "has_git": False,
+        }
+
+        if not row["repo_exists"] or not git_available():
+            rows.append(row)
+            continue
+
+        try:
+            gs = GitStorage(backup_path)
+            if gs.is_initialized():
+                row["has_git"] = True
+                row["total"] = gs.get_commit_count()
+                row["marked"] = len(gs.get_deleted_shas())
+                row["size"] = format_size(
+                    get_dir_size(backup_path)
+                )
+        except Exception as exc:
+            logging.warning(
+                "retention: не удалось прочитать %s: %s",
+                device_id, exc,
+            )
+
+        rows.append(row)
+
+    return rows
+
+
+@app.get("/retention", response_class=HTMLResponse)
+def retention_page(
+    request: Request,
+    user: str = Depends(require_auth),
+):
+    config = load_json(CONFIG_FILE, {})
+    retention = config.get("retention") or {}
+
+    stats = _collect_maintenance_stats()
+
+    total_versions = sum(r["total"] for r in stats)
+    total_marked = sum(r["marked"] for r in stats)
+
+    return templates.TemplateResponse(
+        request,
+        "retention.html",
+        {
+            "retention": retention,
+            "stats": stats,
+            "total_versions": total_versions,
+            "total_marked": total_marked,
+            "message": request.query_params.get("message", ""),
+            "msg_count": request.query_params.get("count", "0"),
+            "msg_devices": request.query_params.get("devices", "0"),
+        },
+    )
+
+
+@app.post("/retention/save")
+async def retention_save(
+    user: str = Depends(require_auth),
+    enabled: bool = Form(False),
+    max_age_days: int = Form(365),
+    keep_last: int = Form(20),
+    keep_with_notes: bool = Form(False),
+    auto_sweep: bool = Form(False),
+):
+    config = load_json(CONFIG_FILE, {})
+    config["retention"] = {
+        "enabled": bool(enabled),
+        "max_age_days": max(1, int(max_age_days)),
+        "keep_last": max(0, int(keep_last)),
+        "keep_with_notes": bool(keep_with_notes),
+        "auto_sweep": bool(auto_sweep),
+    }
+
+    try:
+        save_json(CONFIG_FILE, config)
+    except Exception as exc:
+        logging.error(
+            "retention: не удалось сохранить config.json: %s",
+            exc, exc_info=True,
+        )
+        raise HTTPException(500, "Не удалось сохранить настройки")
+
+    logging.info(
+        "⚙ retention: настройки сохранены "
+        "(enabled=%s, max_age=%d, keep_last=%d, "
+        "keep_notes=%s, auto_sweep=%s, запрос от %s)",
+        enabled, max_age_days, keep_last,
+        keep_with_notes, auto_sweep, user,
+    )
+
+    return RedirectResponse(
+        "/retention?message=saved",
+        status_code=303,
+    )
+
+
+@app.post("/maintenance/prune-all")
+def maintenance_prune_all(
+    user: str = Depends(require_auth),
+):
+    """
+    Помечает старые версии на всех устройствах по правилам
+    из config.json. Физического удаления не делает.
+    """
+    config = load_json(CONFIG_FILE, {})
+    retention = config.get("retention") or {}
+
+    if not retention:
+        return RedirectResponse(
+            "/retention?message=no_config",
+            status_code=303,
+        )
+
+    if not git_available():
+        return RedirectResponse(
+            "/retention?message=no_git",
+            status_code=303,
+        )
+
+    total_marked = 0
+    devices_processed = 0
+    errors = 0
+
+    for device_id, _dt, _idx, _router, backup_path in (
+        _iter_device_backup_paths()
+    ):
+        if not backup_path.exists():
+            continue
+
+        try:
+            marked = apply_retention(backup_path, retention)
+            total_marked += len(marked)
+            devices_processed += 1
+        except Exception as exc:
+            errors += 1
+            logging.error(
+                "retention: %s — %s",
+                device_id, exc, exc_info=True,
+            )
+
+    logging.info(
+        "retention: помечено %d версий на %d устройствах "
+        "(ошибок: %d, запрос от %s)",
+        total_marked, devices_processed, errors, user,
+    )
+
+    return RedirectResponse(
+        f"/retention?message=pruned"
+        f"&count={total_marked}"
+        f"&devices={devices_processed}",
+        status_code=303,
+    )
+
+
+@app.post("/maintenance/sweep-all")
+def maintenance_sweep_all(
+    user: str = Depends(require_auth),
+):
+    """
+    Физически удаляет помеченные версии на всех устройствах.
+    """
+    if not git_available():
+        return RedirectResponse(
+            "/retention?message=no_git",
+            status_code=303,
+        )
+
+    try:
+        results = sweep_all_devices(plugin_manager)
+    except Exception as exc:
+        logging.error(
+            "sweep-all: %s", exc, exc_info=True,
+        )
+        raise HTTPException(500, "Ошибка очистки")
+
+    total_removed = 0
+    devices_processed = 0
+    errors = 0
+
+    for device_id, (ok, msg) in results.items():
+        if ok:
+            devices_processed += 1
+            if "Удалено коммитов:" in msg:
+                try:
+                    total_removed += int(
+                        msg.split("Удалено коммитов:")[1]
+                        .split(";")[0]
+                        .strip()
+                    )
+                except (IndexError, ValueError):
+                    pass
+        else:
+            errors += 1
+            logging.warning(
+                "sweep-all: %s — %s", device_id, msg,
+            )
+
+    logging.info(
+        "sweep-all: удалено %d версий на %d устройствах "
+        "(ошибок: %d, запрос от %s)",
+        total_removed, devices_processed, errors, user,
+    )
+
+    return RedirectResponse(
+        f"/retention?message=swept"
+        f"&count={total_removed}"
+        f"&devices={devices_processed}",
+        status_code=303,
+    )
+
+
+@app.post("/maintenance/unmark-all")
+def maintenance_unmark_all(
+    user: str = Depends(require_auth),
+):
+    """Снимает все пометки удаления на всех устройствах."""
+    if not git_available():
+        return RedirectResponse(
+            "/retention?message=no_git",
+            status_code=303,
+        )
+
+    total_removed = 0
+
+    for device_id, _dt, _idx, _router, backup_path in (
+        _iter_device_backup_paths()
+    ):
+        if not backup_path.exists():
+            continue
+
+        try:
+            removed = maint_unmark_deleted(backup_path, None)
+            total_removed += removed
+        except Exception as exc:
+            logging.error(
+                "unmark-all: %s — %s",
+                device_id, exc, exc_info=True,
+            )
+
+    logging.info(
+        "unmark-all: снято %d пометок (запрос от %s)",
+        total_removed, user,
+    )
+
+    return RedirectResponse(
+        f"/retention?message=unmarked&count={total_removed}",
         status_code=303,
     )
 

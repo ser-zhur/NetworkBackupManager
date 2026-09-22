@@ -156,8 +156,17 @@ def ensure_default_files() -> None:
         "open_browser": True,
         "max_parallel_backups": 5,
         "backup_timeout_seconds": 300,
-    })
 
+        # Правила автоматической очистки истории.
+        # Подробности — на странице /retention.
+        "retention": {
+            "enabled": False,
+            "max_age_days": 365,
+            "keep_last": 20,
+            "keep_with_notes": True,
+            "auto_sweep": True,
+        },
+    })
     _write_default_json(SCHEDULER_FILE, {
         "enabled": False,
         "mode": "daily",
