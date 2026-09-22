@@ -50,6 +50,12 @@ _AUTHOR_EMAIL = "nbm@local"
 # Файл с пользовательскими аннотациями, хранится внутри .git/.
 _NOTES_FILENAME = "nbm_notes.json"
 
+# Файл со списком sha, помеченных к удалению (soft-delete).
+# Хранится в .git/ рядом с notes. Физическое удаление из
+# истории делается отдельным шагом (rebuild_history),
+# который вызывается вручную или scheduler'ом.
+_DELETED_FILENAME = "nbm_deleted.json"
+
 
 # =========================================================
 # NORMALIZE
@@ -184,6 +190,120 @@ class GitStorage:
             return sorted(result)
         except Exception:
             return []
+
+    # -----------------------------------------------------
+    # DELETED SHAS (soft-delete markers)
+    # -----------------------------------------------------
+
+    def _deleted_path(self) -> Path:
+        return self.repo_path / ".git" / _DELETED_FILENAME
+
+    def _load_deleted(self) -> set[str]:
+        """
+        Читает список помеченных sha.
+
+        Возвращает множество строк (hex sha). Если файла нет
+        или он повреждён — пустое множество без ошибки.
+        """
+        path = self._deleted_path()
+        if not path.exists():
+            return set()
+
+        try:
+            data = json.loads(
+                path.read_text(encoding="utf-8")
+            )
+        except Exception as exc:
+            logger.warning(
+                "git: не удалось прочитать %s: %s",
+                path, exc,
+            )
+            return set()
+
+        if not isinstance(data, list):
+            return set()
+
+        return {str(s) for s in data}
+
+    def _save_deleted(self, shas: set[str]) -> None:
+        """
+        Сохраняет список помеченных sha.
+
+        Пустой список = удаление файла (не держим мусор).
+        """
+        path = self._deleted_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        if not shas:
+            if path.exists():
+                try:
+                    path.unlink()
+                except OSError as exc:
+                    logger.warning(
+                        "git: не удалось удалить %s: %s",
+                        path, exc,
+                    )
+            return
+
+        try:
+            path.write_text(
+                json.dumps(
+                    sorted(shas),
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            logger.warning(
+                "git: не удалось записать %s: %s",
+                path, exc,
+            )
+
+    def get_deleted_shas(self) -> set[str]:
+        """Возвращает копию множества помеченных sha."""
+        return set(self._load_deleted())
+
+    def mark_deleted(self, shas: set[str]) -> int:
+        """
+        Помечает sha к удалению.
+
+        Возвращает количество ДОБАВЛЕННЫХ sha (уже помеченные
+        не считаются).
+        """
+        if not shas:
+            return 0
+
+        with self._lock:
+            current = self._load_deleted()
+            before = len(current)
+            current.update(str(s) for s in shas)
+            self._save_deleted(current)
+            return len(current) - before
+
+    def unmark_deleted(
+        self,
+        shas: set[str] | None = None,
+    ) -> int:
+        """
+        Снимает пометку.
+
+        shas=None — очищает весь список.
+        Возвращает количество снятых пометок.
+        """
+        with self._lock:
+            current = self._load_deleted()
+
+            if shas is None:
+                count = len(current)
+                self._save_deleted(set())
+                return count
+
+            to_remove = {str(s) for s in shas}
+            removed = current & to_remove
+            current -= to_remove
+            self._save_deleted(current)
+            return len(removed)
 
     # -----------------------------------------------------
     # COMMIT
@@ -386,6 +506,17 @@ class GitStorage:
     # -----------------------------------------------------
 
     def get_history(self, limit: int = 50) -> list:
+        """
+        История коммитов без помеченных к удалению.
+
+        Помеченные (см. mark_deleted) не показываются в UI,
+        но физически остаются в .git до rebuild_history.
+
+        Важно: Walker не имеет собственного лимита —
+        останавливаемся после сбора limit валидных записей.
+        Иначе на репе, где первые 50 коммитов помечены,
+        вернулось бы 0 вместо 50.
+        """
         if not self.is_initialized():
             return []
 
@@ -396,16 +527,21 @@ class GitStorage:
                 if head_sha is None:
                     return []
 
+                deleted = self._load_deleted()
+
                 walker = Walker(
                     repo.object_store,
                     [head_sha],
-                    max_entries=limit,
                 )
 
                 result = []
                 for entry in walker:
                     commit = entry.commit
                     sha = commit.id.decode()
+
+                    if sha in deleted:
+                        continue
+
                     result.append({
                         "sha": sha,
                         "short": sha[:7],
@@ -421,6 +557,9 @@ class GitStorage:
                             repo, commit.id
                         ),
                     })
+
+                    if len(result) >= limit:
+                        break
 
                 return result
             finally:
@@ -559,6 +698,7 @@ class GitStorage:
         return history[0] if history else None
 
     def get_commit_count(self) -> int:
+        """Общее число коммитов без помеченных к удалению."""
         if not self.is_initialized():
             return 0
         with self._lock:
@@ -567,13 +707,182 @@ class GitStorage:
                 head_sha = self._head_sha(repo)
                 if head_sha is None:
                     return 0
+
+                deleted = self._load_deleted()
+
                 count = 0
                 walker = Walker(
                     repo.object_store,
                     [head_sha],
                 )
-                for _ in walker:
+                for entry in walker:
+                    sha = entry.commit.id.decode()
+                    if sha in deleted:
+                        continue
                     count += 1
                 return count
             finally:
                 repo.close()
+                
+        # -----------------------------------------------------
+    # REBUILD HISTORY (hard-delete)
+    # -----------------------------------------------------
+
+    def _walk_all(self, repo: "Repo", head_sha: bytes) -> list:
+        """
+        Все коммиты от HEAD до корня (в порядке от новых к старым).
+
+        Используется в rebuild_history. Для обычного чтения
+        истории — get_history().
+        """
+        walker = Walker(repo.object_store, [head_sha])
+        return [entry.commit for entry in walker]
+
+    def rebuild_history(
+        self,
+        shas_to_delete: set[str],
+    ) -> tuple[bool, str]:
+        """
+        Физически удаляет коммиты из истории.
+
+        Создаёт новые commit-объекты для всех, что выше
+        удалённых, с перепривязкой parent-указателей.
+        Верхние коммиты получат новые SHA (как в git rebase).
+
+        Содержимое файлов (blob'ы) сохраняется полностью,
+        пересоздаются только лёгкие commit-объекты (~200 байт).
+
+        Возвращает (ok, message).
+
+        Побочный эффект: очищает .git/nbm_deleted.json —
+        после успешной пересборки список больше не нужен.
+
+        Нельзя удалить все коммиты — вернёт (False, ...).
+        """
+        if not shas_to_delete:
+            return True, "Список удаляемых пуст"
+
+        with self._lock:
+            repo = self._open_repo()
+            try:
+                head_sha = self._head_sha(repo)
+                if head_sha is None:
+                    return True, "Репозиторий пуст"
+
+                all_commits = self._walk_all(repo, head_sha)
+                if not all_commits:
+                    return True, "Нечего удалять"
+
+                deleted_bytes = {
+                    s.encode() if isinstance(s, str) else s
+                    for s in shas_to_delete
+                }
+
+                kept = [
+                    c for c in all_commits
+                    if c.id not in deleted_bytes
+                ]
+
+                if not kept:
+                    return False, (
+                        "Нельзя удалить всю историю целиком"
+                    )
+
+                if len(kept) == len(all_commits):
+                    # Ничего не удаляется — очищаем пометки
+                    # и выходим без пересборки.
+                    self._save_deleted(set())
+                    return True, "Нечего удалять"
+
+                # Идём от старых к новым, пересобирая цепочку
+                new_parent: bytes | None = None
+
+                for old_commit in reversed(kept):
+                    new_commit = Commit()
+                    new_commit.tree = old_commit.tree
+                    new_commit.parents = (
+                        [new_parent] if new_parent else []
+                    )
+                    new_commit.author = old_commit.author
+                    new_commit.committer = old_commit.committer
+                    new_commit.commit_time = old_commit.commit_time
+                    new_commit.author_time = old_commit.author_time
+                    new_commit.commit_timezone = (
+                        old_commit.commit_timezone
+                    )
+                    new_commit.author_timezone = (
+                        old_commit.author_timezone
+                    )
+                    new_commit.message = old_commit.message
+                    new_commit.encoding = old_commit.encoding
+
+                    repo.object_store.add_object(new_commit)
+                    new_parent = new_commit.id
+
+                repo.refs[b"refs/heads/master"] = new_parent
+
+                removed = len(all_commits) - len(kept)
+
+                # Пометки больше не нужны
+                self._save_deleted(set())
+
+                logger.info(
+                    "git[%s]: rebuild — удалено %d из %d",
+                    self.repo_path.name,
+                    removed,
+                    len(all_commits),
+                )
+
+                return True, f"Удалено коммитов: {removed}"
+
+            except Exception as exc:
+                logger.error(
+                    "git[%s]: ошибка rebuild_history: %s",
+                    self.repo_path.name,
+                    exc,
+                    exc_info=True,
+                )
+                return False, f"Ошибка пересборки: {exc}"
+            finally:
+                repo.close()
+
+    def gc(self) -> tuple[bool, str]:
+        """
+        Освобождает место через git gc.
+
+        Требует установленного git в PATH. Если git нет —
+        возвращает (False, ...) без падения. Это не ошибка:
+        старые объекты продолжат лежать в .git/objects,
+        просто занимая место, но не мешая работе.
+        """
+        import shutil
+        import subprocess
+
+        git_bin = shutil.which("git")
+        if git_bin is None:
+            return False, "git не найден в PATH"
+
+        try:
+            result = subprocess.run(
+                [
+                    git_bin,
+                    "-C", str(self.repo_path),
+                    "gc",
+                    "--prune=now",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            return False, "git gc превысил таймаут 60 с"
+        except Exception as exc:
+            return False, f"git gc не запустился: {exc}"
+
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "").strip()
+            return False, err or "git gc вернул ошибку"
+
+        return True, "git gc выполнен"
