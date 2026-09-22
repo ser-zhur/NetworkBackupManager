@@ -3406,7 +3406,12 @@ def _collect_maintenance_stats() -> list:
             gs = GitStorage(backup_path)
             if gs.is_initialized():
                 row["has_git"] = True
-                row["total"] = gs.get_commit_count()
+                # include_marked=True — «Версий: N» на
+                # /retention совпадает с total на /git/...,
+                # где помеченные тоже показываются.
+                row["total"] = gs.get_commit_count(
+                    include_marked=True
+                )
                 row["marked"] = len(gs.get_deleted_shas())
                 row["size"] = format_size(
                     get_dir_size(backup_path)

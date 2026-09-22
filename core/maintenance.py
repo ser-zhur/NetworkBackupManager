@@ -13,11 +13,17 @@
 # =========================================================
 
 import logging
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+
+# Глобальный lock: sweep'ы по всем репам сериализуются.
+# Даже разные устройства не будут пересобираться одновременно —
+# это щадит диск и CPU при параллельных бэкапах.
+_SWEEP_LOCK = threading.Lock()
 
 # =========================================================
 # MARK / UNMARK
@@ -58,10 +64,15 @@ def list_marked(repo_path) -> list[str]:
 # =========================================================
 # SWEEP (пересборка)
 # =========================================================
-
 def sweep_repo(repo_path) -> tuple[bool, str]:
     """
-    Пересобирает историю, физически удаляя помеченные коммиты.
+    Пересобирает историю одного репозитория, физически
+    удаляя помеченные коммиты.
+
+    Атомарность обеспечивается GitStorage.sweep() (per-repo
+    лок). Глобальный _SWEEP_LOCK дополнительно сериализует
+    sweep'ы по РАЗНЫМ репам — чтобы параллельные бэкапы не
+    нагружали диск одновременными пересборками.
 
     Возвращает (ok, message).
     Если помеченных нет — no-op (True, "Нечего очищать").
@@ -73,26 +84,8 @@ def sweep_repo(repo_path) -> tuple[bool, str]:
     if not gs.is_initialized():
         return True, "Репозиторий не инициализирован"
 
-    marked = gs.get_deleted_shas()
-    if not marked:
-        return True, "Нечего очищать"
-
-    ok, msg = gs.rebuild_history(marked)
-    if not ok:
-        return False, msg
-
-    # Пытаемся освободить место. Не критично, если git нет.
-    gc_ok, gc_msg = gs.gc()
-    if gc_ok:
-        msg = f"{msg}; {gc_msg}"
-    else:
-        logger.debug(
-            "git[%s]: gc не выполнен: %s",
-            Path(repo_path).name,
-            gc_msg,
-        )
-
-    return True, msg
+    with _SWEEP_LOCK:
+        return gs.sweep()
 
 def _iter_devices(plugin_manager):
     """
@@ -185,8 +178,6 @@ def sweep_all_devices(plugin_manager=None) -> dict:
             results[device_id] = (False, str(exc))
 
     return results
-
-
 
 def post_backup_cleanup(plugin_manager=None) -> dict:
     """

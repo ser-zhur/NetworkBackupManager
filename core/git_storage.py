@@ -708,8 +708,22 @@ class GitStorage:
         history = self.get_history(limit=1)
         return history[0] if history else None
 
-    def get_commit_count(self) -> int:
-        """Общее число коммитов без помеченных к удалению."""
+    def get_commit_count(
+        self,
+        include_marked: bool = False,
+    ) -> int:
+        """
+        Число коммитов.
+
+        include_marked=False (default) — без помеченных.
+        Совпадает с get_history(include_marked=False) и
+        используется там, где нужна «рабочая» история.
+
+        include_marked=True — все коммиты в репе, включая
+        помеченные. Используется на /retention, чтобы
+        «Версий: N» совпадало с тем, что видно на /git/...
+        (там показываются все, включая помеченные).
+        """
         if not self.is_initialized():
             return 0
         with self._lock:
@@ -719,7 +733,10 @@ class GitStorage:
                 if head_sha is None:
                     return 0
 
-                deleted = self._load_deleted()
+                deleted = (
+                    set() if include_marked
+                    else self._load_deleted()
+                )
 
                 count = 0
                 walker = Walker(
@@ -735,7 +752,7 @@ class GitStorage:
             finally:
                 repo.close()
                 
-        # -----------------------------------------------------
+    # -----------------------------------------------------
     # REBUILD HISTORY (hard-delete)
     # -----------------------------------------------------
 
@@ -754,9 +771,26 @@ class GitStorage:
         shas_to_delete: set[str],
     ) -> tuple[bool, str]:
         """
-        Физически удаляет коммиты из истории.
+        Физически удаляет коммиты из истории (публичный API).
 
-        Создаёт новые commit-объекты для всех, что выше
+        Берёт _lock, чтобы исключить параллельную пересборку
+        того же репо. Вся работа — в _rebuild_history_locked().
+        """
+        if not shas_to_delete:
+            return True, "Список удаляемых пуст"
+
+        with self._lock:
+            return self._rebuild_history_locked(shas_to_delete)
+
+    def _rebuild_history_locked(
+        self,
+        shas_to_delete: set[str],
+    ) -> tuple[bool, str]:
+        """
+        Пересборка без взятия _lock. Вызывается из rebuild_history()
+        и sweep() — оба уже держат _lock.
+
+        Создаёт новые commit-объекты для всех коммитов выше
         удалённых, с перепривязкой parent-указателей.
         Верхние коммиты получат новые SHA (как в git rebase).
 
@@ -765,97 +799,121 @@ class GitStorage:
 
         Возвращает (ok, message).
 
-        Побочный эффект: очищает .git/nbm_deleted.json —
-        после успешной пересборки список больше не нужен.
+        Побочный эффект при успехе: очищает .git/nbm_deleted.json.
 
         Нельзя удалить все коммиты — вернёт (False, ...).
         """
-        if not shas_to_delete:
-            return True, "Список удаляемых пуст"
+        repo = self._open_repo()
+        try:
+            head_sha = self._head_sha(repo)
+            if head_sha is None:
+                return True, "Репозиторий пуст"
 
-        with self._lock:
-            repo = self._open_repo()
-            try:
-                head_sha = self._head_sha(repo)
-                if head_sha is None:
-                    return True, "Репозиторий пуст"
+            all_commits = self._walk_all(repo, head_sha)
+            if not all_commits:
+                return True, "Нечего удалять"
 
-                all_commits = self._walk_all(repo, head_sha)
-                if not all_commits:
-                    return True, "Нечего удалять"
+            deleted_bytes = {
+                s.encode() if isinstance(s, str) else s
+                for s in shas_to_delete
+            }
 
-                deleted_bytes = {
-                    s.encode() if isinstance(s, str) else s
-                    for s in shas_to_delete
-                }
+            kept = [
+                c for c in all_commits
+                if c.id not in deleted_bytes
+            ]
 
-                kept = [
-                    c for c in all_commits
-                    if c.id not in deleted_bytes
-                ]
+            if not kept:
+                return False, (
+                    "Нельзя удалить всю историю целиком"
+                )
 
-                if not kept:
-                    return False, (
-                        "Нельзя удалить всю историю целиком"
-                    )
-
-                if len(kept) == len(all_commits):
-                    # Ничего не удаляется — очищаем пометки
-                    # и выходим без пересборки.
-                    self._save_deleted(set())
-                    return True, "Нечего удалять"
-
-                # Идём от старых к новым, пересобирая цепочку
-                new_parent: bytes | None = None
-
-                for old_commit in reversed(kept):
-                    new_commit = Commit()
-                    new_commit.tree = old_commit.tree
-                    new_commit.parents = (
-                        [new_parent] if new_parent else []
-                    )
-                    new_commit.author = old_commit.author
-                    new_commit.committer = old_commit.committer
-                    new_commit.commit_time = old_commit.commit_time
-                    new_commit.author_time = old_commit.author_time
-                    new_commit.commit_timezone = (
-                        old_commit.commit_timezone
-                    )
-                    new_commit.author_timezone = (
-                        old_commit.author_timezone
-                    )
-                    new_commit.message = old_commit.message
-                    new_commit.encoding = old_commit.encoding
-
-                    repo.object_store.add_object(new_commit)
-                    new_parent = new_commit.id
-
-                repo.refs[b"refs/heads/master"] = new_parent
-
-                removed = len(all_commits) - len(kept)
-
-                # Пометки больше не нужны
+            if len(kept) == len(all_commits):
                 self._save_deleted(set())
+                return True, "Нечего удалять"
 
-                logger.info(
-                    "git[%s]: rebuild — удалено %d из %d",
+            # Идём от старых к новым, пересобирая цепочку
+            new_parent: bytes | None = None
+
+            for old_commit in reversed(kept):
+                new_commit = Commit()
+                new_commit.tree = old_commit.tree
+                new_commit.parents = (
+                    [new_parent] if new_parent else []
+                )
+                new_commit.author = old_commit.author
+                new_commit.committer = old_commit.committer
+                new_commit.commit_time = old_commit.commit_time
+                new_commit.author_time = old_commit.author_time
+                new_commit.commit_timezone = (
+                    old_commit.commit_timezone
+                )
+                new_commit.author_timezone = (
+                    old_commit.author_timezone
+                )
+                new_commit.message = old_commit.message
+                new_commit.encoding = old_commit.encoding
+
+                repo.object_store.add_object(new_commit)
+                new_parent = new_commit.id
+
+            repo.refs[b"refs/heads/master"] = new_parent
+
+            removed = len(all_commits) - len(kept)
+
+            self._save_deleted(set())
+
+            logger.info(
+                "git[%s]: rebuild — удалено %d из %d",
+                self.repo_path.name,
+                removed,
+                len(all_commits),
+            )
+
+            return True, f"Удалено коммитов: {removed}"
+
+        except Exception as exc:
+            logger.error(
+                "git[%s]: ошибка rebuild_history: %s",
+                self.repo_path.name,
+                exc,
+                exc_info=True,
+            )
+            return False, f"Ошибка пересборки: {exc}"
+        finally:
+            repo.close()
+
+    def sweep(self) -> tuple[bool, str]:
+        """
+        Атомарный sweep: пометки → пересборка → git gc.
+
+        Всё под одним _lock. Параллельный sweep того же репо
+        сериализуется автоматически, а не полагается на
+        порядок вызовов снаружи.
+
+        Возвращает (ok, message). Если помеченных нет —
+        no-op (True, "Нечего очищать").
+        """
+        with self._lock:
+            marked = self._load_deleted()
+            if not marked:
+                return True, "Нечего очищать"
+
+            ok, msg = self._rebuild_history_locked(marked)
+            if not ok:
+                return False, msg
+
+            gc_ok, gc_msg = self.gc()
+            if gc_ok:
+                msg = f"{msg}; {gc_msg}"
+            else:
+                logger.debug(
+                    "git[%s]: gc не выполнен: %s",
                     self.repo_path.name,
-                    removed,
-                    len(all_commits),
+                    gc_msg,
                 )
 
-                return True, f"Удалено коммитов: {removed}"
-
-            except Exception as exc:
-                logger.error(
-                    "git[%s]: ошибка rebuild_history: %s",
-                    self.repo_path.name,
-                    exc,
-                    exc_info=True,
-                )
-                return False, f"Ошибка пересборки: {exc}"
-            finally:
-                repo.close()
+            return True, msg
 
     def gc(self) -> tuple[bool, str]:
         """

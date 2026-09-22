@@ -5,7 +5,6 @@ from datetime import datetime, timedelta
 
 from core.context import (
     SCHEDULER_FILE,
-    CONFIG_FILE,
     load_json,
     save_json,
 )
