@@ -74,6 +74,7 @@ from core.context import (
     BASE_DIR,
     LOGS_DIR,
     WEB_DIR,
+    PLUGINS_DIR,
     AUTH_FILE,
     STATE_FILE,
     CONFIG_FILE,
@@ -1032,12 +1033,64 @@ def _build_device_payload(
         git_cfg = (router.get("storage") or {}).get("git") or {}
         git_enabled = bool(git_cfg.get("enabled"))
 
+    # ---- Данные для диалога «Удалить устройство» ----
+
+    # Можем ли автоматически удалить SSH-ключ?
+    # Только если он задан относительным путём (лежит
+    # внутри plugins/<type>/) И не используется другими
+    # устройствами того же типа.
+    _key_name = (
+        router.get("ssh_key")
+        or router.get("private_key")
+        or ""
+    )
+
+    ssh_key_local = bool(
+        _key_name and not Path(_key_name).is_absolute()
+    )
+    ssh_key_path = ""
+    ssh_key_shared = False
+    ssh_key_shared_with: list[str] = []
+
+    if ssh_key_local:
+        ssh_key_path = str(
+            (BASE_DIR / "plugins" / device_type / _key_name).resolve()
+        )
+
+        # Проверяем, используют ли другие устройства
+        # этого типа тот же ключ.
+        if plugin_manager and device_type in plugin_manager._plugins:
+            all_routers = (
+                plugin_manager._plugins[device_type]
+                .get("routers", [])
+            )
+            for i, other in enumerate(all_routers):
+                if i == index:
+                    continue
+                other_key = (
+                    other.get("ssh_key")
+                    or other.get("private_key")
+                    or ""
+                )
+                if other_key == _key_name:
+                    ssh_key_shared = True
+                    shared_name = (
+                        other.get("name")
+                        or other.get("host")
+                        or f"#{i}"
+                    )
+                    ssh_key_shared_with.append(shared_name)
+
     return {
         "id": f"{device_type}/{index}",
         "type": device_type,
         "index": index,
         "name": router.get("name") or "",
         "host": ip_addr,
+        "ssh_key_local": ssh_key_local,
+        "ssh_key_path": ssh_key_path,
+        "ssh_key_shared": ssh_key_shared,
+        "ssh_key_shared_with": ssh_key_shared_with,
         "port": router.get("port", 22),
         "status": status,
         "last_success": last_date,
@@ -3649,6 +3702,310 @@ def maintenance_unmark_all(
         status_code=303,
     )
 
+# =========================================================
+# DELETE DEVICE
+# =========================================================
+
+def _is_safe_to_delete(path: Path) -> tuple[bool, str]:
+    """
+    Страховка от случайного удаления системных каталогов.
+
+    Возвращает (safe, reason).
+    """
+    if not path.exists():
+        return True, "путь не существует"
+
+    if not path.is_dir():
+        return False, "путь не является директорией"
+
+    try:
+        resolved = path.resolve()
+    except OSError as exc:
+        return False, f"не удалось разрешить путь: {exc}"
+
+    # Список «нельзя трогать»
+    forbidden = {
+        Path("/"),
+        Path("/etc"),
+        Path("/home"),
+        Path("/var"),
+        Path("/usr"),
+        Path("/opt"),
+        Path("C:/"),
+        Path("C:/Windows"),
+        Path("C:/Program Files"),
+        Path("C:/Program Files (x86)"),
+    }
+
+    if resolved in forbidden:
+        return False, f"запрещённый путь: {resolved}"
+
+    # Не удалять родительские каталоги проекта
+    base = BASE_DIR.resolve()
+    if resolved == base:
+        return False, "корень приложения"
+
+    # HOME пользователя
+    try:
+        home = Path.home().resolve()
+        if resolved == home:
+            return False, "домашний каталог пользователя"
+    except Exception:
+        pass
+
+    # Корень файловой системы
+    if resolved.parent == resolved:
+        return False, f"корень файловой системы: {resolved}"
+
+    return True, ""
+
+
+@app.post("/delete-device/{device_type}/{index}")
+async def delete_device(
+    device_type: str,
+    index: int,
+    request: Request,
+    user: str = Depends(require_auth),
+):
+    """
+    Удаляет устройство целиком:
+        • запись из routers.json;
+        • запись и переиндексацию в state.json;
+        • директорию с бэкапами (recurse, включая .git);
+        • опционально — SSH-ключ, но только если он
+          локальный и не используется другими устройствами.
+
+    Порядок:
+        1. Собрать статистику.
+        2. Удалить из routers.json.
+        3. Пересобрать state.json.
+        4. Удалить директорию бэкапов.
+        5. Удалить SSH-ключ (если разрешено).
+    """
+    import shutil
+
+    if not plugin_manager or device_type not in plugin_manager._plugins:
+        raise HTTPException(404, "Плагин не найден")
+
+    plugin_data = plugin_manager._plugins[device_type]
+    routers = plugin_data.get("routers", [])
+
+    if not (0 <= index < len(routers)):
+        raise HTTPException(404, "Устройство не найдено")
+
+    form = await request.form()
+    remove_key = form.get("remove_key") == "true"
+
+    router = routers[index]
+    host = (
+        router.get("host")
+        or router.get("ip")
+        or f"#{index}"
+    )
+    device_name = router.get("name") or host
+    device_id = f"{device_type}/{index}"
+
+    # ---- 1. Статистика (для лога) ----
+
+    backup_path = None
+    backup_path_raw = router.get("backup_path", "")
+    if backup_path_raw:
+        backup_path = _resolve_backup_path(backup_path_raw)
+
+    removed_size = 0
+    removed_bytes = 0
+    if backup_path and backup_path.exists():
+        try:
+            removed_size = get_dir_size(backup_path)
+            removed_bytes = sum(
+                1 for f in backup_path.rglob("*") if f.is_file()
+            )
+        except Exception:
+            pass
+
+    # ---- 1.5. Проверка SSH-ключа до изменений ----
+
+    # Ключ можно удалить только если:
+    #   • запрошено пользователем (remove_key);
+    #   • путь относительный (внутри plugins/<type>/);
+    #   • он не используется другими устройствами.
+    key_name = (
+        router.get("ssh_key")
+        or router.get("private_key")
+        or ""
+    )
+    key_to_delete: Path | None = None
+    key_delete_blocked_reason = ""
+
+    if remove_key and key_name:
+        if Path(key_name).is_absolute():
+            key_delete_blocked_reason = "абсолютный путь"
+
+        else:
+            # Проверяем использование другими устройствами
+            # ДО удаления записи из routers.json.
+            shared_with = []
+            for i, other in enumerate(routers):
+                if i == index:
+                    continue
+                other_key = (
+                    other.get("ssh_key")
+                    or other.get("private_key")
+                    or ""
+                )
+                if other_key == key_name:
+                    shared_with.append(
+                        other.get("name")
+                        or other.get("host")
+                        or f"#{i}"
+                    )
+
+            if shared_with:
+                key_delete_blocked_reason = (
+                    "используется другими устройствами: "
+                    + ", ".join(shared_with)
+                )
+            else:
+                key_to_delete = (
+                    BASE_DIR / "plugins" / device_type / key_name
+                ).resolve()
+
+    # ---- 2. Удалить запись из routers.json ----
+
+    routers.pop(index)
+
+    target_dir = BASE_DIR / "plugins"
+    router_file_written = False
+    for p_folder in target_dir.iterdir():
+        if (
+            p_folder.is_dir()
+            and p_folder.name.lower() == device_type.lower()
+        ):
+            json_file = p_folder / "routers.json"
+            try:
+                with open(json_file, "w", encoding="utf-8") as f:
+                    json.dump(
+                        routers, f,
+                        ensure_ascii=False,
+                        indent=4,
+                    )
+                router_file_written = True
+            except OSError as exc:
+                logging.error(
+                    "delete-device: не удалось записать %s: %s",
+                    json_file, exc,
+                )
+                raise HTTPException(
+                    500, f"Не удалось обновить routers.json: {exc}"
+                )
+            break
+
+    if not router_file_written:
+        # Плагин без routers.json — восстанавливаем запись.
+        routers.insert(index, router)
+        raise HTTPException(
+            500,
+            f"Каталог плагина {device_type} не найден",
+        )
+
+    # ---- 3. Обновить state.json ----
+
+    try:
+        state = load_json(STATE_FILE, {})
+        if not isinstance(state, dict):
+            state = {}
+
+        other_devices = {
+            k: v for k, v in state.items()
+            if not k.startswith(f"{device_type}/")
+        }
+
+        # Было: A(0), B(1), C(2). Удалили B(1).
+        # Стало: A(0), C(1). Для A old_idx=0, для C old_idx=2.
+        # Правило: new_i < deleted_index → old_i = new_i;
+        #         new_i >= deleted_index → old_i = new_i + 1
+        new_devices = {}
+        for new_i in range(len(routers)):
+            old_i = new_i if new_i < index else new_i + 1
+            old_key = f"{device_type}/{old_i}"
+            if old_key in state:
+                new_devices[f"{device_type}/{new_i}"] = state[old_key]
+
+        final_state = {**other_devices, **new_devices}
+        save_json(STATE_FILE, final_state)
+
+    except Exception as exc:
+        logging.error(
+            "delete-device: ошибка state.json: %s",
+            exc, exc_info=True,
+        )
+
+    # ---- 4. Удалить директорию бэкапов ----
+
+    backup_removed = False
+    backup_error = ""
+    if backup_path:
+        safe, reason = _is_safe_to_delete(backup_path)
+        if not safe:
+            backup_error = reason
+            logging.error(
+                "delete-device: %s — отказ удаления бэкапов: %s",
+                device_id, reason,
+            )
+        elif not backup_path.exists():
+            backup_removed = True
+        else:
+            try:
+                shutil.rmtree(backup_path)
+                backup_removed = True
+            except Exception as exc:
+                backup_error = str(exc)
+                logging.error(
+                    "delete-device: не удалось удалить %s: %s",
+                    backup_path, exc, exc_info=True,
+                )
+
+    # ---- 5. Удалить SSH-ключ (если разрешено) ----
+
+    key_removed = False
+    if key_to_delete and key_to_delete.exists():
+        try:
+            key_to_delete.unlink()
+            key_removed = True
+        except OSError as exc:
+            logging.warning(
+                "delete-device: не удалось удалить ключ %s: %s",
+                key_to_delete, exc,
+            )
+
+    # ---- Логирование ----
+
+    size_str = format_size(removed_size)
+
+    if key_delete_blocked_reason:
+        key_status = f"сохранён ({key_delete_blocked_reason})"
+    elif key_removed:
+        key_status = "удалён"
+    else:
+        key_status = "сохранён"
+
+    logging.info(
+        "🗑 Удалено устройство %s (%s): "
+        "файлов %d (%s), SSH-ключ %s, запрос от %s",
+        device_name,
+        device_id,
+        removed_bytes,
+        size_str,
+        key_status,
+        user,
+    )
+    if backup_error:
+        logging.error(
+            "🗑 Каталог бэкапов не удалён: %s (%s)",
+            backup_path, backup_error,
+        )
+
+    return RedirectResponse(url="/", status_code=303)
 
 # =========================================================
 # RUN DIRECTLY

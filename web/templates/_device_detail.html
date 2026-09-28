@@ -79,6 +79,17 @@
                           border border-gray-200 dark:border-slate-700 transition">
                     📜 История версий
                 </a>
+                                <button type="button"
+                        onclick="openDeleteDialog()"
+                        title="Удалить устройство со всеми бэкапами"
+                        class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium
+                               bg-white dark:bg-slate-800
+                               hover:bg-rose-50 dark:hover:bg-rose-950/40
+                               hover:border-rose-300 dark:hover:border-rose-800
+                               text-rose-700 dark:text-rose-300
+                               border border-gray-200 dark:border-slate-700 transition">
+                    🗑 Удалить
+                </button>
             </div>
         </div>
     </div>
@@ -256,3 +267,141 @@
     </div>
     {% endif %}
 </div>
+
+
+<!-- ============================================================ -->
+<!-- Диалог удаления устройства                                    -->
+<!-- ============================================================ -->
+<dialog id="delete-device-dialog"
+        class="rounded-2xl p-6 max-w-lg w-full
+               bg-white dark:bg-slate-900
+               text-gray-900 dark:text-slate-100
+               border border-gray-200 dark:border-slate-700
+               shadow-xl backdrop:bg-black/50">
+
+    <form method="POST"
+          action="/delete-device/{{ d.type }}/{{ d.index }}">
+
+        <div class="flex items-start gap-3 mb-4">
+            <div class="text-3xl shrink-0">⚠️</div>
+            <div>
+                <h3 class="text-base font-semibold mb-1">
+                    Удалить устройство?
+                </h3>
+                <p class="text-sm text-gray-600 dark:text-slate-300">
+                    <b>{{ d.name or d.host }}</b>
+                    <span class="font-mono text-xs text-gray-500 dark:text-slate-400">
+                        ({{ d.host }})
+                    </span>
+                </p>
+            </div>
+        </div>
+
+        <div class="mb-4 px-4 py-3 rounded-xl
+                    bg-rose-50 dark:bg-rose-950/40
+                    border border-rose-200 dark:border-rose-900
+                    text-xs text-rose-800 dark:text-rose-300
+                    space-y-1.5">
+
+            <div class="font-semibold text-sm">
+                Действие необратимо
+            </div>
+
+            <div>Будет удалено:</div>
+            <ul class="list-disc list-inside space-y-0.5 ml-1">
+                <li>Запись устройства из списка</li>
+                <li>
+                    Каталог бэкапов:
+                    <code class="font-mono bg-rose-100 dark:bg-rose-900/60 px-1 rounded">{{ d.backup_path }}</code>
+                </li>
+                {% if d.git_total %}
+                <li>
+                    <b>{{ d.git_total }}</b>
+                    {{ 'версия' if d.git_total == 1 else 'версий' }}
+                    git-истории
+                </li>
+                {% endif %}
+            </ul>
+
+            {% if d.total_size and d.total_size != '0 Б' %}
+            <div class="pt-1">
+                Общий размер: <b>{{ d.total_size }}</b>
+            </div>
+            {% endif %}
+        </div>
+
+        {% if d.ssh_key_local and not d.ssh_key_shared %}
+        {# Ключ локальный и не используется другими — можно удалить #}
+        <div class="mb-4 px-4 py-3 rounded-xl
+                    bg-amber-50 dark:bg-amber-950/40
+                    border border-amber-200 dark:border-amber-900">
+            <label class="flex items-start gap-3 cursor-pointer">
+                <input type="checkbox"
+                       name="remove_key"
+                       value="true"
+                       class="mt-0.5 text-rose-600 focus:ring-rose-500">
+                <div class="text-xs text-amber-900 dark:text-amber-200">
+                    <div class="font-medium mb-0.5">
+                        Также удалить SSH-ключ
+                    </div>
+                    <code class="font-mono text-[11px] break-all">{{ d.ssh_key_path }}</code>
+                </div>
+            </label>
+        </div>
+        {% elif d.ssh_key_local and d.ssh_key_shared %}
+        {# Ключ используется другими — не предлагаем удалять #}
+        <div class="mb-4 px-4 py-3 rounded-xl
+                    bg-gray-100 dark:bg-slate-800
+                    border border-gray-200 dark:border-slate-700
+                    text-xs text-gray-700 dark:text-slate-300">
+            <div class="flex items-start gap-2">
+                <span class="text-base shrink-0">🔒</span>
+                <div>
+                    <div class="font-medium mb-0.5">
+                        SSH-ключ будет сохранён
+                    </div>
+                    <div>
+                        Он используется другими устройствами:
+                    </div>
+                    <ul class="list-disc list-inside mt-1 ml-1 space-y-0.5">
+                        {% for name in d.ssh_key_shared_with %}
+                        <li>{{ name }}</li>
+                        {% endfor %}
+                    </ul>
+                    <div class="mt-2 text-[11px] opacity-80 font-mono break-all">
+                        {{ d.ssh_key_path }}
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        <div class="flex justify-end gap-2">
+            <button type="button"
+                    onclick="closeDeleteDialog()"
+                    class="px-4 py-2 rounded-lg text-sm font-medium
+                           bg-white dark:bg-slate-800
+                           hover:bg-gray-100 dark:hover:bg-slate-700
+                           border border-gray-200 dark:border-slate-700 transition">
+                Отмена
+            </button>
+            <button type="submit"
+                    class="px-4 py-2 rounded-lg text-sm font-medium
+                           bg-rose-600 hover:bg-rose-700 text-white shadow-sm transition">
+                🗑 Удалить навсегда
+            </button>
+        </div>
+    </form>
+</dialog>
+
+<script>
+    function openDeleteDialog() {
+        const dlg = document.getElementById('delete-device-dialog');
+        if (dlg) dlg.showModal();
+    }
+
+    function closeDeleteDialog() {
+        const dlg = document.getElementById('delete-device-dialog');
+        if (dlg) dlg.close();
+    }
+</script>
