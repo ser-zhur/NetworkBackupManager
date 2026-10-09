@@ -46,23 +46,33 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Создать ярлык на рабочем столе"; GroupDescription: "Ярлыки:"; Flags: unchecked
 
 [Dirs]
-; Пустые рабочие каталоги (не удаляются при удалении приложения)
+; Рабочие каталоги приложения. Пользовательские данные
+; (data/, backups/, logs/, routers.json, ключи) создаются
+; самим приложением и НЕ отслеживаются Inno Setup — они
+; переживают uninstall, пока пользователь явно не согласится
+; их удалить (см. CurUninstallStepChanged → usPostUninstall).
 Name: "{app}\data"
 Name: "{app}\logs"
 Name: "{app}\backups"
 Name: "{app}\plugins"
-Name: "{app}\plugins\Mikrotik"
-Name: "{app}\plugins\Pfsense"
 Name: "{app}\storages"
 
 [Files]
 ; Основной исполняемый файл и его окружение
 Source: "dist\NetworkBackupManager\NetworkBackupManager.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\NetworkBackupManager\_internal\*";          DestDir: "{app}\_internal"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+; Web-UI: шаблоны Jinja2 и статика (tailwind.js, favicon.ico)
 Source: "dist\NetworkBackupManager\web\*";                DestDir: "{app}\web";       Flags: ignoreversion recursesubdirs createallsubdirs
+
+; Storage-бэкенды: git.py, ftp.py и будущие
 Source: "dist\NetworkBackupManager\storages\*";           DestDir: "{app}\storages";  Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "dist\NetworkBackupManager\plugins\Mikrotik\plugin.py"; DestDir: "{app}\plugins\Mikrotik"; Flags: ignoreversion
-Source: "dist\NetworkBackupManager\plugins\Pfsense\plugin.py";  DestDir: "{app}\plugins\Pfsense";  Flags: ignoreversion
+
+; Плагины устройств. build_exe.bat кладёт в dist только plugin.py —
+; routers.json и SSH-ключи пользователя НЕ попадают в дистрибутив.
+; Wildcard покрывает текущие (Mikrotik, Pfsense) и будущие плагины
+; без правок этого файла.
+Source: "dist\NetworkBackupManager\plugins\*";            DestDir: "{app}\plugins";   Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}";           Filename: "{app}\{#MyAppExeName}"; Comment: "Запустить Network Backup Manager"
@@ -71,13 +81,30 @@ Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}";     Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-; Открыть веб-панель после установки (пользователь может снять галку)
+; Открыть веб-панель после установки (пользователь может снять галку).
+; Внимание: служба стартует в ssPostInstall секундой ранее, uvicorn
+; поднимается не мгновенно — при первом клике браузер может показать
+; «не удаётся получить доступ». Через 2–3 секунды обновление страницы
+; решает проблему.
 Filename: "http://127.0.0.1:8080"; Description: "Открыть веб-панель в браузере"; Flags: shellexec nowait postinstall skipifsilent
 
-[UninstallDelete]
-; Ничего не удаляем автоматически — пользовательские данные
-; обрабатываются в CurUninstallStepChanged с запросом.
-Type: files; Name: "{app}\secret.key"
+; =========================================================
+; ВАЖНО: секция [UninstallDelete] удалена намеренно.
+;
+; Ранее здесь было:
+;     Type: files; Name: "{app}\secret.key"
+;
+; Это удаляло Fernet-ключ БЕЗУСЛОВНО, до показа диалога
+; «Удалить пользовательские данные?» в usPostUninstall.
+; Если пользователь отвечал «Нет» (хотел сохранить настройки
+; и backups для переустановки), routers.json оставался, но
+; все зашифрованные в нём ssh_pass теряли возможность
+; расшифровки — secret.key уже стёрт, Fernet.decrypt() вернёт "".
+;
+; Теперь secret.key удаляется только в usPostUninstall,
+; по явному согласию пользователя, вместе с остальными
+; пользовательскими данными (data/, backups/, logs/, ключи).
+; =========================================================
 
 [Code]
 
@@ -211,6 +238,10 @@ begin
       DelTree(ExpandConstant('{app}\data'),    True, True, True);
       DelTree(ExpandConstant('{app}\backups'), True, True, True);
       DelTree(ExpandConstant('{app}\logs'),    True, True, True);
+
+      // secret.key удаляется ТОЛЬКО здесь, по явному согласию.
+      // Без него невозможно расшифровать ssh_pass в routers.json —
+      // поэтому при «Нет» ключ сохраняется вместе с конфигами.
       DeleteFile(ExpandConstant('{app}\secret.key'));
 
       DeleteFile(ExpandConstant('{app}\plugins\Mikrotik\routers.json'));

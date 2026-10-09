@@ -317,7 +317,7 @@ def _status_meta(status: str) -> dict:
             "dot": "bg-emerald-500",
             "ring": "ring-emerald-500/15",
             "badge": "bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300",
-            "label": "Свежий",
+            "label": "Актуальный",
         },
         "warn": {
             "dot": "bg-amber-500",
@@ -872,12 +872,24 @@ def _iter_device_backup_paths():
             
             
 def classify_device(age_days, last_attempt_ok) -> str:
-    """ok / warn / fail / none."""
+    """
+    ok / warn / fail / none.
+
+    age_days — давность последней УСПЕШНОЙ СИНХРОНИЗАЦИИ
+    (state.json.last_run), а НЕ давность последнего
+    git-коммита.
+
+    Если с устройством успешно связались недавно, но
+    изменений не нашли — коммита нет, однако устройство
+    «Актуально»: оно исправно опрашивается.
+
+    Порог ok — 14 дней (включительно).
+    """
     if last_attempt_ok is False:
         return "fail"
     if age_days is None:
         return "none"
-    if age_days < 15:
+    if age_days <= 14:
         return "ok"
     if age_days <= 30:
         return "warn"
@@ -919,11 +931,14 @@ def _build_device_payload(
                 device_type, index, exc,
             )
 
-    # ---- Метрики из git (последний успешный бэкап) ----
+    # ---- Метрики из git (последнее изменение конфига) ----
     #
     # git хранит только успешные версии — коммит создаётся
     # лишь когда конфиг реально изменился. Это делает
-    # git-историю правильным источником для last_success.
+    # git-историю источником для last_success и backup_count,
+    # но НЕ для статуса «свежести» устройства: если конфиг
+    # не менялся, коммитов не будет, хотя устройство
+    # исправно опрашивается.
     if git_commits:
         last = git_commits[0]
         try:
@@ -941,12 +956,18 @@ def _build_device_payload(
         age_days = None
         backup_count = 0
 
-    # ---- Метрики из state.json (последняя попытка) ----
+    # ---- Последняя попытка (state.json) ----
     #
     # state.json пишется plugin_manager._save_backend_state()
     # при каждом запуске бэкапа — вне зависимости от того,
     # создан коммит или нет. Это позволяет видеть результат
-    # неудачных попыток, которых в git-истории не будет.
+    # как удачных попыток, так и неудачных, которых в
+    # git-истории не будет.
+    #
+    # Именно этот timestamp является правильным индикатором
+    # «свежести» устройства: git-коммит не создаётся, если
+    # изменений нет, но контакт с роутером был и завершился
+    # успешно.
     #
     # last_attempt_ok:
     #   None  — попыток ещё не было
@@ -960,6 +981,17 @@ def _build_device_payload(
 
     if last_run_str:
         last_attempt_date = last_run_str
+
+        try:
+            last_attempt_dt = datetime.strptime(
+                last_run_str, "%Y-%m-%d %H:%M:%S"
+            )
+            last_attempt_age_days = (
+                datetime.now() - last_attempt_dt
+            ).days
+        except ValueError:
+            last_attempt_age_days = None
+
         if backends_state:
             last_attempt_ok = all(
                 bool(b.get("ok"))
@@ -971,6 +1003,7 @@ def _build_device_payload(
             last_attempt_ok = True
     else:
         last_attempt_date = None
+        last_attempt_age_days = None
         last_attempt_ok = None
 
     total_bytes = _get_dir_size_excluding_git(b_path_abs)
@@ -981,7 +1014,18 @@ def _build_device_payload(
     else:
         avg_size = "—"
 
-    status = classify_device(age_days, last_attempt_ok)
+    # ---- Статус ----
+    #
+    # Приоритет — давность последней попытки: именно она
+    # отражает, опрашивается ли устройство прямо сейчас.
+    # Если state.json пуст (legacy-установки до появления
+    # этого поля) — откатываемся на возраст git-коммита.
+    if last_attempt_age_days is not None:
+        status = classify_device(
+            last_attempt_age_days, last_attempt_ok
+        )
+    else:
+        status = classify_device(age_days, last_attempt_ok)
 
     ip_addr = (
         router.get("host")
