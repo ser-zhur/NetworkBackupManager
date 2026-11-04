@@ -1,11 +1,12 @@
 logs/
 Backups/
 temp/
-NetworkBackupManager.rar
-NetworkBackupManager.zip
+dist/
+venv/
+build/
+*.rar
+*.zip
 *.key
-D:\MySoft\routerbackups\NetworkBackupManager\plugins\Mikrotik\id_rsa.key
-plugins/Mikrotik/id_rsa.key
 *.log
-plugins/Mikrotik/id_rsa.key
 *.json
+*.tmp
