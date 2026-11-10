@@ -1,3 +1,16 @@
+# ============================================================
+# Test_SSH.py
+# ============================================================
+# Проверка полного цикла на MikroTik:
+#   SSH handshake → publickey auth → exec → SCP download.
+#
+# В отличие от Test_SSH_ROS7.py здесь настраивается полный
+# набор параметров Transport (kex, host key, cipher, MAC)
+# и используется отключение SHA2-подписей для userauth —
+# так, чтобы гарантированно сработать и на ROS6, и на ROS7.
+# ============================================================
+
+import logging
 import sys
 import time
 import traceback
@@ -8,55 +21,65 @@ from scp import SCPClient
 
 
 # ============================================================
-# НАСТРОЙКИ
+# НАСТРОЙКИ — замените под нужное устройство
 # ============================================================
 
-HOST = "192.0.2.1"
+HOST = "192.0.2.1"          # ← поменяйте
 PORT = 22
-USERNAME = "backup"
+USERNAME = "backup"         # ← поменяйте, если ходите под другим
 
-KEY_FILE = Path(
-    r"D:\MySoft\routerbackups\NetworkBackupManager\plugins\Mikrotik\id_rsa.key"
-)
+KEY_FILE = Path(r"D:\MySoft\routerbackups\NetworkBackupManager\plugins\Mikrotik\id_rsa.key")
 
-DEBUG_LOG = Path(__file__).with_name("paramiko_debug.log")
+DEBUG_LOG = Path(__file__).resolve().with_name("paramiko_debug.log")
 
-
-# ============================================================
-# PARAMIKO DEBUG
-# ============================================================
-
-paramiko.util.log_to_file(
-    str(DEBUG_LOG),
-    level="DEBUG"
-)
+TIMEOUT = 15
 
 
 # ============================================================
-# ЗАГРУЗКА КЛЮЧА
+# ЛОГИРОВАНИЕ
+# ============================================================
+
+def setup_logging():
+    try:
+        if DEBUG_LOG.exists():
+            try:
+                DEBUG_LOG.unlink()
+            except Exception:
+                pass
+
+        handler = logging.FileHandler(str(DEBUG_LOG), encoding="utf-8")
+        handler.setFormatter(logging.Formatter(
+            "%(levelname)s [%(asctime)s] %(name)s: %(message)s"
+        ))
+
+        root = logging.getLogger()
+        for h in list(root.handlers):
+            root.removeHandler(h)
+        root.addHandler(handler)
+        root.setLevel(logging.DEBUG)
+
+        logging.getLogger("paramiko").setLevel(logging.DEBUG)
+
+    except Exception as exc:
+        print(f"[WARNING] Не удалось настроить DEBUG LOG: {exc}")
+
+
+# ============================================================
+# КЛЮЧ
 # ============================================================
 
 def load_key():
-
-    print("=" * 70)
+    print("=" * 72)
     print("ЗАГРУЗКА RSA КЛЮЧА")
-    print("=" * 70)
-
+    print("=" * 72)
     print(f"Файл: {KEY_FILE}")
 
     if not KEY_FILE.exists():
-        raise FileNotFoundError(
-            f"Ключ не найден:\n{KEY_FILE}"
-        )
+        raise FileNotFoundError(f"Ключ не найден: {KEY_FILE}")
 
-    key = paramiko.RSAKey.from_private_key_file(
-        str(KEY_FILE)
-    )
-
-    print()
-    print("[OK] RSA ключ загружен")
+    key = paramiko.RSAKey.from_private_key_file(str(KEY_FILE))
+    print(f"[OK] RSA ключ загружен")
     print(f"Bits: {key.get_bits()}")
-
     return key
 
 
@@ -65,507 +88,253 @@ def load_key():
 # ============================================================
 
 def create_transport():
-
     print()
-    print("=" * 70)
+    print("=" * 72)
     print("СОЗДАНИЕ SSH TRANSPORT")
-    print("=" * 70)
+    print("=" * 72)
 
+    # disabled_algorithms для USERAUTH — обязательный аргумент
+    # конструктора. MikroTik (6 и большинство 7) не принимает
+    # подписи RSA-SHA2, поэтому отключаем оба, оставляя ssh-rsa.
     transport = paramiko.Transport(
-        (HOST, PORT)
+        (HOST, PORT),
+        disabled_algorithms={
+            "pubkeys": ["rsa-sha2-512", "rsa-sha2-256"],
+        },
     )
 
     security = transport.get_security_options()
 
-    # --------------------------------------------------------
-    # KEX
-    # --------------------------------------------------------
-
+    # KEX — широкий список, MikroTik выберет сам.
+    # Включены и современные, и устаревшие DH-группы.
     security.kex = (
+        "curve25519-sha256",
         "diffie-hellman-group-exchange-sha256",
+        "diffie-hellman-group14-sha256",
+        "diffie-hellman-group14-sha1",
+        "diffie-hellman-group1-sha1",
     )
 
-    # --------------------------------------------------------
-    # HOST KEY
-    # --------------------------------------------------------
-
+    # HOST KEY — то, чем сервер представляется клиенту.
+    # Это НЕ то же, что подпись userauth.
     security.key_types = (
         "rsa-sha2-256",
+        "ssh-rsa",
     )
 
-    # --------------------------------------------------------
-    # CIPHER
-    # --------------------------------------------------------
-
+    # Шифры
     security.ciphers = (
         "aes128-ctr",
+        "aes192-ctr",
+        "aes256-ctr",
     )
 
-    # --------------------------------------------------------
-    # MAC
-    # --------------------------------------------------------
-
+    # MAC — hmac-sha1 нужен для старых ROS; hmac-sha2-256 —
+    # для ROS7 с strong-crypto=yes.
     security.digests = (
+        "hmac-sha2-256",
         "hmac-sha1",
     )
 
+    # (Опционально) разрешаем и SHA1, и SHA2 compress — нет,
+    # compress оставляем как есть.
+
     print()
-    print("Настройки:")
+    print("Настройки (что предлагаем серверу):")
+    print("  KEX      :", security.kex)
+    print("  HostKey  :", security.key_types)
+    print("  Cipher   :", security.ciphers)
+    print("  MAC      :", security.digests)
+    print("  disabled : {'pubkeys': ['rsa-sha2-512', 'rsa-sha2-256']}")
 
-    print(
-        "KEX      :",
-        security.kex
-    )
-
-    print(
-        "HostKey  :",
-        security.key_types
-    )
-
-    print(
-        "Cipher   :",
-        security.ciphers
-    )
-
-    print(
-        "MAC      :",
-        security.digests
-    )
+    try:
+        preferred = getattr(transport, "_preferred_pubkeys", None)
+        if preferred:
+            print("  Userauth pubkey order:", list(preferred))
+    except Exception:
+        pass
 
     return transport
 
 
 # ============================================================
-# ИНФОРМАЦИЯ О TRANSPORT
+# ИНФО
 # ============================================================
 
 def show_transport_info(transport):
-
     print()
-    print("=" * 70)
+    print("=" * 72)
     print("ФАКТИЧЕСКОЕ SSH СОЕДИНЕНИЕ")
-    print("=" * 70)
-
-    print(
-        "Remote version:",
-        transport.remote_version
-    )
-
-    print(
-        "Host key:",
-        transport.host_key_type
-    )
-
-    print(
-        "Local cipher:",
-        transport.local_cipher
-    )
-
-    print(
-        "Remote cipher:",
-        transport.remote_cipher
-    )
-
-    print(
-        "Local MAC:",
-        transport.local_mac
-    )
-
-    print(
-        "Remote MAC:",
-        transport.remote_mac
-    )
+    print("=" * 72)
+    print("Remote version:", transport.remote_version)
+    print("Host key type :", transport.host_key_type)
+    print("Cipher C->S   :", transport.local_cipher)
+    print("Cipher S->C   :", transport.remote_cipher)
+    print("MAC    C->S   :", transport.local_mac)
+    print("MAC    S->C   :", transport.remote_mac)
 
 
 # ============================================================
-# EXEC COMMAND
+# EXEC
 # ============================================================
 
 def exec_command(transport, command):
-
     print()
-    print("-" * 70)
-    print("COMMAND")
-    print("-" * 70)
-
-    print(command)
+    print("-" * 72)
+    print("COMMAND:", command)
+    print("-" * 72)
 
     channel = transport.open_session()
-
     try:
-
         channel.exec_command(command)
-
         start = time.time()
-
         while not channel.exit_status_ready():
-
-            if time.time() - start > 20:
-
-                raise TimeoutError(
-                    f"Timeout выполнения команды: {command}"
-                )
-
+            if time.time() - start > TIMEOUT:
+                raise TimeoutError(f"Timeout: {command}")
             time.sleep(0.1)
 
-        exit_code = channel.recv_exit_status()
+        code = channel.recv_exit_status()
+        stdout = channel.makefile("rb", -1).read().decode("utf-8", errors="replace")
+        stderr = channel.makefile_stderr("rb", -1).read().decode("utf-8", errors="replace")
 
-        stdout = channel.makefile(
-            "rb",
-            -1
-        ).read()
-
-        stderr = channel.makefile_stderr(
-            "rb",
-            -1
-        ).read()
-
-        stdout = stdout.decode(
-            "utf-8",
-            errors="replace"
-        )
-
-        stderr = stderr.decode(
-            "utf-8",
-            errors="replace"
-        )
-
-        print()
-        print("Exit code:", exit_code)
-
+        print("Exit code:", code)
         if stdout.strip():
-
-            print()
             print("STDOUT:")
             print(stdout)
-
         if stderr.strip():
-
-            print()
             print("STDERR:")
             print(stderr)
-
-        return exit_code, stdout, stderr
-
+        return code, stdout, stderr
     finally:
-
         channel.close()
 
 
 # ============================================================
-# SCP TEST
+# SCP
 # ============================================================
 
-def test_scp(transport):
-
+def test_scp(transport, remote_file):
     print()
-    print("=" * 70)
+    print("=" * 72)
     print("SCP TEST")
-    print("=" * 70)
+    print("=" * 72)
+    print(f"Пробуем скачать: {remote_file}")
 
-    test_file = "auto-export.rsc"
-
-    local_file = Path(__file__).with_name(
-        "test_download.rsc"
-    )
-
-    print()
-    print(
-        f"Пробуем скачать: {test_file}"
-    )
+    local_file = Path(__file__).with_name("test_download.rsc")
+    if local_file.exists():
+        try:
+            local_file.unlink()
+        except Exception:
+            pass
 
     try:
-
-        with SCPClient(
-            transport
-        ) as scp:
-
-            scp.get(
-                test_file,
-                str(local_file)
-            )
+        with SCPClient(transport) as scp:
+            scp.get(remote_file, str(local_file))
 
         if not local_file.exists():
-
-            raise RuntimeError(
-                "SCP не создал локальный файл"
-            )
+            raise RuntimeError("SCP не создал локальный файл")
 
         size = local_file.stat().st_size
-
-        print()
-        print("[SUCCESS] SCP работает")
-        print(
-            f"Файл: {local_file}"
-        )
-        print(
-            f"Размер: {size} bytes"
-        )
-
+        print(f"[SUCCESS] SCP работает")
+        print(f"  Файл:   {local_file}")
+        print(f"  Размер: {size} bytes")
         return True
-
-    except Exception as e:
-
-        print()
-        print("[FAILED] SCP")
-        print(
-            f"{type(e).__name__}: {e}"
-        )
-
+    except Exception as exc:
+        print(f"[FAILED] SCP: {type(exc).__name__}: {exc}")
         return False
 
 
 # ============================================================
-# MAIN TEST
+# MAIN
 # ============================================================
 
 def main():
+    setup_logging()
 
     print()
-    print("=" * 70)
+    print("=" * 72)
     print("PARAMIKO TEST ДЛЯ MIKROTIK ROS")
-    print("=" * 70)
-
-    print()
-    print(
-        "Paramiko:",
-        paramiko.__version__
-    )
-
-    print(
-        "Host:",
-        HOST
-    )
-
-    print(
-        "User:",
-        USERNAME
-    )
-
-    print(
-        "Key:",
-        KEY_FILE
-    )
+    print("=" * 72)
+    print("Paramiko:", paramiko.__version__)
+    print("Host:    ", HOST)
+    print("User:    ", USERNAME)
+    print("Key:     ", KEY_FILE)
+    print("Debug:   ", DEBUG_LOG)
 
     transport = None
-
     try:
-
-        # ----------------------------------------------------
-        # 1. KEY
-        # ----------------------------------------------------
-
         key = load_key()
-
-        # ----------------------------------------------------
-        # 2. TRANSPORT
-        # ----------------------------------------------------
 
         transport = create_transport()
 
-        # ----------------------------------------------------
-        # 3. START SSH
-        # ----------------------------------------------------
-
         print()
-        print("=" * 70)
+        print("=" * 72)
         print("SSH HANDSHAKE")
-        print("=" * 70)
-
-        transport.start_client(
-            timeout=10
-        )
-
-        print()
+        print("=" * 72)
+        transport.start_client(timeout=TIMEOUT)
         print("[OK] SSH handshake")
 
-        # ----------------------------------------------------
-        # 4. HOST KEY
-        # ----------------------------------------------------
-
         server_key = transport.get_remote_server_key()
-
         print()
         print("Server host key:")
-        print(
-            "Type:",
-            server_key.get_name()
-        )
+        print("  Type:", server_key.get_name())
+        print("  Fingerprint (MD5):",
+              ":".join(f"{b:02x}" for b in server_key.get_fingerprint()))
 
-        print(
-            "Fingerprint:",
-            server_key.get_fingerprint().hex()
-        )
-
-        # ----------------------------------------------------
-        # 5. USER AUTH
-        # ----------------------------------------------------
+        show_transport_info(transport)
 
         print()
-        print("=" * 70)
+        print("=" * 72)
         print("PUBLIC KEY AUTHENTICATION")
-        print("=" * 70)
-
-        print()
-        print(
-            "Пробуем RSA private key..."
-        )
-
-        transport.auth_publickey(
-            USERNAME,
-            key
-        )
-
+        print("=" * 72)
+        transport.auth_publickey(USERNAME, key)
         if not transport.is_authenticated():
-
-            raise RuntimeError(
-                "Paramiko не прошёл authentication"
-            )
-
-        print()
+            raise RuntimeError("Paramiko не прошёл authentication")
         print("[SUCCESS] Authentication OK")
 
-        # ----------------------------------------------------
-        # 6. SHOW NEGOTIATED PARAMETERS
-        # ----------------------------------------------------
-
-        show_transport_info(
-            transport
-        )
-
-        # ----------------------------------------------------
-        # 7. TEST COMMAND
-        # ----------------------------------------------------
-
+        # Проверка exec
         code, stdout, stderr = exec_command(
-            transport,
-            "/system identity print"
+            transport, "/system identity print"
         )
-
         if code != 0:
-
-            raise RuntimeError(
-                "Команда /system identity print "
-                "завершилась ошибкой"
-            )
-
-        print()
+            raise RuntimeError("/system identity print failed")
         print("[SUCCESS] SSH command works")
 
-        # ----------------------------------------------------
-        # 8. FILE LIST
-        # ----------------------------------------------------
+        # Список файлов
+        exec_command(transport, "/file print without-paging")
 
-        exec_command(
-            transport,
-            "/file print without-paging"
+        # SCP — только если файл есть
+        code, stdout, _ = exec_command(
+            transport, '/file print where name="auto-export.rsc"'
         )
-
-        print()
-        print("[SUCCESS] /file print works")
-
-        # ----------------------------------------------------
-        # 9. SCP
-        # ----------------------------------------------------
-
-        # SCP проверяем только если файл уже есть
-        #
-        # Если auto-export.rsc отсутствует,
-        # это НЕ ошибка SSH.
-
-        print()
-        print(
-            "Проверяем наличие auto-export.rsc..."
-        )
-
-        code, stdout, stderr = exec_command(
-            transport,
-            '/file print where name="auto-export.rsc"'
-        )
-
         if "auto-export.rsc" in stdout:
-
-            test_scp(
-                transport
-            )
-
+            test_scp(transport, "auto-export.rsc")
         else:
-
             print()
-            print(
-                "[SKIP] auto-export.rsc "
-                "отсутствует на роутере"
-            )
-
-        # ----------------------------------------------------
-        # SUCCESS
-        # ----------------------------------------------------
+            print("[SKIP] auto-export.rsc отсутствует на роутере")
 
         print()
-        print("=" * 70)
+        print("=" * 72)
         print("ИТОГ")
-        print("=" * 70)
-
-        print()
-        print(
-            "Paramiko успешно подключился "
-            "к MikroTik."
-        )
-
-        print()
-        print(
-            "SSH authentication: OK"
-        )
-
-        print(
-            "SSH commands: OK"
-        )
-
-        print()
-        print(
-            f"DEBUG LOG:\n{DEBUG_LOG}"
-        )
-
+        print("=" * 72)
+        print("Paramiko подключился, auth OK, exec OK.")
+        print("DEBUG LOG:", DEBUG_LOG)
         return 0
 
-    except Exception as e:
-
+    except Exception as exc:
         print()
-        print("=" * 70)
+        print("=" * 72)
         print("ОШИБКА")
-        print("=" * 70)
-
-        print()
-        print(
-            "Тип:",
-            type(e).__name__
-        )
-
-        print(
-            "Ошибка:",
-            e
-        )
-
-        print()
+        print("=" * 72)
+        print("Тип:    ", type(exc).__name__)
+        print("Ошибка: ", exc)
         print("TRACEBACK:")
-
         traceback.print_exc()
-
-        print()
-        print(
-            "DEBUG LOG:"
-        )
-
-        print(
-            DEBUG_LOG
-        )
-
+        print("DEBUG LOG:", DEBUG_LOG)
         return 1
 
     finally:
-
-        if transport:
-
+        if transport is not None:
             try:
                 transport.close()
             except Exception:
@@ -573,14 +342,10 @@ def main():
 
 
 if __name__ == "__main__":
-
-    exit_code = main()
-
+    code = main()
     print()
-    input(
-        "Нажмите ENTER для выхода..."
-    )
-
-    sys.exit(
-        exit_code
-    )
+    try:
+        input("Нажмите ENTER для выхода...")
+    except EOFError:
+        pass
+    sys.exit(code)

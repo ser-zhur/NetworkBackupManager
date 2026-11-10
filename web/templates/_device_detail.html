@@ -1,4 +1,4 @@
-    {# ========================================================= #}
+{# ========================================================= #}
 {# PARTIAL: карточка выбранного устройства                   #}
 {# Контекст: d — payload из _build_device_payload()          #}
 {# ========================================================= #}
@@ -36,7 +36,7 @@
                     <span class="text-gray-500 dark:text-slate-400">Последнее изменение конфига:</span>
                     {% if d.last_success %}
                         <span class="font-mono font-semibold">{{ d.last_success }}</span>
-                        <span class="text-xs font-medium {{ age_class(d.last_success_age_days) }}">({{ age_label(d.last_success_age_days) }})</span>
+                        <span class="text-xs font-medium text-gray-500 dark:text-slate-400">({{ age_label(d.last_success_age_days) }})</span>
                     {% else %}
                         <span class="text-gray-400 dark:text-slate-500 italic">не было ни одного</span>
                     {% endif %}
@@ -98,17 +98,20 @@
 <!-- STATS -->
 <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
     <div class="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-4">
-        <div class="text-[11px] uppercase tracking-wide font-semibold text-gray-500 dark:text-slate-400">Последний успех</div>
+        <div class="text-[11px] uppercase tracking-wide font-semibold text-gray-500 dark:text-slate-400">Последнее изменение</div>
         <div class="mt-1.5 text-lg font-bold font-mono">{{ d.last_success or '—' }}</div>
-        <div class="mt-1 text-[11px] font-medium {{ age_class(d.last_success_age_days) }}">{{ age_label(d.last_success_age_days) }}</div>
+        <div class="mt-1 text-[11px] text-gray-500 dark:text-slate-400">{{ age_label(d.last_success_age_days) }}</div>
     </div>
 
     <div class="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-4">
-        <div class="text-[11px] uppercase tracking-wide font-semibold text-gray-500 dark:text-slate-400">Последняя попытка</div>
+        <div class="text-[11px] uppercase tracking-wide font-semibold text-gray-500 dark:text-slate-400">Последняя успешная связь</div>
         {% if d.last_attempt %}
             <div class="mt-1.5 font-mono text-sm">{{ d.last_attempt }}</div>
-            <div class="mt-1 text-[11px] font-medium {{ 'text-emerald-600 dark:text-emerald-400' if d.last_attempt_ok else 'text-rose-600 dark:text-rose-400' }}">
-                {{ '✓ успешно' if d.last_attempt_ok else '✗ ошибка' }}
+            <div class="mt-1 text-[11px] font-medium {{ age_class(d.last_attempt_age_days) }}">
+                {{ age_label(d.last_attempt_age_days) }}
+                <span class="ml-1 {{ 'text-emerald-600 dark:text-emerald-400' if d.last_attempt_ok else 'text-rose-600 dark:text-rose-400' }}">
+                    {{ '✓' if d.last_attempt_ok else '✗' }}
+                </span>
             </div>
         {% else %}
             <div class="mt-1.5 text-gray-400 dark:text-slate-500">—</div>

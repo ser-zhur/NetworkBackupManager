@@ -86,6 +86,8 @@ from core.logger import (
     setup_logging,
     set_device_context,
     clear_device_context,
+    set_connection_debug,
+    clear_connection_debug,
 )
 
 from core.git_storage import (
@@ -277,6 +279,7 @@ async def lifespan(
 app = FastAPI(
     title="Network Backup Manager",
     lifespan=lifespan,
+    debug=True,
 )
 
 
@@ -1141,6 +1144,7 @@ def _build_device_payload(
         "last_success_age_days": age_days,
         "last_attempt": last_attempt_date,
         "last_attempt_ok": last_attempt_ok,
+        "last_attempt_age_days": last_attempt_age_days, 
         "backup_count": backup_count,
         "max_backups": router.get("max_backups", 7),
         "total_size": total_size,
@@ -1179,6 +1183,17 @@ def execute_device_backup_task(
 
     set_device_context(f"{device_type}/{host}")
 
+    debug_connection = bool(secure_router.get("debug_connection"))
+
+    set_device_context(f"{device_type}/{host}")
+    backup_started(device_id)
+
+    if debug_connection:
+        set_connection_debug(f"{device_type}/{host}")
+        logging.info(
+            "🐛 Debug подключения включён: %s/%s", device_type, host
+        )
+
     backup_started(device_id)
     try:
         plugin = (
@@ -1201,6 +1216,19 @@ def execute_device_backup_task(
         logging.info("🚀 [Фон] Запуск бэкапа: %s", ip_disp)
 
         created_files = backup_func(secure_router)
+        
+        # Если плагин определил служебные поля (ros_version),
+        # переносим их в in-memory конфиг и routers.json.
+        if plugin_manager is not None:
+            try:
+                plugin_manager.persist_router_service_fields(
+                    device_type, index, secure_router,
+                )
+            except Exception as exc:
+                logging.warning(
+                    "Не удалось сохранить служебные поля "
+                    "роутера: %s", exc,
+                )
 
         # created_files может быть [] — «нет изменений», успех.
         # Плагин, у которого что-то сломалось, обязан кинуть исключение.
@@ -1236,6 +1264,12 @@ def execute_device_backup_task(
         logging.error("❌ [Фон] Ошибка при бэкапе: %s", exc)
 
     finally:
+        if debug_connection:
+            logging.info(
+                "🐛 Debug подключения выключен: %s/%s",
+                device_type, host,
+            )
+            clear_connection_debug()
         backup_finished(device_id)
         clear_device_context()
 
@@ -2051,6 +2085,9 @@ async def save_router_endpoint(
         )
 
     new_router["storage"] = _parse_storage_form(form, {})
+    
+    if form.get("debug_connection") == "true":
+        new_router["debug_connection"] = True
 
     plugin_data = (
         plugin_manager
@@ -3412,13 +3449,25 @@ async def update_router(
     old_storage = old_router.get("storage") or {}
     updated_router["storage"] = _parse_storage_form(form, old_storage)
 
-    routers_list[
-        index
-    ] = updated_router
+    if form.get("debug_connection") == "true":
+        updated_router["debug_connection"] = True
+
+    routers_list[index] = updated_router
 
     target_dir = (
         BASE_DIR / "plugins"
     )
+
+    _SERVICE_FIELDS = ("ros_version",)
+    for field in _SERVICE_FIELDS:
+        if field in old_router:
+            updated_router[field] = old_router[field]
+
+    if form.get("debug_connection") == "true":
+        updated_router["debug_connection"] = True
+
+    routers_list[index] = updated_router
+
 
     for p_folder in (
         target_dir.iterdir()

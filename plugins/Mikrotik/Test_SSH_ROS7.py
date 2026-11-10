@@ -1,7 +1,23 @@
-import os
-import sys
-import socket
+# ============================================================
+# Test_SSH_ROS7.py
+# ============================================================
+# Диагностика public-key authentication на MikroTik RouterOS 6/7.
+#
+# Перебирает три варианта RSA-подписи userauth:
+#   1) rsa-sha2-512   (самый современный, дефолт paramiko)
+#   2) rsa-sha2-256   (может поддерживаться новыми ROS7)
+#   3) ssh-rsa        (legacy SHA-1, гарантированно работает на всех ROS)
+# Плюс отдельно — «standard paramiko» (без disabled_algorithms).
+#
+# Для каждого варианта — новое TCP-соединение, свой Transport.
+# Результат пишется в paramiko_debug.log и на консоль.
+# ============================================================
+
+import base64
+import hashlib
 import logging
+import socket
+import sys
 import traceback
 from pathlib import Path
 
@@ -9,22 +25,18 @@ import paramiko
 
 
 # ============================================================
-# НАСТРОЙКИ
+# НАСТРОЙКИ — замените под нужное устройство
 # ============================================================
 
-HOST = "192.0.2.3"
+HOST = "192.0.2.1"          # ← поменяйте
 PORT = 22
-USERNAME = "backup"
+USERNAME = "backup"         # ← поменяйте, если ходите под другим
 
-KEY_PATH = (
-    Path(__file__).resolve().parent / "id_rsa.key"
-)
+KEY_PATH = Path(__file__).resolve().parent / "id_rsa.key"
 
-DEBUG_LOG = (
-    Path(__file__).resolve().parent / "paramiko_debug.log"
-)
+DEBUG_LOG = Path(__file__).resolve().parent / "paramiko_debug.log"
 
-TIMEOUT = 10
+TIMEOUT = 15
 
 
 # ============================================================
@@ -32,39 +44,35 @@ TIMEOUT = 10
 # ============================================================
 
 def setup_logging():
-    """
-    Полный DEBUG Paramiko в отдельный файл.
-    """
-
     try:
-        DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
-
-        # Старый лог удаляем, чтобы каждый запуск был чистым.
         if DEBUG_LOG.exists():
             try:
                 DEBUG_LOG.unlink()
             except Exception:
                 pass
 
-        logging.basicConfig(
-            filename=str(DEBUG_LOG),
-            level=logging.DEBUG,
-            format="%(levelname)s [%(asctime)s] %(name)s: %(message)s",
-            force=True,
-        )
+        handler = logging.FileHandler(str(DEBUG_LOG), encoding="utf-8")
+        handler.setFormatter(logging.Formatter(
+            "%(levelname)s [%(asctime)s] %(name)s: %(message)s"
+        ))
 
-        paramiko_logger = logging.getLogger("paramiko")
-        paramiko_logger.setLevel(logging.DEBUG)
+        root = logging.getLogger()
+        for h in list(root.handlers):
+            root.removeHandler(h)
+        root.addHandler(handler)
+        root.setLevel(logging.DEBUG)
 
-    except Exception as e:
-        print(f"[WARNING] Не удалось настроить DEBUG LOG: {e}")
+        logging.getLogger("paramiko").setLevel(logging.DEBUG)
+
+    except Exception as exc:
+        print(f"[WARNING] Не удалось настроить DEBUG LOG: {exc}")
 
 
 # ============================================================
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ВСПОМОГАТЕЛЬНОЕ
 # ============================================================
 
-def separator(char="=", length=70):
+def separator(char="=", length=72):
     print(char * length)
 
 
@@ -75,22 +83,17 @@ def print_title(text):
     separator()
 
 
-def fingerprint_md5(key):
-    """
-    MD5 fingerprint для удобства сравнения со старыми SSH-клиентами.
-    """
-    return ":".join(
-        f"{b:02x}" for b in key.get_fingerprint()
-    )
+def fingerprint_md5(key) -> str:
+    return ":".join(f"{b:02x}" for b in key.get_fingerprint())
 
 
-def fingerprint_sha256(key):
+def fingerprint_sha256(key) -> str:
     """
-    SHA256 fingerprint SSH host key.
+    Правильный SHA256 fingerprint в формате ssh-keygen.
+    Для private RSAKey asbytes() возвращает blob публичной части —
+    это именно то, что сервер видит как ключ пользователя.
+    Для host key то же самое.
     """
-    import base64
-    import hashlib
-
     digest = hashlib.sha256(key.asbytes()).digest()
     return base64.b64encode(digest).decode().rstrip("=")
 
@@ -101,7 +104,6 @@ def fingerprint_sha256(key):
 
 def load_private_key():
     print_title("ПРОВЕРКА RSA PRIVATE KEY")
-
     print(f"Файл: {KEY_PATH}")
 
     if not KEY_PATH.exists():
@@ -111,68 +113,46 @@ def load_private_key():
     print("[OK] Файл ключа существует")
 
     try:
-        key = paramiko.RSAKey.from_private_key_file(
-            str(KEY_PATH)
-        )
-
+        key = paramiko.RSAKey.from_private_key_file(str(KEY_PATH))
         print("[OK] RSA ключ успешно загружен")
-        print(f"Bits: {key.get_bits()}")
-        print(f"Fingerprint MD5: {fingerprint_md5(key)}")
-
+        print(f"Bits:        {key.get_bits()}")
+        print(f"Type:        {key.get_name()}")
+        print(f"MD5:         {fingerprint_md5(key)}")
+        print(f"SHA256:      {fingerprint_sha256(key)}")
         return key
-
-    except Exception as e:
+    except Exception as exc:
         print("[FAIL] Не удалось загрузить RSA ключ")
-        print(f"Ошибка: {e}")
+        print(f"Ошибка: {exc}")
         return None
 
 
 # ============================================================
-# СОЗДАНИЕ TRANSPORT
+# TRANSPORT
 # ============================================================
 
-def create_transport():
+def create_transport(disabled_pubkeys=None):
     """
-    Создаёт новый Transport.
-
-    Никакие внутренние security.key_types/ciphers/kex/digests
-    здесь НЕ изменяются.
-
-    Это принципиально важно для Paramiko 5.0.0.
+    disabled_algorithms — ТОЛЬКО через конструктор.
+    Присваивание transport.disabled_algorithms = {...} после
+    создания НЕ работает: этот словарь читается один раз
+    при инициализации AuthHandler.
     """
+    sock = socket.create_connection((HOST, PORT), timeout=TIMEOUT)
 
-    sock = socket.create_connection(
-        (HOST, PORT),
-        timeout=TIMEOUT
-    )
+    kwargs = {}
+    if disabled_pubkeys:
+        kwargs["disabled_algorithms"] = {"pubkeys": list(disabled_pubkeys)}
 
-    transport = paramiko.Transport(sock)
-
-    # Таймауты.
+    transport = paramiko.Transport(sock, **kwargs)
     transport.banner_timeout = TIMEOUT
     transport.auth_timeout = TIMEOUT
-
     return transport
 
 
-# ============================================================
-# HANDSHAKE
-# ============================================================
-
 def do_handshake(transport):
-    """
-    Выполняет SSH handshake.
-    """
-
-    transport.start_client(
-        timeout=TIMEOUT
-    )
-
+    transport.start_client(timeout=TIMEOUT)
     if not transport.is_active():
-        raise RuntimeError(
-            "Transport не активен после SSH handshake"
-        )
-
+        raise RuntimeError("Transport не активен после handshake")
     return transport.get_remote_server_key()
 
 
@@ -183,56 +163,52 @@ def do_handshake(transport):
 def print_transport_info(transport, host_key):
     print()
     print("Transport:")
-    print(f"Remote version : {transport.remote_version}")
-    print(f"Active         : {transport.is_active()}")
-    print(f"Authenticated  : {transport.is_authenticated()}")
+    print(f"  Remote version : {transport.remote_version}")
+    print(f"  Active         : {transport.is_active()}")
+    print(f"  Authenticated  : {transport.is_authenticated()}")
+    print(f"  Host key type  : {transport.host_key_type}")
 
     print()
     print("Server host key:")
-    print(f"Type:        {host_key.get_name()}")
-    print(f"Bits:        {host_key.get_bits()}")
-    print(f"MD5:         {fingerprint_md5(host_key)}")
-    print(f"SHA256:      {fingerprint_sha256(host_key)}")
+    print(f"  Type:     {host_key.get_name()}")
+    print(f"  Bits:     {host_key.get_bits()}")
+    print(f"  MD5:      {fingerprint_md5(host_key)}")
+    print(f"  SHA256:   {fingerprint_sha256(host_key)}")
 
     print()
     print("Negotiated algorithms:")
-
     try:
-        print(
-            f"KEX:         {transport.kex_engine.__class__.__name__}"
-            if transport.kex_engine
-            else "KEX:         <unknown>"
-        )
+        kex = transport.kex_engine.__class__.__name__ if transport.kex_engine else "?"
+        print(f"  KEX         : {kex}")
     except Exception:
-        print("KEX:         <unknown>")
+        print("  KEX         : <unknown>")
+    for label, attr in (
+        ("Cipher C->S", "local_cipher"),
+        ("Cipher S->C", "remote_cipher"),
+        ("MAC    C->S", "local_mac"),
+        ("MAC    S->C", "remote_mac"),
+        ("Comp   C->S", "local_compression"),
+        ("Comp   S->C", "remote_compression"),
+    ):
+        try:
+            print(f"  {label}: {getattr(transport, attr)}")
+        except Exception:
+            print(f"  {label}: <unknown>")
 
+    # ВАЖНО: список алгоритмов подписи, которые paramiko будет
+    # предъявлять серверу на USERAUTH. Именно его правим через
+    # disabled_algorithms — не путать с host key algorithms.
+    print()
+    print("Userauth signature algorithms (_preferred_pubkeys):")
     try:
-        print(
-            f"Cipher C->S: {transport.local_cipher}"
-        )
-    except Exception:
-        print("Cipher C->S: <unknown>")
-
-    try:
-        print(
-            f"Cipher S->C: {transport.remote_cipher}"
-        )
-    except Exception:
-        print("Cipher S->C: <unknown>")
-
-    try:
-        print(
-            f"MAC C->S:    {transport.local_mac}"
-        )
-    except Exception:
-        print("MAC C->S:    <unknown>")
-
-    try:
-        print(
-            f"MAC S->C:    {transport.remote_mac}"
-        )
-    except Exception:
-        print("MAC S->C:    <unknown>")
+        preferred = getattr(transport, "_preferred_pubkeys", None)
+        if preferred:
+            for a in preferred:
+                print(f"  - {a}")
+        else:
+            print("  <не удалось получить>")
+    except Exception as exc:
+        print(f"  <ошибка: {exc}>")
 
 
 # ============================================================
@@ -240,33 +216,18 @@ def print_transport_info(transport, host_key):
 # ============================================================
 
 def get_auth_methods(transport):
-    """
-    Узнаём доступные способы authentication через auth_none().
-    """
-
-    print_title("ДОСТУПНЫЕ AUTHENTICATION METHODS")
-
+    print_title("ДОСТУПНЫЕ AUTH METHODS (auth_none)")
     try:
         methods = transport.auth_none(USERNAME)
-
-        print("[OK] auth_none неожиданно прошёл")
-
-        if methods:
-            for method in methods:
-                print(f"[SERVER] {method}")
-
+        print("[OK] auth_none неожиданно прошёл:", methods)
+        return methods or []
+    except paramiko.BadAuthenticationType as exc:
+        methods = exc.allowed_types or []
+        for m in methods:
+            print(f"[SERVER] {m}")
         return methods
-
-    except paramiko.BadAuthenticationType as e:
-        methods = e.allowed_types or []
-
-        for method in methods:
-            print(f"[SERVER] {method}")
-
-        return methods
-
-    except Exception as e:
-        print(f"[WARNING] Не удалось определить методы: {e}")
+    except Exception as exc:
+        print(f"[WARNING] Не удалось определить: {exc}")
         return []
 
 
@@ -274,269 +235,78 @@ def get_auth_methods(transport):
 # ПОПЫТКА АУТЕНТИФИКАЦИИ
 # ============================================================
 
-def authenticate_attempt(
-    key,
-    attempt_name,
-    forced_signature_algorithm=None,
-):
-    """
-    Отдельная SSH-сессия для каждой попытки.
-
-    forced_signature_algorithm:
-        None
-            стандартный Paramiko
-
-        rsa-sha2-256
-            принудительная RSA SHA256
-
-        ssh-rsa
-            принудительная legacy RSA/SHA1
-    """
-
+def authenticate_attempt(key, attempt_name, disabled_pubkeys=None):
     print()
     separator("-")
     print(f"ПОПЫТКА: {attempt_name}")
     separator("-")
-
-    if forced_signature_algorithm:
-        print(
-            f"Требуемый RSA signature algorithm: "
-            f"{forced_signature_algorithm}"
-        )
+    if disabled_pubkeys:
+        print(f"disabled_algorithms.pubkeys = {disabled_pubkeys}")
     else:
-        print(
-            "RSA signature algorithm: "
-            "СТАНДАРТНЫЙ PARAMIKO"
-        )
+        print("disabled_algorithms = <нет, дефолт paramiko>")
 
     transport = None
-
     try:
-        # ----------------------------------------------------
-        # Новый Transport
-        # ----------------------------------------------------
-
-        transport = create_transport()
-
-        # ----------------------------------------------------
-        # Для ssh-rsa / rsa-sha2-256.
-        #
-        # Paramiko выбирает алгоритм подписи RSA внутри
-        # AuthHandler. Поэтому не используем
-        # security.key_types.
-        #
-        # Вместо этого применяем отключение альтернативных
-        # RSA signature algorithms через disabled_algorithms.
-        # ----------------------------------------------------
-
-        if forced_signature_algorithm == "rsa-sha2-256":
-
-            # Оставляем rsa-sha2-256.
-            #
-            # Отключаем rsa-sha2-512.
-            #
-            # ssh-rsa не отключаем — сервер всё равно сможет
-            # выбрать rsa-sha2-256 благодаря server-sig-algs.
-            transport.disabled_algorithms = {
-                "pubkeys": [
-                    "rsa-sha2-512",
-                ]
-            }
-
-        elif forced_signature_algorithm == "ssh-rsa":
-
-            # Для legacy ssh-rsa необходимо убрать
-            # rsa-sha2-* из списка предпочтительных
-            # алгоритмов подписи.
-            #
-            # В Paramiko внутренние названия для disabled
-            # algorithms зависят от версии. Поэтому сначала
-            # попробуем штатный механизм.
-            transport.disabled_algorithms = {
-                "pubkeys": [
-                    "rsa-sha2-512",
-                    "rsa-sha2-256",
-                ]
-            }
-
-        # ----------------------------------------------------
-        # Handshake
-        # ----------------------------------------------------
-
-        print("[INFO] Выполняем SSH handshake...")
-
+        transport = create_transport(disabled_pubkeys=disabled_pubkeys)
         host_key = do_handshake(transport)
-
         print("[OK] SSH handshake")
-
-        print_transport_info(
-            transport,
-            host_key
-        )
-
-        # ----------------------------------------------------
-        # Server signature algorithms
-        # ----------------------------------------------------
+        print_transport_info(transport, host_key)
 
         print()
-        print("Проверка server-sig-algs:")
+        print("[INFO] auth_publickey...")
+        transport.auth_publickey(USERNAME, key)
 
+        if not transport.is_authenticated():
+            print("[FAIL] auth_publickey вернулся, но transport не аутентифицирован")
+            return False
+
+        print()
+        print("[SUCCESS] public key authentication OK")
+
+        # Проверка исполнения команды
         try:
-            # AuthHandler хранит информацию о сервере.
-            auth_handler = transport.auth_handler
-
-            if auth_handler is not None:
-                server_sig_algs = getattr(
-                    auth_handler,
-                    "server_sig_algs",
-                    None
-                )
-
-                print(
-                    f"server_sig_algs: "
-                    f"{server_sig_algs}"
-                )
-
-        except Exception as e:
-            print(
-                f"[INFO] Не удалось получить "
-                f"server-sig-algs напрямую: {e}"
-            )
-
-        # ----------------------------------------------------
-        # Authentication
-        # ----------------------------------------------------
-
-        print()
-        print("[INFO] Выполняем publickey authentication...")
-
-        print(f"Key type: {key.get_name()}")
-        print(f"Bits:     {key.get_bits()}")
-        print(
-            f"MD5:      {fingerprint_md5(key)}"
-        )
-
-        result = transport.auth_publickey(
-            USERNAME,
-            key
-        )
-
-        # ----------------------------------------------------
-        # Успешная authentication
-        # ----------------------------------------------------
-
-        if transport.is_authenticated():
-
-            print()
-            print("[SUCCESS] PUBLIC KEY AUTHENTICATION УСПЕШНА!")
-
-            print(f"Auth result: {result}")
-
-            # ------------------------------------------------
-            # Выполняем простую команду ROS7.
-            # ------------------------------------------------
-
-            print()
-            print("ПРОВЕРКА SSH COMMAND EXECUTION")
-
             channel = transport.open_session()
-
             channel.settimeout(TIMEOUT)
-
-            channel.exec_command(
-                "/system identity print"
-            )
-
-            output = channel.recv(65535)
-
-            try:
-                text = output.decode(
-                    "utf-8",
-                    errors="replace"
-                )
-            except Exception:
-                text = str(output)
-
+            channel.exec_command("/system identity print")
+            output = b""
+            while True:
+                chunk = channel.recv(4096)
+                if not chunk:
+                    break
+                output += chunk
+            channel.close()
+            text = output.decode("utf-8", errors="replace")
             print()
             print("Ответ MikroTik:")
-            print("-" * 70)
+            print("-" * 72)
             print(text.rstrip())
-            print("-" * 70)
+            print("-" * 72)
+        except Exception as exc:
+            print(f"[WARN] Команда не выполнилась: {exc}")
 
-            channel.close()
+        return True
 
-            return True
-
-        print(
-            "[FAIL] auth_publickey вернул управление, "
-            "но transport не authenticated."
-        )
-
+    except paramiko.AuthenticationException as exc:
+        print(f"[FAIL] AuthenticationException: {exc}")
         return False
-
-    except paramiko.AuthenticationException as e:
-
-        print()
-        print(
-            "[FAIL] AuthenticationException"
-        )
-        print(f"Ошибка: {e}")
-
+    except paramiko.BadAuthenticationType as exc:
+        print(f"[FAIL] BadAuthenticationType: allowed={exc.allowed_types}")
         return False
-
-    except paramiko.BadAuthenticationType as e:
-
-        print()
-        print(
-            "[FAIL] BadAuthenticationType"
-        )
-
-        print(
-            f"Разрешённые методы: "
-            f"{e.allowed_types}"
-        )
-
+    except paramiko.SSHException as exc:
+        print(f"[FAIL] SSHException: {exc}")
         return False
-
-    except paramiko.SSHException as e:
-
-        print()
-        print("[FAIL] SSHException")
-        print(f"Ошибка: {e}")
-
+    except EOFError as exc:
+        print(f"[FAIL] EOFError: {exc}")
         return False
-
-    except EOFError as e:
-
-        print()
-        print("[FAIL] EOFError")
-        print(f"Ошибка: {e}")
-
+    except OSError as exc:
+        print(f"[FAIL] OS/network error: {exc}")
         return False
-
-    except OSError as e:
-
-        print()
-        print("[FAIL] OS/network error")
-        print(f"Ошибка: {e}")
-
-        return False
-
-    except Exception as e:
-
-        print()
-        print("[FAIL] Неожиданная ошибка")
-        print(f"Тип: {type(e).__name__}")
-        print(f"Ошибка: {e}")
-
+    except Exception as exc:
+        print(f"[FAIL] {type(exc).__name__}: {exc}")
         traceback.print_exc()
-
         return False
-
     finally:
-
         if transport is not None:
-
             try:
                 transport.close()
             except Exception:
@@ -548,290 +318,109 @@ def authenticate_attempt(
 # ============================================================
 
 def main():
-
     setup_logging()
 
     print()
     separator()
-    print("PARAMIKO TEST ДЛЯ MIKROTIK ROS7")
+    print("DIAGNOSTIC: MikroTik ROS publickey authentication")
     separator()
-
     print(f"Paramiko: {paramiko.__version__}")
-    print(f"Host:     {HOST}")
-    print(f"Port:     {PORT}")
+    print(f"Host:     {HOST}:{PORT}")
     print(f"User:     {USERNAME}")
     print(f"Key:      {KEY_PATH}")
     print(f"Debug:    {DEBUG_LOG}")
 
-    # ========================================================
-    # Проверяем версию Paramiko
-    # ========================================================
-
-    if paramiko.__version__ != "5.0.0":
-
-        print()
-        print(
-            "[WARNING] Этот тест рассчитан именно "
-            "на Paramiko 5.0.0"
-        )
-
-        print(
-            f"Установлена версия: "
-            f"{paramiko.__version__}"
-        )
-
-    # ========================================================
-    # Загружаем ключ
-    # ========================================================
-
     key = load_private_key()
-
     if key is None:
-        print()
-        print("[FAIL] Тест остановлен.")
         return 1
 
-    # ========================================================
-    # Сначала отдельное соединение для определения методов
-    # ========================================================
-
-    print_title("ПРОВЕРКА SSH HANDSHAKE")
-
+    # ---- Handshake без auth (чтобы узнать методы) ----
+    print_title("HANDSHAKE (без auth)")
     transport = None
-
     try:
-
         transport = create_transport()
-
-        host_key = do_handshake(
-            transport
-        )
-
+        host_key = do_handshake(transport)
         print("[OK] SSH handshake")
-
-        print_transport_info(
-            transport,
-            host_key
-        )
-
-        get_auth_methods(
-            transport
-        )
-
-    except Exception as e:
-
-        print()
-        print("[FAIL] SSH handshake/auth methods")
-        print(f"Тип: {type(e).__name__}")
-        print(f"Ошибка: {e}")
-
-        print()
-        print("TRACEBACK:")
+        print_transport_info(transport, host_key)
+        get_auth_methods(transport)
+    except Exception as exc:
+        print(f"[FAIL] handshake/auth methods: {type(exc).__name__}: {exc}")
         traceback.print_exc()
-
         return 2
-
     finally:
-
         if transport is not None:
             try:
                 transport.close()
             except Exception:
                 pass
 
-    # ========================================================
-    # ПОПЫТКА №1
-    # rsa-sha2-256
-    # ========================================================
-
-    print_title(
-        "ПОПЫТКА №1: RSA-SHA2-256"
-    )
-
-    success = authenticate_attempt(
-        key=key,
-        attempt_name="RSA-SHA2-256",
-        forced_signature_algorithm="rsa-sha2-256",
-    )
-
-    if success:
-
-        print_title("РЕЗУЛЬТАТ")
-
-        print(
-            "[SUCCESS] MikroTik ROS7 принимает "
-            "RSA public key через Paramiko."
-        )
-
-        print(
-            "[SUCCESS] Рабочий вариант: rsa-sha2-256"
-        )
-
-        print()
-        print(
-            "Именно этот вариант рекомендуется "
-            "использовать в plugin.py."
-        )
-
-        print()
-        print(f"DEBUG LOG: {DEBUG_LOG}")
-
+    # ---- Попытка 1: rsa-sha2-512 (только он, SHA256 отключён) ----
+    # На MikroTik это обычно НЕ работает: ROS не поддерживает
+    # SHA2-подписи для userauth. Но проверим.
+    if authenticate_attempt(
+        key,
+        "rsa-sha2-512 (disable: rsa-sha2-256)",
+        disabled_pubkeys=["rsa-sha2-256"],
+    ):
+        print_title("РЕЗУЛЬТАТ: rsa-sha2-512 работает")
         return 0
 
-    # ========================================================
-    # ПОПЫТКА №2
-    # ssh-rsa
-    # ========================================================
-
-    print_title(
-        "ПОПЫТКА №2: LEGACY SSH-RSA"
-    )
-
-    success = authenticate_attempt(
-        key=key,
-        attempt_name="SSH-RSA",
-        forced_signature_algorithm="ssh-rsa",
-    )
-
-    if success:
-
-        print_title("РЕЗУЛЬТАТ")
-
-        print(
-            "[SUCCESS] MikroTik ROS7 принимает "
-            "RSA public key."
-        )
-
-        print(
-            "[SUCCESS] Рабочий вариант: ssh-rsa"
-        )
-
-        print()
-        print(
-            "ROS7 совместим с Paramiko только "
-            "при использовании legacy ssh-rsa."
-        )
-
-        print()
-        print(
-            "Это менее предпочтительный вариант, "
-            "чем rsa-sha2-256."
-        )
-
-        print()
-        print(f"DEBUG LOG: {DEBUG_LOG}")
-
+    # ---- Попытка 2: rsa-sha2-256 (только он) ----
+    if authenticate_attempt(
+        key,
+        "rsa-sha2-256 (disable: rsa-sha2-512)",
+        disabled_pubkeys=["rsa-sha2-512"],
+    ):
+        print_title("РЕЗУЛЬТАТ: rsa-sha2-256 работает")
         return 0
 
-    # ========================================================
-    # ПОПЫТКА №3
-    # стандартный Paramiko
-    # ========================================================
-
-    print_title(
-        "ПОПЫТКА №3: STANDARD PARAMIKO RSA"
-    )
-
-    success = authenticate_attempt(
-        key=key,
-        attempt_name="STANDARD PARAMIKO RSA",
-        forced_signature_algorithm=None,
-    )
-
-    if success:
-
-        print_title("РЕЗУЛЬТАТ")
-
-        print(
-            "[SUCCESS] Обычная RSA-аутентификация "
-            "Paramiko 5.0.0 работает."
-        )
-
-        print(
-            "Дополнительные настройки не нужны."
-        )
-
-        print()
-        print(f"DEBUG LOG: {DEBUG_LOG}")
-
+    # ---- Попытка 3: ssh-rsa (оба SHA2 отключены) ----
+    if authenticate_attempt(
+        key,
+        "ssh-rsa (disable: rsa-sha2-256, rsa-sha2-512)",
+        disabled_pubkeys=["rsa-sha2-256", "rsa-sha2-512"],
+    ):
+        print_title("РЕЗУЛЬТАТ: ssh-rsa работает")
         return 0
 
-    # ========================================================
-    # ВСЕ ПОПЫТКИ НЕУДАЧНЫ
-    # ========================================================
+    # ---- Попытка 4: стандарт paramiko (для сравнения) ----
+    if authenticate_attempt(
+        key,
+        "standard paramiko (без disabled_algorithms)",
+        disabled_pubkeys=None,
+    ):
+        print_title("РЕЗУЛЬТАТ: standard paramiko работает")
+        return 0
 
-    print_title("РЕЗУЛЬТАТ")
-
-    print(
-        "[FAIL] Ни один вариант RSA authentication "
-        "не прошёл."
-    )
-
-    print()
-    print(
-        "SSH handshake с MikroTik ROS7 работает."
-    )
-
-    print(
-        "Private RSA key успешно загружается."
-    )
-
-    print(
-        "Проблема находится именно на этапе "
-        "public-key authentication."
-    )
-
-    print()
-    print(
-        "Необходимо посмотреть полный DEBUG LOG:"
-    )
-
-    print(
-        str(DEBUG_LOG)
-    )
-
+    print_title("ИТОГ: ни один вариант не прошёл")
+    print("Смотрите", DEBUG_LOG)
+    print("Строки, на которые смотреть:")
+    print("  - Our pubkey algorithm list: [...]")
+    print("  - Server did not send a server-sig-algs list")
+    print("  - userauth: Attempting auth by publickey")
+    print("  - Server accepts key: pkalg=...")
     return 3
 
 
-# ============================================================
-# ENTRY POINT
-# ============================================================
-
 if __name__ == "__main__":
-
     try:
-        exit_code = main()
-
+        code = main()
     except KeyboardInterrupt:
-
-        print()
-        print("[INFO] Прервано пользователем.")
-        exit_code = 130
-
-    except Exception as e:
-
-        print()
-        print("=" * 70)
-        print("КРИТИЧЕСКАЯ ОШИБКА")
-        print("=" * 70)
-
-        print(
-            f"Тип: {type(e).__name__}"
-        )
-
-        print(
-            f"Ошибка: {e}"
-        )
-
+        print("\n[INFO] Прервано")
+        code = 130
+    except Exception as exc:
+        print("\nКРИТИЧЕСКАЯ ОШИБКА")
+        print(f"{type(exc).__name__}: {exc}")
         traceback.print_exc()
-
-        exit_code = 99
+        code = 99
 
     print()
-    print("=" * 70)
-    print(f"Код завершения: {exit_code}")
-    print("=" * 70)
-
-    input("\nНажмите ENTER для выхода...")
-
-    sys.exit(exit_code)
+    print("=" * 72)
+    print(f"Код завершения: {code}")
+    print("=" * 72)
+    try:
+        input("\nENTER для выхода...")
+    except EOFError:
+        pass
+    sys.exit(code)
+    

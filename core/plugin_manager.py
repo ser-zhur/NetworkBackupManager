@@ -386,6 +386,81 @@ class PluginManager:
                 )
 
     # =====================================================
+    # SERVICE FIELDS (ros_version и т.п.)
+    # =====================================================
+
+    # Поля, которые заполняет НЕ пользователь, а плагин
+    # в процессе работы. Синхронизируются из рабочей
+    # копии роутера в in-memory конфиг и на диск.
+    _SERVICE_FIELDS = ("ros_version",)
+
+    def persist_router_service_fields(
+        self,
+        device_type: str,
+        index: int,
+        source: dict,
+    ) -> None:
+        """
+        Переносит служебные поля из рабочей копии роутера
+        (source — тот же dict, что ушёл в плагин) в in-memory
+        конфиг и в routers.json.
+
+        Вызывается после успешного бэкапа. No-op, если
+        ничего не поменялось.
+        """
+        routers = (
+            self._plugins.get(device_type, {}).get("routers", [])
+        )
+
+        if not (0 <= index < len(routers)):
+            return
+
+        target = routers[index]
+
+        changed_fields = []
+        for field in self._SERVICE_FIELDS:
+            new_value = source.get(field)
+            old_value = target.get(field)
+            if new_value != old_value:
+                target[field] = new_value
+                changed_fields.append(field)
+
+        if not changed_fields:
+            return
+
+        # Сохраняем routers.json для нужного плагина.
+        for p_folder in self.plugins_dir.iterdir():
+            if not p_folder.is_dir():
+                continue
+            if p_folder.name.lower() != device_type.lower():
+                continue
+
+            json_file = p_folder / "routers.json"
+
+            try:
+                with open(json_file, "w", encoding="utf-8") as f:
+                    json.dump(
+                        routers,
+                        f,
+                        ensure_ascii=False,
+                        indent=4,
+                    )
+                logging.info(
+                    "routers.json: обновлены поля %s "
+                    "для %s/%s",
+                    changed_fields,
+                    device_type,
+                    index,
+                )
+            except OSError as exc:
+                logging.warning(
+                    "Не удалось сохранить %s: %s",
+                    json_file, exc,
+                )
+            return
+
+
+    # =====================================================
     # RUN ALL BACKUPS
     # =====================================================
 
@@ -440,6 +515,8 @@ class PluginManager:
             from core.logger import (
                 set_device_context,
                 clear_device_context,
+                set_connection_debug,
+                clear_connection_debug,
             )
 
             device_type = task["device_type"]
@@ -447,8 +524,15 @@ class PluginManager:
             router = task["router"]
 
             ip = router.get("ip", router.get("host", "Unknown"))
+            device_tag = f"{device_type}/{ip}"          # ← ОБЯЗАТЕЛЬНО
+            debug_connection = bool(router.get("debug_connection"))
 
-            set_device_context(f"{device_type}/{ip}")
+            set_device_context(device_tag)
+            if debug_connection:
+                set_connection_debug(device_tag)
+                logging.info(
+                    "🐛 Debug подключения включён: %s", device_tag
+                )
 
             try:
                 backup_path = router["backup_path"]
@@ -464,13 +548,18 @@ class PluginManager:
 
                 created_files = plugin_func(secure_router)
 
-                # created_files == [] — «нет изменений», это нормальный успех.
-                # Разбор и запись состояния — внутри _push_to_storages.
-                # Плагин, у которого что-то сломалось, обязан поднять
-                # исключение, а не возвращать [].
+                try:
+                    self.persist_router_service_fields(
+                        device_type,
+                        task["index"],
+                        secure_router,
+                    )
+                except Exception as exc:
+                    logging.warning(
+                        "Не удалось сохранить служебные "
+                        "поля роутера: %s", exc,
+                    )
 
-                # ---- push в storage backends (git всегда,
-                #      остальные — по конфигу) ----
                 try:
                     self._push_to_storages(
                         device_type=device_type,
@@ -492,6 +581,11 @@ class PluginManager:
                 return ip
 
             finally:
+                if debug_connection:
+                    logging.info(
+                        "🐛 Debug подключения выключен: %s", device_tag
+                    )
+                    clear_connection_debug()
                 clear_device_context()
 
         executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)

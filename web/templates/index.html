@@ -93,8 +93,8 @@
                                 </div>
                                 <div class="mt-0.5 text-sm font-medium truncate">{{ d.name or d.host }}</div>
                                 <div class="mt-0.5 text-[11px] text-gray-500 dark:text-slate-400 truncate">
-                                    {% if d.last_success %}
-                                        Последний: {{ d.last_success }} · {{ d.backup_count }} копий
+                                    {% if d.last_attempt %}
+                                        Связь: {{ d.last_attempt[:10] }} · {{ d.backup_count }} копий
                                     {% else %}
                                         Бэкапы ещё не создавались
                                     {% endif %}

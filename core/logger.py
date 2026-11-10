@@ -41,6 +41,7 @@ class _DeviceContext(threading.local):
 
     def __init__(self):
         self.device = DEFAULT_DEVICE
+        self.debug_connection = False
 
 
 _device_context = _DeviceContext()
@@ -59,22 +60,78 @@ def get_device_context() -> str:
 
 
 # =========================================================
+# CONNECTION DEBUG CONTEXT
+# =========================================================
+
+_debug_lock = threading.Lock()
+_debug_sessions: int = 0
+_debug_device_global: str | None = None
+
+
+def set_connection_debug(device_id: str) -> None:
+    global _debug_sessions, _debug_device_global
+    _device_context.debug_connection = True
+    _device_context.device = device_id or DEFAULT_DEVICE
+    with _debug_lock:
+        _debug_sessions += 1
+        _debug_device_global = device_id or DEFAULT_DEVICE
+
+
+def clear_connection_debug() -> None:
+    global _debug_sessions, _debug_device_global
+    _device_context.debug_connection = False
+    with _debug_lock:
+        _debug_sessions = max(0, _debug_sessions - 1)
+        if _debug_sessions == 0:
+            _debug_device_global = None
+
+
+def is_connection_debug() -> bool:
+    with _debug_lock:
+        return _debug_sessions > 0
+
+# =========================================================
 # FILTER
 # =========================================================
 
 class DeviceContextFilter(logging.Filter):
-    """
-    Гарантирует, что у каждой записи есть атрибут 'device',
-    чтобы формат "%(device)s" не падал на записях из чужих
-    библиотек (uvicorn, paramiko и т.п.).
-    """
 
     def filter(self, record: logging.LogRecord) -> bool:
         if not hasattr(record, "device"):
+            # paramiko пишет из своего потока — там thread-local пуст.
+            # Если сейчас идёт отладочная сессия, подставим её device.
+            if record.name.startswith("paramiko"):
+                with _debug_lock:
+                    tag = _debug_device_global
+                if tag:
+                    record.device = tag
+                    return True
             record.device = get_device_context()
         return True
 
+# Логгеры, чьи DEBUG-записи считаются «подробным логом подключения».
+_DEBUG_LOGGER_PREFIXES = ("paramiko", "nbm.debug")
 
+
+class ThreadDebugFilter(logging.Filter):
+    """
+    Пропускает DEBUG-записи от paramiko / nbm.debug
+    только из потоков, где включён debug_connection.
+    Всё, что >= INFO, пропускается всегда.
+
+    Благодаря этому paramiko можно держать на уровне DEBUG
+    глобально: без активной отладочной сессии его DEBUG
+    просто не доходит до хендлеров.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.INFO:
+            return True
+        for prefix in _DEBUG_LOGGER_PREFIXES:
+            if record.name == prefix or record.name.startswith(prefix + "."):
+                return is_connection_debug()
+        return True
+    
 # =========================================================
 # SETUP
 # =========================================================
@@ -107,6 +164,7 @@ def setup_logging(level: int = logging.INFO) -> logging.Logger:
 
     formatter = logging.Formatter(_FORMAT)
     context_filter = DeviceContextFilter()
+    debug_filter = ThreadDebugFilter()
 
     file_handler = logging.handlers.RotatingFileHandler(
         LOG_FILE,
@@ -116,15 +174,21 @@ def setup_logging(level: int = logging.INFO) -> logging.Logger:
     )
     file_handler.setFormatter(formatter)
     file_handler.addFilter(context_filter)
+    file_handler.addFilter(debug_filter)
 
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
     console_handler.addFilter(context_filter)
+    console_handler.addFilter(debug_filter)
 
     root.addHandler(file_handler)
     root.addHandler(console_handler)
 
     setattr(root, _INIT_FLAG, True)
+
+    # ---- Разрешаем DEBUG от paramiko и наших debug-логов ----
+    for name in _DEBUG_LOGGER_PREFIXES:
+        logging.getLogger(name).setLevel(logging.DEBUG)
 
     # ---- uvicorn: не пишем access-логи в app.log ----
     for name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
