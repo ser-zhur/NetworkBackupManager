@@ -329,6 +329,212 @@ class PluginManager:
         # ---- сохраняем в state.json ----
         self._save_backend_state(ctx.device_id, results)
 
+    # =====================================================
+    # SYNC ALL GIT VERSIONS → STORAGES
+    # =====================================================
+
+    def sync_git_to_storages(self, device_type: str, index: int) -> dict:
+        """
+        Выгружает ВСЕ git-коммиты устройства во все включённые
+        non-authority backend'ы (FTP, WebDAV, ...).
+
+        Каждая версия получает уникальный префикс
+        '<date>_<time>_<sha7>_<filename>', чтобы:
+          • версии не затирали друг друга;
+          • порядок сортировался по времени на сервере;
+          • по имени файла можно было найти коммит в UI.
+
+        Возвращает:
+            {
+                "ok": bool,
+                "message": str,
+                "commits": int,        # сколько версий прошло
+                "files": int,          # сколько файлов загружено
+                "backends": {
+                    "<id>": {"ok": int, "err": int, "skip": int},
+                },
+                "errors": [str, ...],  # первые ошибки (для лога)
+            }
+        """
+        from datetime import datetime as _dt
+        from pathlib import Path as _Path
+        import tempfile as _tmp
+
+        from core.git_storage import (
+            GitStorage,
+            is_available as git_available,
+        )
+
+        result = {
+            "ok": False,
+            "message": "",
+            "commits": 0,
+            "files": 0,
+            "backends": {},
+            "errors": [],
+        }
+
+        if self.storage_manager is None:
+            result["message"] = "StorageManager не загружен"
+            return result
+
+        if not git_available():
+            result["message"] = "dulwich не установлен"
+            return result
+
+        routers = self._plugins.get(device_type, {}).get("routers", [])
+        if not (0 <= index < len(routers)):
+            result["message"] = "Устройство не найдено"
+            return result
+
+        router = routers[index]
+
+        raw_path = router.get("backup_path", "")
+        if not raw_path:
+            result["message"] = "У устройства нет backup_path"
+            return result
+
+        backup_path = _Path(raw_path)
+        if not backup_path.is_absolute():
+            backup_path = (BASE_DIR / backup_path).resolve()
+
+        if not backup_path.exists():
+            result["message"] = f"Каталог не найден: {backup_path}"
+            return result
+
+        gs = GitStorage(backup_path)
+        if not gs.is_initialized():
+            result["message"] = "git-репозиторий не инициализирован"
+            return result
+
+        commits = gs.get_history(limit=100000)
+        if not commits:
+            result["message"] = "История git пуста"
+            return result
+
+        backends = [
+            b for b in self.storage_manager.enabled_for(router)
+            if not b.is_authority
+        ]
+        if not backends:
+            result["message"] = "Нет включённых хранилищ (кроме git)"
+            return result
+
+        storage_cfg = router.get("storage") or {}
+        device_host = (
+            router.get("host")
+            or router.get("ip")
+            or router.get("address")
+            or f"#{index}"
+        )
+        device_id = f"{device_type}/{index}"
+
+        for b in backends:
+            result["backends"][b.id] = {"ok": 0, "err": 0, "skip": 0}
+
+        for commit in commits:
+            sha = commit["sha"]
+            short = commit["short"]
+            filenames = commit.get("files") or []
+            if not filenames:
+                continue
+
+            try:
+                ts = commit.get("ts") or 0
+                time_part = _dt.fromtimestamp(ts).strftime(
+                    "%Y-%m-%d_%H%M%S"
+                )
+            except Exception:
+                time_part = short
+
+            prefix = f"{time_part}_{short}"
+
+            with _tmp.TemporaryDirectory(prefix="nbm_sync_") as tmpdir:
+                versioned: dict = {}
+
+                for fname in filenames:
+                    data = gs.get_file_at(sha, fname)
+                    if data is None:
+                        continue
+
+                    safe_name = _Path(fname).name
+                    if not safe_name or safe_name in (".", ".."):
+                        continue
+
+                    new_name = f"{prefix}_{safe_name}"
+                    p = _Path(tmpdir) / new_name
+                    try:
+                        p.write_bytes(data)
+                    except OSError as exc:
+                        result["errors"].append(
+                            f"{sha[:7]}/{safe_name}: запись: {exc}"
+                        )
+                        continue
+
+                    versioned[new_name] = p
+
+                if not versioned:
+                    continue
+
+                ctx = PushContext(
+                    device_id=device_id,
+                    device_host=device_host,
+                    device_type=device_type,
+                    backup_path=backup_path,
+                    files=versioned,
+                    changed=True,
+                    run_time=_dt.now(),
+                    normalize=identity_normalize,
+                )
+
+                for backend in backends:
+                    cfg = self._decrypt_backend_config(
+                        backend,
+                        storage_cfg.get(backend.id) or {},
+                    )
+                    # Форсируем push — не даём _should_skip_for_changes
+                    # отбросить версию из-за mode=changes_only.
+                    cfg["mode"] = "all"
+
+                    try:
+                        r = backend.push(cfg, ctx)
+                    except Exception as exc:
+                        result["backends"][backend.id]["err"] += 1
+                        result["errors"].append(
+                            f"{backend.id}/{short}: {exc}"
+                        )
+                        continue
+
+                    if (r.details or {}).get("skipped"):
+                        result["backends"][backend.id]["skip"] += 1
+                    elif r.ok:
+                        result["backends"][backend.id]["ok"] += 1
+                        result["files"] += len(versioned)
+                    else:
+                        result["backends"][backend.id]["err"] += 1
+                        result["errors"].append(
+                            f"{backend.id}/{short}: {r.message}"
+                        )
+
+                result["commits"] += 1
+
+        total_ok = sum(
+            b["ok"] for b in result["backends"].values()
+        )
+        total_err = sum(
+            b["err"] for b in result["backends"].values()
+        )
+
+        result["ok"] = True
+        result["message"] = (
+            f"Версий: {result['commits']}, "
+            f"выгрузок: {total_ok}, "
+            f"ошибок: {total_err}, "
+            f"файлов загружено: {result['files']}"
+        )
+
+        return result
+
     @staticmethod
     def _log_storage_result(backend_id: str, result) -> None:
         if result.details and result.details.get("skipped"):

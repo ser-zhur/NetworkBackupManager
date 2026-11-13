@@ -140,6 +140,33 @@
                 Куда выгружаются резервные копии.
             </p>
         </div>
+
+        {% if d.has_syncable_storages %}
+        <form action="/sync-storages/{{ d.type }}/{{ d.index }}"
+              method="POST"
+              class="inline">
+            <button type="submit"
+                    id="sync-storages-btn"
+                    data-sync-device="{{ d.id }}"
+                    {% if d.sync_in_progress or d.backup_in_progress %}disabled{% endif %}
+                    title="Выгрузить все версии из git во все включённые хранилища"
+                    class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium
+                           bg-white dark:bg-slate-800
+                           hover:bg-gray-100 dark:hover:bg-slate-700
+                           text-gray-700 dark:text-slate-300
+                           border border-gray-200 dark:border-slate-700
+                           disabled:opacity-60 disabled:cursor-not-allowed transition">
+                {% if d.sync_in_progress %}
+                    <span class="spinner"></span>
+                    <span>Синхронизация…</span>
+                {% elif d.backup_in_progress %}
+                    <span>Идёт бэкап…</span>
+                {% else %}
+                    <span>☁ Синхронизировать хранилища</span>
+                {% endif %}
+            </button>
+        </form>
+        {% endif %}
     </div>
 
     <ul class="divide-y divide-gray-100 dark:divide-slate-800 -mx-5">
@@ -407,4 +434,43 @@
         const dlg = document.getElementById('delete-device-dialog');
         if (dlg) dlg.close();
     }
+</script>
+<script>
+    (function () {
+        const btn = document.getElementById('sync-storages-btn');
+        if (!btn || !btn.disabled) return;
+
+        const deviceId = btn.dataset.syncDevice;
+        if (!deviceId) return;
+
+        const poll = async () => {
+            try {
+                const r = await fetch('/api/backup-status', {
+                    headers: { 'Accept': 'application/json' },
+                    cache: 'no-store',
+                });
+                if (r.ok) {
+                    const data = await r.json();
+                    const syncing = data.syncing || [];
+                    const backupDevices = data.devices || [];
+                    const massRunning = data.mass === true;
+
+                    const isBusy =
+                        syncing.includes(deviceId) ||
+                        massRunning ||
+                        backupDevices.includes(deviceId);
+
+                    if (!isBusy) {
+                        window.location.reload();
+                        return;
+                    }
+                }
+            } catch (e) {
+                // сеть отвалилась — повторим
+            }
+            setTimeout(poll, 2000);
+        };
+
+        setTimeout(poll, 1500);
+    })();
 </script>

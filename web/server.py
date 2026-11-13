@@ -110,6 +110,7 @@ from core.maintenance import (
 
 setup_logging()
 
+
 # =========================================================
 # BACKUP STATE
 # =========================================================
@@ -151,7 +152,33 @@ def get_backup_status() -> dict:
             "devices": sorted(active_backups),
         }
 
+# =========================================================
+# SYNC STATE (git → storages)
+# =========================================================
 
+sync_lock = threading.Lock()
+active_syncs: set[str] = set()
+
+
+def is_sync_running_for(device_id: str) -> bool:
+    with sync_lock:
+        return device_id in active_syncs
+
+
+def get_sync_status() -> dict:
+    with sync_lock:
+        return {"devices": sorted(active_syncs)}
+
+
+def sync_started(device_id: str) -> None:
+    with sync_lock:
+        active_syncs.add(device_id)
+
+
+def sync_finished(device_id: str) -> None:
+    with sync_lock:
+        active_syncs.discard(device_id)
+        
 def backup_started(device_id: str | None = None):
     """
     device_id=None означает массовый бэкап (/run-now).
@@ -1129,8 +1156,18 @@ def _build_device_payload(
                     )
                     ssh_key_shared_with.append(shared_name)
 
+    # ---- Строки хранилищ ----
+    # Вызывается дважды (в payload и для вычисления
+    # has_syncable_storages), поэтому кэшируем в переменную.
+    storage_rows = _build_storage_rows(
+        router,
+        device_state,
+    )
+
+    device_id = f"{device_type}/{index}"
+
     return {
-        "id": f"{device_type}/{index}",
+        "id": device_id,
         "type": device_type,
         "index": index,
         "name": router.get("name") or "",
@@ -1145,7 +1182,7 @@ def _build_device_payload(
         "last_success_age_days": age_days,
         "last_attempt": last_attempt_date,
         "last_attempt_ok": last_attempt_ok,
-        "last_attempt_age_days": last_attempt_age_days, 
+        "last_attempt_age_days": last_attempt_age_days,
         "backup_count": backup_count,
         "max_backups": router.get("max_backups", 7),
         "total_size": total_size,
@@ -1159,11 +1196,71 @@ def _build_device_payload(
         "git_enabled": git_enabled,
         "git_total": len(git_commits),
         "git_recent": git_recent,
-        "storage_rows": _build_storage_rows(
-            router,
-            device_state,
+        "storage_rows": storage_rows,
+
+        # ---- Синхронизация хранилищ ----
+        # True, если включён хотя бы один non-git backend.
+        # Только git — синхронизировать некуда, кнопка
+        # в UI не показывается.
+        "has_syncable_storages": any(
+            r["enabled"] and r["id"] != "git"
+            for r in storage_rows
         ),
+        "sync_in_progress": is_sync_running_for(device_id),
+        "backup_in_progress": is_backup_running_for(device_id),
     }
+
+# =========================================================
+# STORAGE SYNC TASK
+# =========================================================
+
+def execute_storage_sync_task(
+    device_type: str,
+    index: int,
+    user: str,
+) -> None:
+    device_id = f"{device_type}/{index}"
+
+    set_device_context(device_id)
+    sync_started(device_id)
+
+    try:
+        logging.info(
+            "☁ Синхронизация хранилищ запущена: %s (от %s)",
+            device_id, user,
+        )
+
+        if plugin_manager is None:
+            logging.error(
+                "☁ sync: plugin_manager не загружен"
+            )
+            return
+
+        result = plugin_manager.sync_git_to_storages(
+            device_type, index,
+        )
+
+        if result["ok"]:
+            logging.info(
+                "☁ Синхронизация завершена: %s",
+                result["message"],
+            )
+        else:
+            logging.error(
+                "☁ Синхронизация прервана: %s",
+                result["message"],
+            )
+
+        for err in result.get("errors", [])[:10]:
+            logging.error("☁ sync: %s", err)
+
+    except Exception as exc:
+        logging.error(
+            "☁ sync: исключение: %s", exc, exc_info=True,
+        )
+    finally:
+        sync_finished(device_id)
+        clear_device_context()
 
 # =========================================================
 # BACKUP TASKS
@@ -1405,21 +1502,27 @@ def api_system_info(user: str = Depends(require_auth)):
 @app.get("/api/backup-status")
 def api_backup_status(user: str = Depends(require_auth)):
     """
-    Текущее состояние бэкапов.
+    Текущее состояние бэкапов и синхронизаций.
 
     Ответ:
         {
           "running": true,
           "mass": false,
-          "devices": ["mikrotik/0", "mikrotik/2"]
+          "devices": ["mikrotik/0", "mikrotik/2"],
+          "syncing": ["mikrotik/1"]
         }
 
-    mass=true означает массовый прогон — все устройства
-    заняты. devices содержит device_id одиночных бэкапов.
-    Фронтенд использует это для дизейбла кнопок.
-    """
-    return get_backup_status()
+    mass=true  — массовый прогон, все устройства заняты.
+    devices    — device_id одиночных бэкапов.
+    syncing    — device_id идущих синхронизаций хранилищ.
 
+    Фронтенд использует оба списка для дизейбла кнопок
+    «Запустить бэкап» и «Синхронизировать хранилища».
+    """
+    return {
+        **get_backup_status(),
+        "syncing": get_sync_status()["devices"],
+    }
 # =========================================================
 # API: TEST STORAGE BACKEND
 # =========================================================
@@ -2154,6 +2257,54 @@ async def save_router_endpoint(
         status_code=303,
     )
 
+
+# =========================================================
+# SYNC STORAGES (git → все non-authority backend'ы)
+# =========================================================
+
+@app.post("/sync-storages/{device_type}/{index}")
+def sync_storages_endpoint(
+    device_type: str,
+    index: int,
+    background_tasks: BackgroundTasks,
+    user: str = Depends(require_auth),
+):
+    device_id = f"{device_type}/{index}"
+
+    # Не запускаем параллельно с бэкапом или другим sync
+    if (
+        is_sync_running_for(device_id)
+        or is_backup_running_for(device_id)
+    ):
+        return RedirectResponse(
+            url=f"/?selected={device_id}",
+            status_code=303,
+        )
+
+    if not plugin_manager or device_type not in plugin_manager._plugins:
+        raise HTTPException(404, "Плагин не найден")
+
+    routers = plugin_manager._plugins[device_type].get(
+        "routers", []
+    )
+    if not (0 <= index < len(routers)):
+        raise HTTPException(404, "Устройство не найдено")
+
+    background_tasks.add_task(
+        execute_storage_sync_task,
+        device_type, index, user,
+    )
+
+    logging.info(
+        "☁ Запрошена синхронизация хранилищ для %s (от %s)",
+        device_id, user,
+    )
+
+    return RedirectResponse(
+        url=f"/?selected={device_id}",
+        status_code=303,
+    )
+    
 # =========================================================
 # SINGLE BACKUP
 # =========================================================
@@ -2173,10 +2324,16 @@ def run_backup(
 
     device_id = f"{device_type}/{index}"
 
-    # Блокируем запуск, только если занято именно это
-    # устройство или идёт массовый прогон. Параллельный
-    # бэкап другого устройства — разрешён.
-    if is_backup_running_for(device_id):
+    # Блокируем запуск, если:
+    #   • занято именно это устройство;
+    #   • идёт массовый прогон;
+    #   • идёт синхронизация хранилищ этого устройства
+    #     (см. /sync-storages/...).
+    # Параллельный бэкап ДРУГОГО устройства — разрешён.
+    if (
+        is_backup_running_for(device_id)
+        or is_sync_running_for(device_id)
+    ):
 
         return RedirectResponse(
             url=(
@@ -2276,7 +2433,7 @@ def run_now_endpoint(
         status_code=303,
     )
 
-
+   
 # =========================================================
 # BACKUPS (legacy redirect)
 # =========================================================
