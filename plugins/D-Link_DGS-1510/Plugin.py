@@ -1,145 +1,160 @@
-# =========================================================
-# plugins/dlink/plugin.py
-# =========================================================
-# Плагин для резервного копирования D-Link (DGS-1510 и др.)
-# через интерактивную SSH-сессию.
-# =========================================================
-
 import os
 import re
+import socket
 import time
 import logging
+
 import paramiko
 
-logger = logging.getLogger(__name__)
 
-# Регулярка для удаления ANSI-escape последовательностей
+# ANSI escape sequences (приглашение, цвета и т.п.)
 ANSI_RE = re.compile(r'\x1b\[[0-9;?]*[a-zA-Z]')
 
-# =========================================================
-# ИЗВЛЕЧЕНИЕ КОНФИГА ИЗ "СЫРОГО" ВЫВОДА
-# =========================================================
 
-def _extract_config(raw: str) -> str:
-    """Вырезает блок от 'Current configuration' до строки 'end'."""
+def extract_config(raw: str) -> str:
+    """
+    Вырезает блок от 'Current configuration' до строки 'end'.
+    """
     raw = ANSI_RE.sub('', raw).replace('\r', '')
     lines = raw.splitlines()
-    
-    start = next((i for i, l in enumerate(lines)
-                  if l.strip().startswith("Current configuration")), None)
-    
+
+    start = next(
+        (i for i, l in enumerate(lines)
+         if l.strip().startswith("Current configuration")),
+        None,
+    )
     if start is None:
-        raise RuntimeError("не найден маркер 'Current configuration' в выводе коммутатора")
-        
-    end = next((i for i in range(start + 1, len(lines))
-                if lines[i].strip() == "end"), len(lines) - 1)
-                
+        raise RuntimeError(
+            "не найден маркер 'Current configuration' в выводе D-Link"
+        )
+
+    end = next(
+        (i for i in range(start + 1, len(lines))
+         if lines[i].strip() == "end"),
+        len(lines) - 1,
+    )
     return "\n".join(lines[start:end + 1]) + "\n"
 
 
-# =========================================================
-# ОСНОВНАЯ ЛОГИКА
-# =========================================================
+def backup_dlink_ssh(router):
+    """
+    Скачивает running-config с D-Link DGS-1510 по SSH
+    через интерактивную сессию (invoke_shell).
 
-def backup_dlink(router: dict) -> list[str]:
-    host = router["host"]
-    port = router.get("port", 22)
-    user = router.get("username", "admin")
-    
-    # В проекте пароль хранится в поле ssh_pass и уже расшифрован к этому моменту
-    password = router.get("ssh_pass", "")
-    
-    # Путь для сохранения
+    router (из routers.json, ssh_pass уже расшифрован):
+        host / ip        : адрес коммутатора
+        port             : SSH-порт (по умолчанию 22)
+        username / user  : имя пользователя (по умолчанию "admin")
+        ssh_pass         : пароль (расшифровывается plugin_manager'ом)
+        backup_path      : каталог для сохранения
+        timeout          : таймаут установки соединения, сек (10)
+        read_timeout     : таймаут чтения конфига, сек (30)
+        filename         : имя файла (по умолчанию "running-config.cfg")
+    """
+    host = router.get("host") or router.get("ip")
+    if not host:
+        raise ValueError("Не задан host/ip коммутатора D-Link")
+
+    port = int(router.get("port", 22))
+    username = router.get("username", router.get("user", "admin"))
+
+    password = router.get("ssh_pass")
+    if not password:
+        raise ValueError(
+            f"Не задан пароль SSH (поле 'ssh_pass') для D-Link {host}"
+        )
+
+    connect_timeout = float(router.get("timeout", 10.0))
+    read_timeout = float(router.get("read_timeout", 30.0))
+
     backup_dir = router["backup_path"]
-    os.makedirs(backup_dir, exist_ok=True)
-    
-    # Имя файла в Git-репозитории (как вы просили — config.json)
-    local_filename = "config.json"
-    local_path = os.path.join(backup_dir, local_filename)
-    
-    # Таймаут на подключение
-    timeout = router.get("timeout", 10.0)
+    local_filename = router.get("filename", "running-config.cfg")
 
-    logger.info("Подключение к D-Link %s:%s (user: %s)", host, port, user)
+    os.makedirs(backup_dir, exist_ok=True)
+    local_file = os.path.join(backup_dir, local_filename)
+
+    logging.info("📡 Подключение к D-Link %s:%s по SSH", host, port)
 
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    
+
     try:
         client.connect(
-            hostname=host, 
-            port=port, 
-            username=user, 
+            hostname=host,
+            port=port,
+            username=username,
             password=password,
-            timeout=timeout, 
-            allow_agent=False, 
-            look_for_keys=False
+            timeout=connect_timeout,
+            allow_agent=False,
+            look_for_keys=False,
         )
 
-        # Открываем интерактивную сессию
+        # Интерактивная сессия — D-Link требует именно shell,
+        # exec_command часто возвращает пустой вывод.
         shell = client.invoke_shell()
-        time.sleep(1.5)  # ждём приглашения
-        
+        time.sleep(1)  # ждём приглашения
         if shell.recv_ready():
-            shell.recv(65535)  # очищаем буфер от приглашения
+            shell.recv(65535)  # сбрасываем приглашение
 
-        # Отключаем пагинацию (чтобы конфиг не прерывался на --More--)
+        # Отключаем пагинацию и запрашиваем конфиг
         shell.send("terminal length 0\n")
         time.sleep(1)
-        
-        # Запрашиваем конфиг
         shell.send("show running-config\n")
 
-        # Читаем вывод
+        # Читаем вывод, пока не увидим 'end' или не истечёт таймаут
         buf = ""
-        deadline = time.time() + 30
+        deadline = time.time() + read_timeout
         while time.time() < deadline:
             if shell.recv_ready():
-                buf += shell.recv(65535).decode('utf-8', errors='ignore')
-                # Ищем конец конфига
+                buf += shell.recv(65535).decode(
+                    'utf-8', errors='ignore'
+                )
                 if re.search(r'\bend\s*\n', buf):
                     time.sleep(0.5)
-                    # Дочитываем остатки из буфера
                     while shell.recv_ready():
-                        buf += shell.recv(65535).decode('utf-8', errors='ignore')
+                        buf += shell.recv(65535).decode(
+                            'utf-8', errors='ignore'
+                        )
                     break
             else:
                 time.sleep(0.3)
-        else:
-            logger.warning("Таймаут ожидания вывода 'end' от %s", host)
 
-        shell.close()
+        try:
+            shell.close()
+        except Exception:
+            pass
 
-        # Извлекаем чистый конфиг
-        config = _extract_config(buf)
+        config = extract_config(buf)
 
-        # Сохраняем на диск
-        with open(local_path, "w", encoding="utf-8") as f:
+        with open(local_file, "w", encoding="utf-8") as f:
             f.write(config)
 
-        logger.info("✅ Бэкап D-Link сохранён: %s (%d байт)", local_path, len(config))
-        
-        # Возвращаем список созданных файлов (контракт PluginManager)
-        return [local_path]
+        full_path = os.path.abspath(local_file)
+        logging.info("✅ Бэкап D-Link сохранён: %s", full_path)
+        return [full_path]
 
-    except paramiko.AuthenticationException as exc:
-        logger.error("❌ Ошибка аутентификации D-Link %s: %s", host, exc)
-        raise
-    except Exception as exc:
-        logger.error("❌ Ошибка подключения к D-Link %s: %s", host, exc)
+    except (paramiko.SSHException, socket.error, OSError) as e:
+        logging.error(
+            "❌ Сбой подключения к D-Link %s:%s: %s",
+            host, port, e,
+        )
         raise
     finally:
-        client.close()
+        try:
+            client.close()
+        except Exception:
+            pass
 
 
-# =========================================================
-# ТОЧКА ВХОДА (Контракт PluginManager)
-# =========================================================
-
-def run_backup(router: dict):
+def run_backup(router_config):
     """
-    Точка входа для PluginManager.
-    Возвращает список путей к созданным файлам.
-    При ошибке — исключение.
+    Точка входа PluginManager.
+
+    Контракт с core.plugin_manager:
+        • Возвращает list[str | Path] — пути к созданным файлам.
+        • [] — «нет изменений» (успех, файлов для выгрузки нет).
+        • Любая ошибка — исключение (глотать запрещено).
+
+    Здесь всегда скачиваем конфиг и возвращаем путь к нему.
     """
-    return backup_dlink(router)
+    return backup_dlink_ssh(router_config)

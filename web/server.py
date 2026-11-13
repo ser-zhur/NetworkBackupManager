@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from datetime import datetime
 from contextlib import asynccontextmanager
+from core import rclone as rclone_mod
 
 from fastapi import (
     FastAPI,
@@ -3792,6 +3793,53 @@ def maintenance_unmark_all(
 
     return RedirectResponse(
         f"/retention?message=unmarked&count={total_removed}",
+        status_code=303,
+    )
+
+
+# =========================================================
+# STORAGE SETTINGS PAGE
+# =========================================================
+
+@app.get("/storage-settings", response_class=HTMLResponse)
+def storage_settings_page(
+    request: Request,
+    user: str = Depends(require_auth),
+):
+    return templates.TemplateResponse(
+        request,
+        "storage_settings.html",
+        {
+            "rclone_path": rclone_mod.get_rclone_path(),
+            "rclone_available": rclone_mod.is_available(),
+            "rclone_version": rclone_mod.get_version(),
+            "message": request.query_params.get("message", ""),
+        },
+    )
+
+
+@app.post("/storage-settings/save")
+async def storage_settings_save(
+    user: str = Depends(require_auth),
+    rclone_path: str = Form(""),
+):
+    try:
+        rclone_mod.set_rclone_path(rclone_path)
+    except Exception as exc:
+        logging.error(
+            "storage-settings: не удалось сохранить: %s",
+            exc, exc_info=True,
+        )
+        raise HTTPException(500, "Не удалось сохранить")
+
+    logging.info(
+        "storage-settings: путь к rclone сохранён "
+        "(path=%r, запрос от %s)",
+        rclone_path, user,
+    )
+
+    return RedirectResponse(
+        "/storage-settings?message=saved",
         status_code=303,
     )
 

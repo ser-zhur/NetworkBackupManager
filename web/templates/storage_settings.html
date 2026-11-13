@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    {% include "_base_head.html" %}
+    <title>Настройки хранилищ — Network Backup Manager</title>
+</head>
+<body class="bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-slate-100 transition-colors min-h-screen">
+
+{% with header_subtitle = "Настройки хранилищ" %}
+    {% include "_header.html" %}
+{% endwith %}
+
+<main class="max-w-3xl mx-auto px-5 py-8">
+
+    <div class="flex items-center justify-between mb-6">
+        <div>
+            <h1 class="text-2xl font-bold">🗄 Настройки хранилищ</h1>
+            <p class="text-sm text-gray-500 dark:text-slate-400 mt-1">
+                Глобальные параметры интеграции с внешними хранилищами.
+            </p>
+        </div>
+        <a href="/" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+                          bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                          border border-gray-200 dark:border-slate-700 transition">
+            ← Назад
+        </a>
+    </div>
+
+    {% if message == 'saved' %}
+    <div class="mb-4 px-4 py-3 rounded-lg text-sm
+                bg-emerald-50 dark:bg-emerald-950/40
+                border border-emerald-200 dark:border-emerald-900
+                text-emerald-800 dark:text-emerald-300">
+        Настройки сохранены.
+    </div>
+    {% endif %}
+
+    <section class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm p-6 space-y-4">
+        <div class="flex items-start justify-between gap-4">
+            <div>
+                <h2 class="text-sm font-semibold flex items-center gap-2">
+                    ⚙ Бинарник rclone
+                </h2>
+                <p class="mt-1 text-xs text-gray-500 dark:text-slate-400">
+                    Используется WebDAV-хранилищем. В будущем — для S3, SMB,
+                    Dropbox, Google Drive, OneDrive, FTPS.
+                </p>
+            </div>
+            {% if rclone_available %}
+                <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium
+                             bg-emerald-100 dark:bg-emerald-900/60
+                             text-emerald-700 dark:text-emerald-300 shrink-0">
+                    ✓ Доступен
+                </span>
+            {% else %}
+                <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium
+                             bg-rose-100 dark:bg-rose-900/60
+                             text-rose-700 dark:text-rose-300 shrink-0">
+                    ✗ Не найден
+                </span>
+            {% endif %}
+        </div>
+
+        <form method="POST" action="/storage-settings/save" class="space-y-4">
+            <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
+                    Путь к бинарнику:
+                </label>
+                <input type="text" name="rclone_path" value="{{ rclone_path }}"
+                       placeholder="rclone (поиск в PATH) или C:\Tools\rclone.exe"
+                       class="w-full rounded-lg px-3 py-2 text-sm font-mono
+                              bg-gray-50 dark:bg-slate-950
+                              border border-gray-200 dark:border-slate-800
+                              focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+                <p class="mt-1 text-[11px] text-gray-500 dark:text-slate-400">
+                    Оставьте <code class="font-mono">rclone</code> для поиска в системном PATH.
+                </p>
+            </div>
+
+            {% if rclone_version %}
+            <div class="px-3 py-2 rounded-lg bg-gray-50 dark:bg-slate-950
+                        border border-gray-200 dark:border-slate-800">
+                <div class="text-[11px] text-gray-500 dark:text-slate-400">Версия:</div>
+                <div class="text-xs font-mono">{{ rclone_version }}</div>
+            </div>
+            {% endif %}
+
+            <div class="flex justify-end">
+                <button type="submit"
+                        class="px-5 py-2.5 rounded-lg text-sm font-medium
+                               bg-brand-600 hover:bg-brand-700 text-white shadow-sm transition">
+                    Сохранить
+                </button>
+            </div>
+        </form>
+    </section>
+
+    <div class="mt-6 p-4 rounded-xl border border-gray-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+        <h3 class="text-sm font-semibold mb-2">💡 Как это работает</h3>
+        <ul class="text-xs text-gray-600 dark:text-slate-400 space-y-1.5 list-disc list-inside">
+            <li>Storage-backend'ы (WebDAV и будущие) используют rclone как транспорт.</li>
+            <li>Для каждого push создаётся временный конфиг — пользовательский <code class="font-mono">rclone.conf</code> не затрагивается.</li>
+            <li>Пароли хранятся в зашифрованном виде и передаются в rclone через <code class="font-mono">rclone obscure</code>.</li>
+        </ul>
+    </div>
+</main>
+
+</body>
+</html>

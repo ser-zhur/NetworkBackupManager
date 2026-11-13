@@ -137,6 +137,22 @@ from core.service_installer import (
 )
 
 
+
+# -----------------------------------------------------
+# rclone
+# -----------------------------------------------------
+
+from core import rclone as rclone_mod
+
+if rclone_mod.is_available():
+    logger.info("rclone: %s", rclone_mod.get_version())
+else:
+    logger.info(
+        "rclone: не настроен — storage-backend'ы "
+        "на rclone недоступны."
+    )
+
+
 # =========================================================
 # НАСТРОЙКИ WEB
 # =========================================================
