@@ -7,6 +7,7 @@ import secrets
 import hashlib
 import base64
 import time
+import urllib.parse
 
 from pathlib import Path
 from datetime import datetime
@@ -1067,13 +1068,18 @@ def _build_device_payload(
 
     git_recent = []
     for c in git_commits[:3]:
+        # .get() вместо [] — на случай старой/повреждённой
+        # репы, где очередной коммит может не содержать
+        # какого-то поля. Иначе получаем KeyError → 500,
+        # и пользователь видит только «Не удалось загрузить».
+        sha = c.get("sha", "")
         git_recent.append({
-            "sha": c["sha"],
-            "short": c["short"],
-            "message": c["message"],
-            "time": c["time"],
-            "files": c["files"],
-            "note": c.get("note", ""),
+            "sha":     sha,
+            "short":   c.get("short") or sha[:7],
+            "message": c.get("message", ""),
+            "time":    c.get("time", ""),
+            "files":   c.get("files", []) or [],
+            "note":    c.get("note", ""),
         })
 
     # ---- Версия прошивки ----
@@ -1426,6 +1432,14 @@ def read_root(
                 )
 
     selected_id = request.query_params.get("selected", "")
+    
+    # Если параметра нет в URL (например, вернулись по ссылке «Назад»
+    # или «Главная»), берём последнее выбранное устройство из cookie.
+    if not selected_id:
+        selected_id = request.cookies.get("nbm-selected-device", "")
+        if selected_id:
+            selected_id = urllib.parse.unquote(selected_id)
+            
     selected = None
     if devices:
         if selected_id:
@@ -1474,7 +1488,17 @@ def api_device_detail(
     if not (0 <= index < len(routers)):
         raise HTTPException(status_code=404, detail="Device not found")
 
-    payload = _build_device_payload(device_type, index, routers[index])
+    try:
+        payload = _build_device_payload(device_type, index, routers[index])
+    except Exception as exc:
+        logging.error(
+            "api_device_detail(%s/%s): %s",
+            device_type, index, exc, exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Ошибка построения карточки устройства: {exc}",
+        )
 
     return templates.TemplateResponse(
         request,
@@ -3394,6 +3418,9 @@ def device_logs(
 
             "focus_line_index":
                 focus_line_index,
+                
+            "back_url":
+                f"/?selected={device_type}/{index}",
         },
     )
 

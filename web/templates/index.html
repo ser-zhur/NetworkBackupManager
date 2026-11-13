@@ -142,6 +142,17 @@
 
 const panel = document.getElementById('detail-panel');
 
+// Синхронизируем cookie с устройством, которое отрисовал сервер
+// при первой загрузке. Это нужно, чтобы если пользователь сразу
+// уйдёт на другую страницу (например, в Логи), сервер знал,
+// какое устройство было активно.
+(function syncInitialSelection() {
+    const initialSelected = "{{ selected.id if selected else '' }}";
+    if (initialSelected) {
+        document.cookie = 'nbm-selected-device=' + encodeURIComponent(initialSelected) + '; path=/; max-age=31536000; SameSite=Lax';
+    }
+})();
+
 async function selectDevice(id) {
     // Подсветка в списке
     document.querySelectorAll('.device-item[data-device-id]').forEach(el => {
@@ -159,6 +170,10 @@ async function selectDevice(id) {
     // Обновление URL без перезагрузки
     history.replaceState(null, '', '/?selected=' + id);
 
+    // Запоминаем выбор в cookie, чтобы при возврате
+    // с подстраниц (Логи, Редактировать) открывалось то же устройство
+    document.cookie = 'nbm-selected-device=' + encodeURIComponent(id) + '; path=/; max-age=31536000; SameSite=Lax';
+
     // Загрузка фрагмента
     panel.style.opacity = '0.35';
     panel.style.transition = 'opacity .12s ease';
@@ -169,16 +184,21 @@ async function selectDevice(id) {
         if (!res.ok) throw new Error('HTTP ' + res.status);
         panel.innerHTML = await res.text();
     } catch (e) {
-        // Если страница уже уходит (пользователь нажал кнопку
-        // бэкапа, обновил страницу, перешёл по ссылке) —
-        // fetch отменяется браузером, и мы получаем
-        // TypeError: NetworkError. Не мигаем ошибкой.
+        // Навигация/перезагрузка действительно отменяет fetch.
+        // Но «молча вернуться» — значит скрыть реальную причину
+        // от пользователя и от разработчика. Логируем всегда.
         if (e && (e.name === 'AbortError' || e instanceof TypeError)) {
+            console.warn(
+                '[selectDevice] fetch отменён/оборван:',
+                e.name, e.message, 'device_id =', id
+            );
             return;
         }
 
+        console.error('[selectDevice] ошибка загрузки устройства:', e);
+
         panel.innerHTML = `<div class="bg-white dark:bg-slate-900 rounded-2xl border border-rose-300 dark:border-rose-800 p-6 text-rose-700 dark:text-rose-300">
-            Не удалось загрузить устройство: ${e.message}
+            Не удалось загрузить устройство: ${e.message || e}
         </div>`;
     } finally {
         panel.style.opacity = '1';
@@ -218,6 +238,52 @@ function bindRunBackup() {
     });
 }
 
+
+// Обновляет состояние кнопки «Синхронизировать хранилища»
+// в текущей карточке устройства — если она вообще есть
+// (т. е. у устройства включён хотя бы один non-git backend).
+function updateSyncStoragesButton(data) {
+    const btn = document.getElementById('sync-storages-btn');
+    if (!btn) return;
+
+    const deviceId = btn.dataset.syncDevice;
+    if (!deviceId) return;
+
+    const syncing   = new Set(data.syncing  || []);
+    const backingUp = new Set(data.devices  || []);
+    const mass      = !!data.mass;
+
+    const isSyncing = syncing.has(deviceId);
+    const isBackup  = mass || backingUp.has(deviceId);
+
+    if (isSyncing) {
+        btn.disabled = true;
+        btn.innerHTML =
+            '<span class="spinner"></span><span>Синхронизация…</span>';
+    } else if (isBackup) {
+        btn.disabled = true;
+        btn.innerHTML = '<span>Идёт бэкап…</span>';
+    } else {
+        btn.disabled = false;
+        btn.innerHTML = '<span>☁ Синхронизировать хранилища</span>';
+    }
+    // Если устройство только что было занято, а теперь нет —
+    // перерисуем карточку, чтобы подтянуть свежие строки хранилищ.
+    const prev = updateSyncStoragesButton._lastBusy || Object.create(null);
+    const wasBusy = prev[deviceId] === true;
+    const nowBusy = isSyncing || isBackup;
+
+    prev[deviceId] = nowBusy;
+    updateSyncStoragesButton._lastBusy = prev;
+
+    if (wasBusy && !nowBusy) {
+        // selectDevice сделает один fetch и обновит панель.
+        // Если пользователь уже ушёл на другое устройство —
+        // deviceId в кнопке всё равно текущий, так что лишнего
+        // запроса не будет.
+        selectDevice(deviceId);
+    }
+}
 
 // ============================================================
 // СОСТОЯНИЕ БЭКАПОВ — POLLING
@@ -310,8 +376,12 @@ async function refreshBackupStatus() {
             );
 
             runAllBtn.innerHTML = '▶ Запустить все бэкапы';
+     
         }
+            // ---- Кнопка «Синхронизировать хранилища» (если есть) ----
+        updateSyncStoragesButton(data);
     }
+    
 }
 
 function initBackupUI() {

@@ -43,10 +43,13 @@
                 ⬇ В самый низ
             </button>
 
-            <a href="/"
-               class="bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs px-4 py-2 rounded-lg transition border border-gray-700 font-medium">
-                ← Назад
+            <a href="{{ back_url or '/' }}"
+               class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+                      bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                      border border-gray-200 dark:border-slate-700 transition">
+                {% if back_url %}← К устройству{% else %}← На главную{% endif %}
             </a>
+            
         </div>
     </div>
 

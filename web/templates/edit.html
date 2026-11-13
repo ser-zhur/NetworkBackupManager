@@ -149,6 +149,77 @@
 {% set storage_mode = 'edit' %}
 {% include "_storage_form.html" %}
 
+<script>
+/* ---- Перенос git-карточки в локальную секцию ---- */
+(function () {
+    'use strict';
+
+        function relocateGitBackend() {
+        var all = document.querySelectorAll('*');
+
+        // 1. Находим git-карточку
+        var gitCard = null, gitSize = Infinity;
+        for (var i = 0; i < all.length; i++) {
+            var el = all[i];
+            if ((el.textContent || '').indexOf('Локальная история') === -1) continue;
+            if (!el.querySelector(
+                'select[name="storage_git_mode"], ' +
+                'input[name="storage_git_mode"]'
+            )) continue;
+            var sz = el.querySelectorAll('*').length;
+            if (sz < gitSize) { gitSize = sz; gitCard = el; }
+        }
+        if (!gitCard) return;
+
+        // 2. Находим локальную секцию
+        var localSection = null, localSize = Infinity;
+        for (var i = 0; i < all.length; i++) {
+            var el = all[i];
+            if (el.tagName !== 'SECTION') continue;
+            if (!el.querySelector('input[name="backup_path"]')) continue;
+            var sz = el.querySelectorAll('*').length;
+            if (sz < localSize) { localSize = sz; localSection = el; }
+        }
+        if (!localSection) return;
+
+        if (localSection.contains(gitCard)) return;
+
+        // 3. Переносим
+        var oldParent = gitCard.parentNode;
+        localSection.appendChild(gitCard);
+
+        // 4. Убираем эффект "карточка в карточке"
+        // Сбрасываем фон, рамки и тени, добавляем отступ и линию сверху
+        gitCard.style.backgroundColor = 'transparent';
+        gitCard.style.border = 'none';
+        gitCard.style.borderRadius = '0';
+        gitCard.style.boxShadow = 'none';
+        gitCard.style.padding = '24px 0 0 0';
+        gitCard.style.marginTop = '8px';
+        gitCard.style.borderTop = '1px solid rgba(156, 163, 175, 0.2)';
+
+        // Если от git-карточки остался пустой wrapper — убираем.
+        if (oldParent && oldParent !== localSection &&
+            oldParent.children.length === 0) {
+            oldParent.remove();
+        }
+
+        // 5. Обновляем заголовок секции
+        var titleEl = localSection.querySelector('h3');
+        if (titleEl && titleEl.textContent.indexOf('бэкапов') !== -1) {
+            titleEl.textContent = titleEl.textContent
+                .replace(/Локальное хранилище бэкапов/, 'Локальное хранилище и история');
+        }
+    }
+    
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', relocateGitBackend);
+    } else {
+        relocateGitBackend();
+    }
+})();
+</script>
+
         <div class="flex justify-end gap-3 pt-2">
             <a href="/"
                class="px-5 py-2.5 rounded-lg text-sm font-medium

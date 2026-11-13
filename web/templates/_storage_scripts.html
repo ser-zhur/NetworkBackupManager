@@ -107,3 +107,116 @@ async function testStorage(backendId, deviceType, index) {
     }
 }
 </script>
+<script>
+(function () {
+    'use strict';
+
+    function findCommonAncestor(elements) {
+        if (!elements.length) return null;
+        var chain = [];
+        var cur = elements[0].parentElement;
+        while (cur) {
+            chain.push(cur);
+            cur = cur.parentElement;
+        }
+        for (var i = 0; i < chain.length; i++) {
+            var c = chain[i];
+            var ok = elements.every(function (el) {
+                return c.contains(el);
+            });
+            if (ok) return c;
+        }
+        return null;
+    }
+
+    function initStorageToggles() {
+        var checkboxes = document.querySelectorAll(
+            'input[type="checkbox"][name^="storage_"][name$="_enabled"]'
+        );
+
+        checkboxes.forEach(function (cb) {
+            var m = cb.name.match(/^storage_(.+)_enabled$/);
+            if (!m) return;
+            var backendId = m[1];
+
+            var selector =
+                '[name^="storage_' + backendId + '_"]';
+            var all = Array.prototype.slice.call(
+                document.querySelectorAll(selector)
+            );
+            var others = all.filter(function (el) {
+                return el !== cb;
+            });
+            if (!others.length) return;
+
+            var container = findCommonAncestor(
+                [cb].concat(others)
+            );
+            if (!container) return;
+
+            // Определяем «строки», которые надо прятать:
+            // прямые (или почти прямые) потомки container,
+            // содержащие поля backend'а, НО не содержащие
+            // сам чекбокс. Это защищает строку с чекбоксом
+            // и названием хранилища от скрытия.
+            var rows = [];
+            others.forEach(function (el) {
+                var row = el;
+                while (row && row.parentElement !== container) {
+                    row = row.parentElement;
+                }
+                if (row && row !== container && !row.contains(cb)) {
+                    rows.push(row);
+                }
+            });
+
+
+            var enabledCbs = container.querySelectorAll(
+                'input[type="checkbox"][name$="_enabled"]'
+            );
+            if (enabledCbs.length === 1) {
+                Array.prototype.forEach.call(
+                    container.children,
+                    function (child) {
+                        if (child.contains(cb)) return;
+                        if (rows.indexOf(child) === -1) {
+                            rows.push(child);
+                        }
+                    }
+                );
+            }
+
+
+            rows = Array.from(new Set(rows));
+            if (!rows.length) return;
+
+            function update() {
+                var on = cb.checked;
+                rows.forEach(function (r) {
+                    if (on) {
+                        r.style.display = '';
+                        r.animate(
+                            [{ opacity: 0 }, { opacity: 1 }],
+                            { duration: 150, easing: 'ease-out' }
+                        );
+                    } else {
+                        r.style.display = 'none';
+                    }
+                });
+            }
+
+            cb.addEventListener('change', update);
+            update();
+        });
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener(
+            'DOMContentLoaded',
+            initStorageToggles
+        );
+    } else {
+        initStorageToggles();
+    }
+})();
+</script>
