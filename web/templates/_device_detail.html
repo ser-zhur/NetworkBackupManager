@@ -69,6 +69,7 @@
                       class="inline-flex">
                     <button id="run-backup-btn"
                             type="submit"
+                            aria-label="Запустить бэкап устройства"
                             class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium
                                    bg-brand-600 hover:bg-brand-700 text-white shadow-sm transition
                                    disabled:opacity-70 disabled:cursor-not-allowed">
@@ -80,18 +81,21 @@
                     </button>
                 </form>
                 <a href="/logs/device/{{ d.type }}/{{ d.index }}"
+                    aria-label="Открыть логи устройства"
                    class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium
                           bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
                           border border-gray-200 dark:border-slate-700 transition">
                     📄 Логи
                 </a>
                 <a href="/edit/{{ d.type }}/{{ d.index }}"
+                    aria-label="Редактировать устройство"
                    class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium
                           bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
                           border border-gray-200 dark:border-slate-700 transition">
                     ⚙ Редактировать
                 </a>
                 <a href="/git/{{ d.type }}/{{ d.index }}"
+                    aria-label="История версий"
                    class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium
                           bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
                           border border-gray-200 dark:border-slate-700 transition">
@@ -101,6 +105,7 @@
                       method="POST"
                       class="inline-flex">
                     <button type="submit"
+                            aria-label="{% if d.pinned %}Открепить устройство{% else %}Закрепить устройство{% endif %}"
                             title="{% if d.pinned %}Открепить{% else %}Закрепить{% endif %}"
                             class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium
                                    {% if d.pinned %}
@@ -120,6 +125,7 @@
                 </form>
                                 <button type="button"
                         onclick="openDeleteDialog()"
+                        aria-label="Удалить устройство"
                         title="Удалить устройство со всеми бэкапами"
                         class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium
                                bg-white dark:bg-slate-800

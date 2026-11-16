@@ -166,12 +166,12 @@
             <!-- Фильтры -->
             <div class="px-3 py-2 border-b border-gray-100 dark:border-slate-800 space-y-2" id="filters-bar">
 
-                <div class="flex flex-wrap items-center gap-1" id="filter-status">
-                    <button type="button" class="filter-chip" data-filter-status="all">Все <span class="chip-count">(0)</span></button>
-                    <button type="button" class="filter-chip" data-filter-status="ok">OK <span class="chip-count">(0)</span></button>
-                    <button type="button" class="filter-chip" data-filter-status="warn">⚠ <span class="chip-count">(0)</span></button>
-                    <button type="button" class="filter-chip" data-filter-status="fail">✗ <span class="chip-count">(0)</span></button>
-                    <button type="button" class="filter-chip" data-filter-status="none">— <span class="chip-count">(0)</span></button>
+                <div class="flex flex-wrap items-center gap-1" id="filter-status" role="group" aria-label="Фильтр по статусу">
+                    <button type="button" class="filter-chip" data-filter-status="all" aria-label="Все устройства" aria-pressed="true">Все <span class="chip-count">(0)</span></button>
+                    <button type="button" class="filter-chip" data-filter-status="ok" aria-label="Только актуальные" aria-pressed="false">OK <span class="chip-count">(0)</span></button>
+                    <button type="button" class="filter-chip" data-filter-status="warn" aria-label="Только просроченные" aria-pressed="false">⚠ <span class="chip-count">(0)</span></button>
+                    <button type="button" class="filter-chip" data-filter-status="fail" aria-label="Только с ошибкой" aria-pressed="false">✗ <span class="chip-count">(0)</span></button>
+                    <button type="button" class="filter-chip" data-filter-status="none" aria-label="Нет данных" aria-pressed="false">— <span class="chip-count">(0)</span></button>
                 </div>
 
                 <div class="flex flex-wrap items-center gap-1" id="filter-type"></div>
@@ -215,10 +215,12 @@
                                 <div class="device-wrapper relative group"
                                      data-pinned="{{ '1' if d.pinned else '0' }}"
                                      data-type="{{ d.type }}">
+                                     {% set _search_text = ((d.name or '') ~ ' ' ~ (d.host or '') ~ ' ' ~ ((d.tags or []) | join(' '))) | lower | replace('ё', 'е') %}
                                     <button data-device-id="{{ d.id }}"
                                             data-status="{{ d.status }}"
                                             data-type="{{ d.type }}"
                                             data-tags="{{ (d.tags or []) | join(',') }}"
+                                            data-host="{{ d.host or '' }}"
                                             data-name="{{ d.name or d.host or '' }}"
                                             data-pinned="{{ '1' if d.pinned else '0' }}"
                                             data-last-attempt-age="{{ d.last_attempt_age_days if d.last_attempt_age_days is not none else 999999 }}"
@@ -241,7 +243,7 @@
                                                 </div>
 
                                                 <div class="mt-0.5 text-sm font-medium truncate flex items-center gap-1.5">
-                                                    <span class="truncate">{{ d.name or d.host }}</span>
+                                                    <span class="truncate device-name">{{ d.name or d.host }}</span>
 
                                                     {% if d.never_backed_up %}
                                                     <span class="shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded
@@ -290,6 +292,7 @@
                                               class="inline-flex">
                                             <button type="submit"
                                                     title="Запустить бэкап"
+                                                    aria-label="Запустить бэкап"
                                                     class="p-1.5 rounded-md
                                                            text-gray-500 dark:text-slate-400
                                                            hover:bg-emerald-50 dark:hover:bg-emerald-950/40
@@ -305,6 +308,7 @@
 
                                         <a href="/logs/device/{{ d.type }}/{{ d.index }}"
                                            title="Открыть логи"
+                                           aria-label="Открыть логи"
                                            class="inline-flex p-1.5 rounded-md
                                                   text-gray-500 dark:text-slate-400
                                                   hover:bg-brand-50 dark:hover:bg-brand-950/40
@@ -323,7 +327,9 @@
                                                        hover:bg-black/5 dark:hover:bg-white/10
                                                        {% if d.pinned %}text-amber-500{% else %}text-gray-400 dark:text-slate-500 hover:text-amber-500{% endif %}
                                                        transition-colors"
-                                                title="{% if d.pinned %}Открепить{% else %}Закрепить{% endif %}">
+                                                title="{% if d.pinned %}Открепить{% else %}Закрепить{% endif %}"
+                                                aria-label="{% if d.pinned %}Открепить устройство{% else %}Закрепить устройство{% endif %}"
+                                                aria-pressed="{{ 'true' if d.pinned else 'false' }}">
                                             {% if d.pinned %}⭐{% else %}☆{% endif %}
                                         </button>
                                     </form>
@@ -344,8 +350,10 @@
                 {% endif %}
             </div>
 
-            <div class="px-4 py-2.5 border-t border-gray-100 dark:border-slate-800 text-[11px] text-gray-500 dark:text-slate-400 flex items-center justify-between">
-                <span>Всего устройств: <b class="text-gray-700 dark:text-slate-200">{{ devices | length }}</b></span>
+            <div id="device-footer" class="px-4 py-2.5 border-t border-gray-100 dark:border-slate-800 text-[11px] text-gray-500 dark:text-slate-400 flex flex-wrap items-center gap-1">
+                <span>Всего: <b id="footer-total" class="text-gray-700 dark:text-slate-200">{{ devices | length }}</b></span>
+                <span id="footer-found" class="hidden"></span>
+                <span id="footer-pinned" class="hidden"></span>
             </div>
         </aside>
 
@@ -920,41 +928,99 @@ function _deviceMatchesFilters(item, f) {
     return true;
 }
 
+function _normalizeText(s) {
+    return (s || '').toLowerCase().replace(/ё/g, 'е');
+}
+
+// Подсветка совпадения: оборачивает первое вхождение query
+// в <mark> внутри элемента. Предварительно восстанавливает
+// исходный текст из data-original (если был выделен раньше).
+function _highlight(el, query) {
+    if (!el) return;
+
+    // Восстановить исходный текст
+    if (el.dataset.original === undefined) {
+        el.dataset.original = el.textContent;
+    }
+    const original = el.dataset.original;
+
+    if (!query) {
+        if (el.innerHTML !== original) el.textContent = original;
+        return;
+    }
+
+    const normOriginal = _normalizeText(original);
+    const idx = normOriginal.indexOf(query);
+    if (idx === -1) {
+        if (el.textContent !== original) el.textContent = original;
+        return;
+    }
+
+    // Простая защита от HTML-инъекций
+    const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    const before = original.slice(0, idx);
+    const match = original.slice(idx, idx + query.length);
+    const after = original.slice(idx + query.length);
+    el.innerHTML = esc(before) + '<mark class="bg-amber-200 dark:bg-amber-500/40 text-inherit rounded-sm">' + esc(match) + '</mark>' + esc(after);
+}
+
 function applyView() {
     const searchEl = document.getElementById('device-search');
-    const q = (searchEl ? searchEl.value : '').trim().toLowerCase();
+    const rawQ = (searchEl ? searchEl.value : '').trim();
+    const q = _normalizeText(rawQ);
 
     let anyVisible = false;
+    let visibleCount = 0;
 
-    // Закреплённые видны всегда
+    // Закреплённые
     const pinnedList = document.getElementById('pinned-list');
     const hasPinned = pinnedList && !pinnedList.classList.contains('hidden');
     if (hasPinned) {
         anyVisible = true;
-    }   
+    }
 
     document.querySelectorAll('.device-group').forEach(group => {
         const container = group.querySelector('.device-items');
         if (!container) return;
 
         let visible = 0;
-        
-        // Скрываем/показываем обертки целиком, а не только кнопки
         const elementsToFilter = container.querySelectorAll('.device-wrapper');
-        const itemsToFilter = elementsToFilter.length > 0 
-            ? Array.from(elementsToFilter) 
+        const itemsToFilter = elementsToFilter.length > 0
+            ? Array.from(elementsToFilter)
             : Array.from(container.querySelectorAll('.device-item'));
 
         itemsToFilter.forEach(el => {
-            const item = el.classList.contains('device-wrapper') ? el.querySelector('.device-item') : el;
+            const item = el.classList.contains('device-wrapper')
+                ? el.querySelector('.device-item')
+                : el;
             if (!item) return;
 
             const passFilter = _deviceMatchesFilters(item, currentFilters);
-            const passSearch = !q || item.textContent.toLowerCase().includes(q);
+
+            // Собираем строку поиска из всех полей напрямую:
+            // имя + хост + тип + теги. Это надёжнее, чем
+            // полагаться на один атрибут data-search, который
+            // легко забыть заполнить.
+            const searchParts = [
+                item.dataset.name || '',
+                item.dataset.host || '',
+                item.dataset.type || '',
+                (item.dataset.tags || '').replace(/,/g, ' '),
+            ];
+            const searchTarget = _normalizeText(searchParts.join(' '));
+
+            const passSearch = !q || searchTarget.includes(q);
+
             const show = passFilter && passSearch;
-            
             el.style.display = show ? '' : 'none';
-            if (show) visible++;
+            if (show) {
+                visible++;
+                visibleCount++;
+
+                // Подсветка имени и хоста
+                _highlight(item.querySelector('.device-name'), q);
+            }
         });
 
         group.style.display = visible > 0 ? '' : 'none';
@@ -964,6 +1030,15 @@ function applyView() {
             group.setAttribute('open', '');
         }
     });
+
+    // Если поиск не активен — восстанавливаем все подсветки
+    if (!q) {
+        document.querySelectorAll('.device-name, .device-host').forEach(el => {
+            if (el.dataset.original !== undefined && el.textContent !== el.dataset.original) {
+                el.textContent = el.dataset.original;
+            }
+        });
+    }
 
     // Пустой результат
     let emptyMsg = document.getElementById('filter-empty-msg');
@@ -983,6 +1058,42 @@ function applyView() {
         emptyMsg.style.display = '';
     } else if (emptyMsg) {
         emptyMsg.style.display = 'none';
+    }
+
+    // Футер: «Всего · Найдено · ⭐ Закреплено»
+    _updateFooterCounters(visibleCount);
+}
+
+function _updateFooterCounters(visibleCount) {
+    const footer = document.getElementById('device-footer');
+    if (!footer) return;
+
+    const totalEl = footer.querySelector('#footer-total');
+    const foundEl = footer.querySelector('#footer-found');
+    const pinnedEl = footer.querySelector('#footer-pinned');
+
+    const total = document.querySelectorAll('.device-item').length;
+    const pinned = document.querySelectorAll('.device-wrapper[data-pinned="1"]').length;
+
+    if (totalEl) totalEl.textContent = total;
+
+    if (foundEl) {
+        // Показываем «Найдено», только если оно меньше общего
+        if (visibleCount < total) {
+            foundEl.textContent = `· Найдено: ${visibleCount}`;
+            foundEl.classList.remove('hidden');
+        } else {
+            foundEl.classList.add('hidden');
+        }
+    }
+
+    if (pinnedEl) {
+        if (pinned > 0) {
+            pinnedEl.textContent = `· ⭐ ${pinned}`;
+            pinnedEl.classList.remove('hidden');
+        } else {
+            pinnedEl.classList.add('hidden');
+        }
     }
 }
 
@@ -1031,6 +1142,7 @@ function _updateStatusChips() {
         const active = (s === 'all' && !currentFilters.status)
                     || (s === currentFilters.status);
         btn.classList.toggle('chip-active', active);
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
 }
 
@@ -1051,6 +1163,7 @@ function _updateTypeChips() {
         if (cntEl) cntEl.textContent = `(${count})`;
 
         btn.classList.toggle('chip-active', active);
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
         btn.disabled = !active && count === 0;
     });
 }
@@ -1072,6 +1185,7 @@ function _updateTagChips() {
         if (cntEl) cntEl.textContent = `(${count})`;
 
         btn.classList.toggle('chip-active', active);
+        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
         btn.disabled = !active && count === 0;
     });
 }
@@ -1092,6 +1206,8 @@ function _buildTypeChips() {
         btn.type = 'button';
         btn.className = 'filter-chip';
         btn.dataset.filterType = type;
+        btn.setAttribute('aria-pressed', 'false');
+        btn.setAttribute('aria-label', `Тип ${type}`);
         btn.innerHTML = `<span>${type}</span> <span class="chip-count">(0)</span>`;
         btn.addEventListener('click', () => _toggleMultiFilter('type', type));
         container.appendChild(btn);
@@ -1147,6 +1263,8 @@ function _buildTagChips() {
         btn.type = 'button';
         btn.className = 'filter-chip';
         btn.dataset.filterTag = key;
+        btn.setAttribute('aria-pressed', 'false');
+        btn.setAttribute('aria-label', `Тег ${orig}`);
         btn.innerHTML = `<span>${orig}</span> <span class="chip-count">(0)</span>`;
         btn.addEventListener('click', () => _toggleMultiFilter('tag', key));
         container.appendChild(btn);
@@ -1275,7 +1393,10 @@ document.addEventListener('DOMContentLoaded', () => {
     applyRelTime();
     applySort();
 
+    initPinned();
+    initFilters();
     initKeyboardNav();
+    initGroupPersistence(); 
 
     // 2. Перенос закреплённых в отдельный блок.
     //    Должен идти ДО initFilters: счётчики чипов
@@ -1479,6 +1600,35 @@ function initKeyboardNav() {
     });
 }
 
+// ============================================================
+// СОХРАНЕНИЕ РАСКРЫТОСТИ ГРУПП
+// ============================================================
+
+const GROUPS_STORAGE_KEY = 'nbm-group-open';
+
+function initGroupPersistence() {
+    let saved = {};
+    try {
+        saved = JSON.parse(localStorage.getItem(GROUPS_STORAGE_KEY) || '{}');
+    } catch (e) { saved = {}; }
+
+    document.querySelectorAll('.device-group[data-group-type]').forEach(group => {
+        const type = group.dataset.groupType;
+        if (type in saved) {
+            if (saved[type]) group.setAttribute('open', '');
+            else group.removeAttribute('open');
+        }
+
+        // Сохраняем при переключении
+        group.addEventListener('toggle', () => {
+            if (group.tagName !== 'DETAILS') return;
+            saved[type] = group.open;
+            try {
+                localStorage.setItem(GROUPS_STORAGE_KEY, JSON.stringify(saved));
+            } catch (e) {}
+        });
+    });
+}
 </script>
 
 </body>
