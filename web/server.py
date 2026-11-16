@@ -2536,6 +2536,8 @@ def sync_storages_endpoint(
         is_sync_running_for(device_id)
         or is_backup_running_for(device_id)
     ):
+        if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+            return Response(status_code=204)
         return RedirectResponse(
             url=f"/?selected={device_id}",
             status_code=303,
@@ -2574,6 +2576,7 @@ def sync_storages_endpoint(
 )
 def run_backup(
     device_type: str,
+    request: Request,
     index: int,
     background_tasks:
         BackgroundTasks,
@@ -2659,11 +2662,10 @@ def run_backup(
         secure_router,
     )
 
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return Response(status_code=204)  # No Content — остаемся на странице
     return RedirectResponse(
-        url=(
-            f"/logs/device/"
-            f"{device_type}/{index}"
-        ),
+        url=f"/logs/device/{device_type}/{index}",
         status_code=303,
     )
 
@@ -2675,6 +2677,7 @@ def run_backup(
     "/run-now"
 )
 def run_now_endpoint(
+    request: Request,
     background_tasks:
         BackgroundTasks,
     user: str = Depends(
@@ -2688,6 +2691,8 @@ def run_now_endpoint(
             execute_all_backups_task
         )
 
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return Response(status_code=204)
     return RedirectResponse(
         url="/logs/main",
         status_code=303,

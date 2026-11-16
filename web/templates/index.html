@@ -106,6 +106,15 @@
             font-weight: 400;
         }
 
+                /* Быстрые действия в строке устройства:
+           на тач-устройствах всегда видимы, т.к. :hover там не работает. */
+        @media (hover: none) {
+            .quick-actions {
+                opacity: 1 !important;
+                pointer-events: auto !important;
+            }
+        }
+
     </style>
 </head>
 <body class="bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-slate-100 transition-colors">
@@ -215,7 +224,7 @@
                                                 <span class="status-dot-ping absolute inline-flex h-full w-full rounded-full {{ m.dot }} {% if d.backup_in_progress or d.sync_in_progress %}animate-ping opacity-75{% else %}opacity-0{% endif %}"></span>
                                                 <span class="relative inline-flex w-2.5 h-2.5 rounded-full {{ m.dot }} ring-4 {{ m.ring }}"></span>
                                             </span>
-                                            <div class="min-w-0 flex-1 pr-7">
+                                            <div class="min-w-0 flex-1 pr-20">
                                                 <div class="flex items-center justify-between gap-2">
                                                     <span class="text-[11px] uppercase tracking-wide font-semibold text-gray-500 dark:text-slate-400">{{ d.type }}</span>
                                                     <span class="text-[10px] px-1.5 py-0.5 rounded font-medium {{ m.badge }}">{{ m.label }}</span>
@@ -236,7 +245,41 @@
                                             </div>
                                         </div>
                                     </button>
+                                    <!-- Быстрые действия (появляются при наведении) -->
+                                    <div class="quick-actions absolute top-1/2 -translate-y-1/2 right-10 z-10
+                                                flex items-center gap-0.5
+                                                opacity-0 group-hover:opacity-100
+                                                pointer-events-none group-hover:pointer-events-auto
+                                                transition-opacity duration-150">
+                                        <form method="POST"
+                                              action="/run-progress/{{ d.type }}/{{ d.index }}"
+                                              data-row-run-backup="{{ d.id }}"
+                                              class="inline-flex">
+                                            <button type="submit"
+                                                    title="Запустить бэкап"
+                                                    class="p-1.5 rounded-md
+                                                           text-gray-500 dark:text-slate-400
+                                                           hover:bg-emerald-50 dark:hover:bg-emerald-950/40
+                                                           hover:text-emerald-600 dark:hover:text-emerald-400
+                                                           disabled:opacity-60 disabled:cursor-not-allowed
+                                                           transition-colors">
+                                                <span class="run-idle inline-flex items-center">▶</span>
+                                                <span class="run-busy hidden items-center">
+                                                    <span class="spinner" style="width: 12px; height: 12px;"></span>
+                                                </span>
+                                            </button>
+                                        </form>
 
+                                        <a href="/logs/device/{{ d.type }}/{{ d.index }}"
+                                           title="Открыть логи"
+                                           class="inline-flex p-1.5 rounded-md
+                                                  text-gray-500 dark:text-slate-400
+                                                  hover:bg-brand-50 dark:hover:bg-brand-950/40
+                                                  hover:text-brand-600 dark:hover:text-brand-400
+                                                  transition-colors">
+                                            📄
+                                        </a>
+                                    </div>
                                     <form method="POST"
                                           action="/toggle-pin/{{ d.type }}/{{ d.index }}"
                                           class="absolute top-1/2 -translate-y-1/2 right-2 z-10
@@ -483,6 +526,30 @@ async function refreshBackupStatus() {
         } else {
             ping.classList.remove('animate-ping', 'opacity-75');
             ping.classList.add('opacity-0');
+        }
+    });
+
+        // ---- Кнопки «Запустить бэкап» в строках списка ----
+    document.querySelectorAll('[data-row-run-backup]').forEach(form => {
+        const deviceId = form.dataset.rowRunBackup;
+        const btn = form.querySelector('button[type="submit"]');
+        if (!btn) return;
+
+        const idle = btn.querySelector('.run-idle');
+        const busy = btn.querySelector('.run-busy');
+        if (!idle || !busy) return;
+
+        const isBusy = mass || deviceSet.has(deviceId) || syncingSet.has(deviceId);
+
+        btn.disabled = isBusy;
+        if (isBusy) {
+            idle.classList.add('hidden');
+            busy.classList.remove('hidden');
+            busy.classList.add('inline-flex');
+        } else {
+            idle.classList.remove('hidden');
+            busy.classList.add('hidden');
+            busy.classList.remove('inline-flex');
         }
     });
 
@@ -1178,6 +1245,45 @@ document.addEventListener('DOMContentLoaded', () => {
     //    .device-group — если перенести закреплённых
     //    раньше, группы не «потеряют» их случайно.
     initPinned();
+
+
+        // Перехват отправки форм бэкапа (AJAX вместо перехода)
+    document.addEventListener('submit', async (e) => {
+        const form = e.target;
+        // Ищем формы бэкапа: одиночный и массовый
+        if (form.action.includes('/run-progress/') || form.action.includes('/run-now')) {
+            e.preventDefault();
+            
+            // Блокируем кнопку визуально, если это одиночный бэкап в списке
+            const submitBtn = form.querySelector('button[type="submit"]');
+            if (submitBtn) {
+                submitBtn.disabled = true;
+                const idle = submitBtn.querySelector('.run-idle');
+                const busy = submitBtn.querySelector('.run-busy');
+                if (idle && busy) {
+                    idle.classList.add('hidden');
+                    busy.classList.remove('hidden');
+                    busy.classList.add('inline-flex');
+                }
+            }
+
+            // Отправляем на сервер в фоне
+            try {
+                await fetch(form.action, {
+                    method: 'POST',
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' }
+                });
+                
+                // Сразу обновляем статусы (спиннеры, пульсации) через 500мс
+                setTimeout(refreshBackupStatus, 500);
+                setTimeout(refreshBackupStatus, 1500);
+            } catch (err) {
+                console.error('Ошибка запуска бэкапа:', err);
+                // Разблокируем кнопку при ошибке
+                if (submitBtn) submitBtn.disabled = false;
+            }
+        }
+    });
 
     // 3. Инициализация фильтров
     initFilters();
