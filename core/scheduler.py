@@ -27,13 +27,17 @@ class BackupScheduler:
         self._stop_event = threading.Event()
         self._job_running = threading.Event()
 
+        # Защита от retry-storm: если save_config упал,
+        # не пытаемся сразу заново. Ждём 5 минут.
+        self._last_attempt_ts = None
+        self._RETRY_COOLDOWN = timedelta(minutes=5)
+
     def load_config(self):
         """Загрузка настроек планировщика из data/scheduler.json"""
         return load_json(SCHEDULER_FILE, DEFAULT_CONFIG.copy())
 
     def save_config(self, new_config=None):
         """Сохранение настроек планировщика в data/scheduler.json"""
-
         if new_config:
             self.config.update(new_config)
 
@@ -41,7 +45,6 @@ class BackupScheduler:
 
     def start(self):
         """Запуск фонового потока планировщика"""
-
         if self._thread and self._thread.is_alive():
             return
 
@@ -59,7 +62,6 @@ class BackupScheduler:
 
     def stop(self):
         """Остановка фонового потока"""
-
         self._stop_event.set()
 
         if self._thread and self._thread.is_alive():
@@ -73,39 +75,81 @@ class BackupScheduler:
         while not self._stop_event.is_set():
 
             try:
-                # перечитываем конфиг каждые 30 секунд
-                self.config = self.load_config()
+                loaded = self.load_config()
+
+                # ---- Защита от потери last_run при сбое save ----
+                # Если в памяти last_run новее, чем на диске —
+                # значит предыдущий save_config упал. Не даём
+                # себе повторно запускать бэкап из-за этого.
+                mem_last = self.config.get("last_run") if self.config else None
+                if mem_last:
+                    try:
+                        mem_dt = datetime.strptime(mem_last, "%Y-%m-%d %H:%M:%S")
+                        disk_last = loaded.get("last_run")
+                        disk_dt = (
+                            datetime.strptime(disk_last, "%Y-%m-%d %H:%M:%S")
+                            if disk_last else datetime.min
+                        )
+                        if mem_dt > disk_dt:
+                            loaded["last_run"] = mem_last
+                    except ValueError:
+                        pass
+
+                self.config = loaded
 
                 if self.config.get("enabled", False):
+
+                    # ---- Cooldown после неудачной попытки ----
+                    if (
+                        self._last_attempt_ts is not None
+                        and (datetime.now() - self._last_attempt_ts)
+                            < self._RETRY_COOLDOWN
+                    ):
+                        self._stop_event.wait(30)
+                        continue
 
                     if self._should_run():
 
                         if self._job_running.is_set():
                             logging.warning(
-                                "⚠ Предыдущее задание ещё выполняется, пропуск запуска."
+                                "⚠ Предыдущее задание ещё выполняется, пропуск."
                             )
                         else:
                             self._job_running.set()
+                            self._last_attempt_ts = datetime.now()
 
                             try:
                                 logging.info(
-                                    "🚀 Запуск автоматического бэкапа всех устройств."
+                                    "🚀 Запуск автоматического бэкапа "
+                                    "всех устройств."
                                 )
 
                                 if self.plugin_manager:
                                     self.plugin_manager.run_all_backups()
 
-                                self.config["last_run"] = datetime.now().strftime(
-                                    "%Y-%m-%d %H:%M:%S"
+                                self.config["last_run"] = (
+                                    datetime.now().strftime(
+                                        "%Y-%m-%d %H:%M:%S"
+                                    )
                                 )
 
-                                self.save_config()
+                                try:
+                                    self.save_config()
+                                except Exception as save_exc:
+                                    # НЕ пробрасываем — иначе бэкап
+                                    # будет запускаться снова каждые
+                                    # 30 секунд. last_run в памяти
+                                    # сохранён, cooldown активен.
+                                    logging.error(
+                                        "❌ Не удалось сохранить "
+                                        "scheduler.json: %s",
+                                        save_exc,
+                                    )
 
-                                logging.info("✅ Автоматический бэкап завершён.")
+                                logging.info(
+                                    "✅ Автоматический бэкап завершён."
+                                )
 
-                                # Автоочистка истории (пометка
-                                # старых + опционально sweep).
-                                # Все ошибки логируются внутри.
                                 try:
                                     from core.maintenance import (
                                         post_backup_cleanup,
@@ -121,15 +165,18 @@ class BackupScheduler:
                                     )
 
                             except Exception as e:
-                                logging.error(f"❌ Ошибка автоматического бэкапа: {e}")
+                                logging.error(
+                                    f"❌ Ошибка автоматического бэкапа: {e}"
+                                )
 
                             finally:
                                 self._job_running.clear()
 
             except Exception as e:
-                logging.error(f"❌ Ошибка в цикле планировщика: {e}")
+                logging.error(
+                    f"❌ Ошибка в цикле планировщика: {e}"
+                )
 
-            # ожидание с возможностью мгновенной остановки
             self._stop_event.wait(30)
 
 

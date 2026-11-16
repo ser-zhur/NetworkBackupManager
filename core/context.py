@@ -8,7 +8,7 @@ import logging
 import os
 import shutil
 import sys
-import tempfile
+import threading
 
 
 logger = logging.getLogger(__name__)
@@ -176,6 +176,11 @@ def ensure_default_files() -> None:
     })
 
     _write_default_json(STATE_FILE, {})
+    
+    # Чистим .tmp-хвосты от прошлых сбоев.
+    # 24 часа — чтобы не задеть файлы, которые
+    # может писать другой процесс прямо сейчас.
+    cleanup_stale_temp_files(max_age_hours=24)
 
 
 # =========================================================
@@ -184,6 +189,23 @@ def ensure_default_files() -> None:
 
 _UNSET = object()
 
+# ---- Per-path lock ----
+#
+# Параллельные save_json на один и тот же path сериализуются.
+# Без этого два потока могут одновременно открыть один tmp
+# (теперь он фиксированный) и перетереть друг друга.
+
+_path_locks: dict[str, threading.Lock] = {}
+_path_locks_guard = threading.Lock()
+
+
+def _get_path_lock(key: str) -> threading.Lock:
+    with _path_locks_guard:
+        lock = _path_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _path_locks[key] = lock
+        return lock
 
 def load_json(path: Path, default=_UNSET) -> dict:
     """
@@ -220,39 +242,95 @@ def load_json(path: Path, default=_UNSET) -> dict:
 
     return data
 
-
 def save_json(path: Path, data: dict) -> None:
     """
     Атомарно записывает JSON-объект в файл.
-    Сначала пишет во временный файл в том же каталоге,
-    затем переименовывает.
+
+    Особенности:
+      • временный файл имеет фиксированное имя <path>.tmp —
+        при прерывании процесса остаётся максимум ОДИН tmp,
+        а не 13000 с уникальными суффиксами;
+      • per-path lock — параллельные записи на один файл
+        сериализуются (без него os.replace на Windows падает
+        с PermissionError при конкуренции);
+      • except BaseException (не Exception!) — ловит
+        KeyboardInterrupt и SystemExit, чтобы удалить tmp;
+      • tmp удаляется всегда при любой ошибке.
     """
 
-    path = Path(path)
+    path = Path(path).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
 
     text = json.dumps(data, indent=2, ensure_ascii=False)
+    tmp_path = path.parent / (path.name + ".tmp")
 
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=path.name + ".",
-        suffix=".tmp",
-        dir=str(path.parent),
-    )
+    lock = _get_path_lock(str(path))
+
+    with lock:
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+
+            os.replace(tmp_path, path)
+
+        except BaseException:
+            # BaseException, не Exception — иначе Ctrl+C
+            # и SystemExit оставят tmp на диске.
+            try:
+                if tmp_path.exists():
+                    os.unlink(tmp_path)
+            except OSError:
+                pass
+            
+            # ДОБАВИТЬ ЭТУ СТРОКУ:
+            logger.exception("save_json: не удалось записать %s", path)
+            
+            raise
+
+
+def cleanup_stale_temp_files(
+    directory: Path | None = None,
+    max_age_hours: int = 24,
+) -> int:
+    """
+    Удаляет *.tmp старше max_age_hours в directory.
+
+    Best-effort: ошибки логируются и не пробрасываются.
+    Безопасно вызывать при старте — файлы моложе часа
+    не трогаются, чтобы не сломать параллельную запись.
+    """
+    import time
+
+    target = Path(directory) if directory else DATA_DIR
+    if not target.exists():
+        return 0
+
+    cutoff = time.time() - (max_age_hours * 3600)
+    removed = 0
 
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
+        for f in target.glob("*.tmp"):
+            try:
+                if not f.is_file():
+                    continue
+                if f.stat().st_mtime > cutoff:
+                    continue
+                f.unlink()
+                removed += 1
+            except OSError:
+                pass
+    except Exception as exc:
+        logger.warning("cleanup_stale_temp_files: %s", exc)
 
-        os.replace(tmp_name, path)
+    if removed:
+        logger.info(
+            "🧹 Удалено %d устаревших .tmp-файлов в %s",
+            removed, target,
+        )
 
-    except Exception:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+    return removed
 
 
 # =========================================================
