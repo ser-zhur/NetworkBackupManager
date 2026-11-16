@@ -174,6 +174,8 @@
                     ✕ Сбросить все фильтры
                 </button>
             </div>
+            <!-- Закреплённые -->
+            <div id="pinned-list" class="hidden"></div>
 
             <div class="flex-1 overflow-y-auto scroll-thin" id="device-list">
                 {% for device_type, group in devices | groupby('type') %}
@@ -194,42 +196,62 @@
                         <div class="device-items">
                             {% for d in group_list %}
                                 {% set m = status_meta(d.status) %}
-                                <button data-device-id="{{ d.id }}"
-                                        data-status="{{ d.status }}"
-                                        data-type="{{ d.type }}"
-                                        data-tags="{{ (d.tags or []) | join(',') }}"
-                                        data-name="{{ d.name or d.host or '' }}"
-                                        data-last-attempt-age="{{ d.last_attempt_age_days if d.last_attempt_age_days is not none else 999999 }}"
-                                        class="device-item group w-full text-left px-4 py-3 border-l-2 transition
-                                               {{ 'bg-brand-50/60 dark:bg-brand-950/30 border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-950/40'
-                                                  if (selected and selected.id == d.id)
-                                                  else 'border-transparent hover:bg-gray-50 dark:hover:bg-slate-800/60' }}">
-                                    <div class="flex items-start gap-3">
-                                        <span class="relative mt-1.5 w-2.5 h-2.5 shrink-0 inline-flex">
-                                            <span class="status-dot-ping absolute inline-flex h-full w-full rounded-full {{ m.dot }} {% if d.backup_in_progress or d.sync_in_progress %}animate-ping opacity-75{% else %}opacity-0{% endif %}"></span>
-                                            <span class="relative inline-flex w-2.5 h-2.5 rounded-full {{ m.dot }} ring-4 {{ m.ring }}"></span>
-                                        </span>
-                                        <div class="min-w-0 flex-1">
-                                            <div class="flex items-center justify-between gap-2">
-                                                <span class="text-[11px] uppercase tracking-wide font-semibold text-gray-500 dark:text-slate-400">{{ d.type }}</span>
-                                                <span class="text-[10px] px-1.5 py-0.5 rounded font-medium {{ m.badge }}">{{ m.label }}</span>
-                                            </div>
-                                            <div class="mt-0.5 text-sm font-medium truncate">{{ d.name or d.host }}</div>
-                                            <div class="mt-0.5 text-[11px] text-gray-500 dark:text-slate-400 truncate flex items-center gap-1">
-                                                {% if d.last_attempt %}
-                                                    <span class="rel-time" data-time="{{ d.last_attempt }}" title="{{ d.last_attempt }}"></span>
-                                                    <span class="font-bold {{ 'text-emerald-600 dark:text-emerald-400' if d.last_attempt_ok else 'text-rose-600 dark:text-rose-400' }}">
-                                                        {{ '✓' if d.last_attempt_ok else '✗' }}
-                                                    </span>
-                                                    <span class="opacity-60">·</span>
-                                                    <span>{{ d.backup_count }} коп.</span>
-                                                {% else %}
-                                                    <span class="italic">Бэкапы ещё не создавались</span>
-                                                {% endif %}
+                                <div class="device-wrapper relative group"
+                                     data-pinned="{{ '1' if d.pinned else '0' }}"
+                                     data-type="{{ d.type }}">
+                                    <button data-device-id="{{ d.id }}"
+                                            data-status="{{ d.status }}"
+                                            data-type="{{ d.type }}"
+                                            data-tags="{{ (d.tags or []) | join(',') }}"
+                                            data-name="{{ d.name or d.host or '' }}"
+                                            data-pinned="{{ '1' if d.pinned else '0' }}"
+                                            data-last-attempt-age="{{ d.last_attempt_age_days if d.last_attempt_age_days is not none else 999999 }}"
+                                            class="device-item group w-full text-left px-4 py-3 border-l-2 transition
+                                                   {{ 'bg-brand-50/60 dark:bg-brand-950/30 border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-950/40'
+                                                      if (selected and selected.id == d.id)
+                                                      else 'border-transparent hover:bg-gray-50 dark:hover:bg-slate-800/60' }}">
+                                        <div class="flex items-start gap-3">
+                                            <span class="relative mt-1.5 w-2.5 h-2.5 shrink-0 inline-flex">
+                                                <span class="status-dot-ping absolute inline-flex h-full w-full rounded-full {{ m.dot }} {% if d.backup_in_progress or d.sync_in_progress %}animate-ping opacity-75{% else %}opacity-0{% endif %}"></span>
+                                                <span class="relative inline-flex w-2.5 h-2.5 rounded-full {{ m.dot }} ring-4 {{ m.ring }}"></span>
+                                            </span>
+                                            <div class="min-w-0 flex-1 pr-7">
+                                                <div class="flex items-center justify-between gap-2">
+                                                    <span class="text-[11px] uppercase tracking-wide font-semibold text-gray-500 dark:text-slate-400">{{ d.type }}</span>
+                                                    <span class="text-[10px] px-1.5 py-0.5 rounded font-medium {{ m.badge }}">{{ m.label }}</span>
+                                                </div>
+                                                <div class="mt-0.5 text-sm font-medium truncate">{{ d.name or d.host }}</div>
+                                                <div class="mt-0.5 text-[11px] text-gray-500 dark:text-slate-400 truncate flex items-center gap-1">
+                                                    {% if d.last_attempt %}
+                                                        <span class="rel-time" data-time="{{ d.last_attempt }}" title="{{ d.last_attempt }}"></span>
+                                                        <span class="font-bold {{ 'text-emerald-600 dark:text-emerald-400' if d.last_attempt_ok else 'text-rose-600 dark:text-rose-400' }}">
+                                                            {{ '✓' if d.last_attempt_ok else '✗' }}
+                                                        </span>
+                                                        <span class="opacity-60">·</span>
+                                                        <span>{{ d.backup_count }} коп.</span>
+                                                    {% else %}
+                                                        <span class="italic">Бэкапы ещё не создавались</span>
+                                                    {% endif %}
+                                                </div>
                                             </div>
                                         </div>
-                                    </div>
-                                </button>
+                                    </button>
+
+                                    <form method="POST"
+                                          action="/toggle-pin/{{ d.type }}/{{ d.index }}"
+                                          class="absolute top-1/2 -translate-y-1/2 right-2 z-10
+                                                 {% if d.pinned %}opacity-100{% else %}opacity-0 group-hover:opacity-100{% endif %}
+                                                 transition-opacity duration-150">
+                                        <button type="submit"
+                                                class="p-1.5 rounded-md
+                                                       hover:bg-black/5 dark:hover:bg-white/10
+                                                       {% if d.pinned %}text-amber-500{% else %}text-gray-400 dark:text-slate-500 hover:text-amber-500{% endif %}
+                                                       transition-colors"
+                                                title="{% if d.pinned %}Открепить{% else %}Закрепить{% endif %}">
+                                            {% if d.pinned %}⭐{% else %}☆{% endif %}
+                                        </button>
+                                    </form>
+                                </div>
                             {% endfor %}
                         </div>
                     </details>
@@ -688,9 +710,24 @@ function applySort() {
     document.querySelectorAll('.device-group').forEach(group => {
         const container = group.querySelector('.device-items');
         if (!container) return;
-        const items = Array.from(container.querySelectorAll('.device-item'));
-        items.sort(getComparator(mode));
-        items.forEach(it => container.appendChild(it));
+        
+        // Сортируем обертки, чтобы не вырвать кнопки из них
+        const wrappers = Array.from(container.querySelectorAll('.device-wrapper'));
+        if (wrappers.length === 0) {
+            // Фолбэк для совместимости (если оберток нет)
+            const items = Array.from(container.querySelectorAll('.device-item'));
+            items.sort(getComparator(mode));
+            items.forEach(it => container.appendChild(it));
+            return;
+        }
+
+        wrappers.sort((a, b) => {
+            const itemA = a.querySelector('.device-item');
+            const itemB = b.querySelector('.device-item');
+            if (!itemA || !itemB) return 0;
+            return getComparator(mode)(itemA, itemB);
+        });
+        wrappers.forEach(w => container.appendChild(w));
     });
 }
 
@@ -784,16 +821,34 @@ function applyView() {
 
     let anyVisible = false;
 
+    // Закреплённые видны всегда
+    const pinnedList = document.getElementById('pinned-list');
+    const hasPinned = pinnedList && !pinnedList.classList.contains('hidden');
+    if (hasPinned) {
+        anyVisible = true;
+    }   
+
     document.querySelectorAll('.device-group').forEach(group => {
         const container = group.querySelector('.device-items');
         if (!container) return;
 
         let visible = 0;
-        container.querySelectorAll('.device-item').forEach(item => {
+        
+        // Скрываем/показываем обертки целиком, а не только кнопки
+        const elementsToFilter = container.querySelectorAll('.device-wrapper');
+        const itemsToFilter = elementsToFilter.length > 0 
+            ? Array.from(elementsToFilter) 
+            : Array.from(container.querySelectorAll('.device-item'));
+
+        itemsToFilter.forEach(el => {
+            const item = el.classList.contains('device-wrapper') ? el.querySelector('.device-item') : el;
+            if (!item) return;
+
             const passFilter = _deviceMatchesFilters(item, currentFilters);
             const passSearch = !q || item.textContent.toLowerCase().includes(q);
             const show = passFilter && passSearch;
-            item.style.display = show ? '' : 'none';
+            
+            el.style.display = show ? '' : 'none';
             if (show) visible++;
         });
 
@@ -1115,10 +1170,65 @@ document.addEventListener('DOMContentLoaded', () => {
     applyRelTime();
     applySort();
 
-    // 2. Инициализация фильтров
+    // 2. Перенос закреплённых в отдельный блок.
+    //    Должен идти ДО initFilters: счётчики чипов
+    //    считают по .device-item, и им всё равно,
+    //    в каком контейнере они лежат. Но фильтры
+    //    вызывают applyView, которая обходит только
+    //    .device-group — если перенести закреплённых
+    //    раньше, группы не «потеряют» их случайно.
+    initPinned();
+
+    // 3. Инициализация фильтров
     initFilters();
 });
 
+// ============================================================
+// ЗАКРЕПЛЁННЫЕ
+// ============================================================
+
+function initPinned() {
+    const pinnedList = document.getElementById('pinned-list');
+    if (!pinnedList) return;
+
+    const pinnedWrappers = document.querySelectorAll(
+        '.device-wrapper[data-pinned="1"]'
+    );
+
+    if (pinnedWrappers.length === 0) {
+        pinnedList.classList.add('hidden');
+        pinnedList.innerHTML = '';
+        return;
+    }
+
+    pinnedList.classList.remove('hidden');
+
+    // Заголовок «Закреплённые»
+    if (!pinnedList.querySelector('.pinned-header')) {
+        const header = document.createElement('div');
+        header.className =
+            'pinned-header px-4 py-2 select-none ' +
+            'text-[11px] font-semibold uppercase tracking-wide ' +
+            'text-amber-700 dark:text-amber-400 ' +
+            'bg-amber-50 dark:bg-amber-950/30 ' +
+            'border-b border-amber-100 dark:border-amber-900/50 ' +
+            'flex items-center gap-2';
+        header.innerHTML =
+            '<span>⭐</span><span>Закреплённые</span>' +
+            '<span class="text-amber-500/70 dark:text-amber-500/60 font-normal">(' +
+            pinnedWrappers.length + ')</span>';
+        pinnedList.appendChild(header);
+    }
+
+    // Переносим закреплённые из групп в #pinned-list
+    pinnedWrappers.forEach(wrapper => {
+        // Визуально отделяем последнюю строку
+        wrapper.classList.add(
+            'border-b', 'border-amber-100/50', 'dark:border-amber-900/30'
+        );
+        pinnedList.appendChild(wrapper);
+    });
+}
 </script>
 
 </body>

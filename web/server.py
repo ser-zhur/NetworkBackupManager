@@ -1253,6 +1253,7 @@ def _build_device_payload(
         "index": index,
         "name": router.get("name") or "",
         "tags": _safe_router_tags(router),
+        "pinned": bool(router.get("pinned")),
         "host": ip_addr,
         "ssh_key_local": ssh_key_local,
         "ssh_key_path": ssh_key_path,
@@ -2692,7 +2693,81 @@ def run_now_endpoint(
         status_code=303,
     )
 
-   
+# =========================================================
+# TOGGLE PIN
+# =========================================================
+
+@app.post("/toggle-pin/{device_type}/{index}")
+def toggle_pin(
+    request: Request,
+    device_type: str,
+    index: int,
+    user: str = Depends(require_auth),
+):
+    """
+    Переключает флаг pinned у устройства и сохраняет routers.json.
+
+    Возвращает редирект на Referer (чтобы пользователь остался
+    на той же странице с теми же фильтрами).
+    """
+    device_type = device_type.lower()
+
+    if not plugin_manager or device_type not in plugin_manager._plugins:
+        raise HTTPException(404, "Плагин не найден")
+
+    routers = plugin_manager._plugins[device_type].get("routers", [])
+    if not (0 <= index < len(routers)):
+        raise HTTPException(404, "Устройство не найдено")
+
+    router = routers[index]
+    
+    # 1. Вычисляем новое состояние
+    is_pinned = not bool(router.get("pinned"))
+
+    # 2. Обновляем словарь
+    if is_pinned:
+        router["pinned"] = True
+    else:
+        # Не мусорим в routers.json, если сняли закрепление
+        router.pop("pinned", None)
+
+    # 3. Сохраняем в routers.json
+    target_dir = BASE_DIR / "plugins"
+    saved = False
+    for p_folder in target_dir.iterdir():
+        if p_folder.is_dir() and p_folder.name.lower() == device_type.lower():
+            json_file = p_folder / "routers.json"
+            try:
+                with open(json_file, "w", encoding="utf-8") as f:
+                    json.dump(routers, f, ensure_ascii=False, indent=4)
+                saved = True
+            except OSError as exc:
+                logging.error(
+                    "toggle-pin: не удалось сохранить %s: %s",
+                    json_file, exc,
+                )
+            break
+
+    if not saved:
+        raise HTTPException(500, "Не удалось сохранить routers.json")
+
+    # 4. Логируем, используя безопасную переменную is_pinned
+    logging.info(
+        "📌 Устройство %s/%s %s (запрос от %s)",
+        device_type, index,
+        "закреплено" if is_pinned else "откреплено",
+        user,
+    )
+
+    # 5. Редирект обратно на страницу, с которой пришёл запрос
+    referer = request.headers.get("referer")
+    if referer and referer.startswith(str(request.base_url)):
+        return RedirectResponse(url=referer, status_code=303)
+
+    return RedirectResponse(
+        url=f"/?selected={device_type}/{index}",
+        status_code=303,
+    )
 # =========================================================
 # BACKUPS (legacy redirect)
 # =========================================================

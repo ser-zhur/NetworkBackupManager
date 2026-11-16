@@ -97,6 +97,27 @@
                           border border-gray-200 dark:border-slate-700 transition">
                     📜 История версий
                 </a>
+                <form action="/toggle-pin/{{ d.type }}/{{ d.index }}"
+                      method="POST"
+                      class="inline-flex">
+                    <button type="submit"
+                            title="{% if d.pinned %}Открепить{% else %}Закрепить{% endif %}"
+                            class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium
+                                   {% if d.pinned %}
+                                   bg-amber-50 dark:bg-amber-950/40
+                                   text-amber-700 dark:text-amber-300
+                                   border border-amber-200 dark:border-amber-800
+                                   hover:bg-amber-100 dark:hover:bg-amber-900/60
+                                   {% else %}
+                                   bg-white dark:bg-slate-800
+                                   text-gray-700 dark:text-slate-300
+                                   border border-gray-200 dark:border-slate-700
+                                   hover:bg-gray-100 dark:hover:bg-slate-700
+                                   {% endif %}
+                                   transition">
+                        {% if d.pinned %}⭐ В закреплённых{% else %}☆ Закрепить{% endif %}
+                    </button>
+                </form>
                                 <button type="button"
                         onclick="openDeleteDialog()"
                         title="Удалить устройство со всеми бэкапами"
