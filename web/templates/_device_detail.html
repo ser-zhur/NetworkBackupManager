@@ -131,7 +131,13 @@
 </div>
 
 <!-- STORAGE BACKENDS -->
-{% if d.storage_rows %}
+{# В карточке показываем только включённые/настроенные backend'ы.
+   Отключённые (status == 'disabled') считаются «не настроенными»
+   и в блок не попадают. has_syncable_storages на сервере уже
+   считает только enabled non-git, поэтому кнопка
+   «Синхронизировать хранилища» остаётся согласованной. #}
+{% set visible_storages = d.storage_rows | selectattr('enabled') | list %}
+{% if visible_storages %}
 <div class="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-5">
     <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
         <div>
@@ -170,7 +176,7 @@
     </div>
 
     <ul class="divide-y divide-gray-100 dark:divide-slate-800 -mx-5">
-        {% for s in d.storage_rows %}
+        {% for s in visible_storages %}
         <li class="px-5 py-3 flex items-center justify-between gap-3">
             <div class="flex items-center gap-3 min-w-0">
                 <span class="text-xl shrink-0">{{ s.icon }}</span>

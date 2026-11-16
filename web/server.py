@@ -1217,6 +1217,125 @@ def _build_device_payload(
     }
 
 # =========================================================
+# DEVICE SUMMARY (для списка)
+# =========================================================
+#
+# Лёгкая версия payload для левой колонки главной страницы.
+# В отличие от _build_device_payload НЕ читает .git, НЕ делает
+# rglob по каталогу бэкапов и НЕ загружает notes. Работает
+# только с уже загруженным state.json (state_all).
+#
+# Используется только в read_root(). api_device_detail
+# по-прежнему вызывает _build_device_payload — карточка
+# устройства получает полный набор данных.
+
+def _get_git_commit_count(backup_path: Path) -> int:
+    """
+    Быстрый счётчик коммитов (O(1), читает HEAD, не листает
+    всю историю). Используется в _build_device_summary как
+    fallback, если в state.json ещё нет total_commits.
+    """
+    if not git_available():
+        return 0
+
+    try:
+        gs = GitStorage(backup_path)
+        if not gs.is_initialized():
+            return 0
+        return gs.get_commit_count(include_marked=False)
+    except Exception:
+        return 0
+
+
+def _build_device_summary(
+    device_type: str,
+    index: int,
+    router: dict,
+    state_all: dict,
+) -> dict:
+    """
+    Минимум для строки в списке устройств.
+
+    Все данные — из router и уже загруженного state_all.
+    Только fallback для backup_count читает .git (быстро).
+    """
+    device_id = f"{device_type}/{index}"
+    st = state_all.get(device_id) or {}
+    if not isinstance(st, dict):
+        st = {}
+
+    # ---- Последняя попытка (state.json) ----
+    last_run_str = st.get("last_run") or ""
+    backends_state = st.get("backends") or {}
+
+    if last_run_str:
+        try:
+            last_attempt_dt = datetime.strptime(
+                last_run_str, "%Y-%m-%d %H:%M:%S"
+            )
+            last_attempt_age_days = (
+                datetime.now() - last_attempt_dt
+            ).days
+        except ValueError:
+            last_attempt_age_days = None
+
+        if backends_state:
+            last_attempt_ok = all(
+                bool(b.get("ok"))
+                for b in backends_state.values()
+            )
+        else:
+            last_attempt_ok = True
+    else:
+        last_attempt_age_days = None
+        last_attempt_ok = None
+
+    status = classify_device(
+        last_attempt_age_days,
+        last_attempt_ok,
+    )
+
+    # ---- backup_count ----
+    # Источник 1: total_commits из state.json (появится после
+    #             правки _save_backend_state — см. Вариант A).
+    # Источник 2 (fallback): быстрый get_commit_count() по git.
+    # Источник 3 (если git недоступен): 0.
+    total_commits = st.get("total_commits")
+    if isinstance(total_commits, int):
+        backup_count = total_commits
+    else:
+        raw_path = router.get("backup_path", "")
+        if raw_path:
+            backup_path = _resolve_backup_path(raw_path)
+            backup_count = _get_git_commit_count(backup_path)
+        else:
+            backup_count = 0
+
+    ip_addr = (
+        router.get("host")
+        or router.get("ip")
+        or router.get("address", "Не указан")
+    )
+
+    return {
+        "id": device_id,
+        "type": device_type,
+        "index": index,
+        "name": router.get("name") or "",
+        "host": ip_addr,
+        "tags": router.get("tags") or [],          # пригодится в этапе 1
+        "pinned": bool(router.get("pinned")),       # пригодится в этапе 4
+        "status": status,
+        "last_attempt": last_run_str or None,
+        "last_attempt_ok": last_attempt_ok,
+        "last_attempt_age_days": last_attempt_age_days,
+        "backup_count": backup_count,
+        "max_backups": router.get("max_backups", 7),
+        "backup_in_progress": is_backup_running_for(device_id),
+        "sync_in_progress": is_sync_running_for(device_id),
+    }
+
+# =========================================================
 # STORAGE SYNC TASK
 # =========================================================
 
@@ -1421,6 +1540,14 @@ def read_root(
     request: Request,
     user: str = Depends(require_auth),
 ):
+    # ---- Лёгкий список ----
+    #
+    # state.json читаем ОДИН раз и передаём во все summary.
+    # Никаких _build_device_payload в цикле — только summary.
+    state_all = load_json(STATE_FILE, {})
+    if not isinstance(state_all, dict):
+        state_all = {}
+
     devices = []
 
     if plugin_manager and hasattr(plugin_manager, "_plugins"):
@@ -1428,27 +1555,51 @@ def read_root(
             routers = plugin_data.get("routers", [])
             for index, router in enumerate(routers):
                 devices.append(
-                    _build_device_payload(device_type, index, router)
+                    _build_device_summary(
+                        device_type, index, router, state_all,
+                    )
                 )
 
     selected_id = request.query_params.get("selected", "")
-    
-    # Если параметра нет в URL (например, вернулись по ссылке «Назад»
-    # или «Главная»), берём последнее выбранное устройство из cookie.
+
     if not selected_id:
         selected_id = request.cookies.get("nbm-selected-device", "")
         if selected_id:
             selected_id = urllib.parse.unquote(selected_id)
-            
-    selected = None
+
+    # ---- Найти выбранный summary ----
+    selected_summary = None
     if devices:
         if selected_id:
             for d in devices:
                 if d["id"] == selected_id:
-                    selected = d
+                    selected_summary = d
                     break
-        if selected is None:
-            selected = devices[0]
+        if selected_summary is None:
+            selected_summary = devices[0]
+
+    # ---- Полный payload ТОЛЬКО для выбранного ----
+    #
+    # Один _build_device_payload за запрос вместо N.
+    # Шаблоны (index.html → _device_detail.html) ожидают
+    # именно полный payload в переменной `selected` — поэтому
+    # ниже он и подставляется.
+    selected = None
+    if selected_summary is not None and plugin_manager:
+        try:
+            routers = plugin_manager._plugins[
+                selected_summary["type"]
+            ].get("routers", [])
+            idx = selected_summary["index"]
+            if 0 <= idx < len(routers):
+                selected = _build_device_payload(
+                    selected_summary["type"], idx, routers[idx],
+                )
+        except Exception as exc:
+            logging.error(
+                "read_root: не удалось построить payload %s: %s",
+                selected_summary["id"], exc, exc_info=True,
+            )
 
     logs_size_bytes = get_dir_size(LOGS_DIR)
 
@@ -1465,7 +1616,6 @@ def read_root(
             "logs_size": format_size(logs_size_bytes),
         },
     )
-
 
 # =========================================================
 # API: DEVICE DETAIL

@@ -224,6 +224,7 @@ class PluginManager:
             self._save_backend_state(
                 f"{device_type}/{index}",
                 results,
+                backup_path=backup_path,
             )
             logging.info(
                 "storage: изменений нет, выгрузка не требуется (%s)",
@@ -327,7 +328,11 @@ class PluginManager:
             self._log_storage_result(backend.id, result)
 
         # ---- сохраняем в state.json ----
-        self._save_backend_state(ctx.device_id, results)
+        self._save_backend_state(
+            ctx.device_id,
+            results,
+            backup_path=backup_path,
+        )
 
     # =====================================================
     # SYNC ALL GIT VERSIONS → STORAGES
@@ -557,16 +562,55 @@ class PluginManager:
             )
 
     @staticmethod
-    def _save_backend_state(device_id: str, results: dict) -> None:
+    def _save_backend_state(
+    device_id: str,
+    results: dict,
+    backup_path=None,
+    ) -> None:
         """
         Обновляет data/state.json по одному устройству.
+
+        backup_path (опционально) — путь к git-репе устройства.
+        Если передан, в state.json кэшируется total_commits —
+        это нужно, чтобы read_root() не открывал .git каждого
+        устройства на каждый рендер страницы (см.
+        _build_device_summary в web/server.py).
+
+        total_commits считается ДО захвата _STATE_LOCK, чтобы
+        не держать блокировку во время I/O git. Параллельные
+        бэкапы разных устройств из-за этого не мешают друг
+        другу.
         """
+
+        # ---- total_commits (вне критической секции) ----
+        total_commits = None
+        if backup_path is not None:
+            try:
+                from core.git_storage import (
+                    GitStorage,
+                    is_available as git_available,
+                )
+                if git_available():
+                    gs = GitStorage(Path(backup_path))
+                    if gs.is_initialized():
+                        # include_marked=False — помеченные к
+                        # удалению не считаем: они не отображаются
+                        # как «живые» версии в списке устройств.
+                        total_commits = gs.get_commit_count(
+                            include_marked=False,
+                        )
+            except Exception as exc:
+                logging.warning(
+                    "state: не удалось посчитать total_commits "
+                    "для %s: %s", device_id, exc,
+                )
+
         with _STATE_LOCK:
             state = load_json(STATE_FILE, {})
             if not isinstance(state, dict):
                 state = {}
 
-            state[device_id] = {
+            entry = {
                 "last_run": datetime.now().strftime(
                     "%Y-%m-%d %H:%M:%S"
                 ),
@@ -583,13 +627,18 @@ class PluginManager:
                 },
             }
 
+            if total_commits is not None:
+                entry["total_commits"] = total_commits
+
+            state[device_id] = entry
+
             try:
                 save_json(STATE_FILE, state)
             except Exception as exc:
                 logging.error(
                     "storage: не удалось сохранить state.json: %s",
                     exc,
-                )
+                )    
 
     # =====================================================
     # SERVICE FIELDS (ros_version и т.п.)
