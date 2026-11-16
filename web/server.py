@@ -874,6 +874,81 @@ def _resolve_backup_path(backup_path) -> Path:
         path = BASE_DIR / path
     return path
 
+# =========================================================
+# TAGS
+# =========================================================
+
+def _parse_tags(raw) -> list[str]:
+    """
+    Парсит строку тегов из формы в нормализованный список.
+
+    Правила:
+      • разделитель — запятая;
+      • trim пробелов;
+      • отсев пустых;
+      • длина тега обрезается до 32 символов;
+      • максимум 20 тегов на устройство;
+      • дубликаты сравниваются без учёта регистра;
+      • регистр сохраняется как ввёл пользователь.
+    """
+    if not raw:
+        return []
+
+    seen = set()
+    result = []
+
+    for part in str(raw).split(","):
+        tag = part.strip()
+        if not tag:
+            continue
+        if len(tag) > 32:
+            tag = tag[:32]
+        key = tag.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(tag)
+        if len(result) >= 20:
+            break
+
+    return result
+
+
+def _safe_router_tags(router: dict) -> list[str]:
+    """
+    Возвращает гарантированно список строк — даже если
+    пользователь вручную испортил routers.json (например,
+    записал строку или число вместо массива).
+    """
+    raw = router.get("tags")
+    if not isinstance(raw, list):
+        return []
+    return [t for t in raw if isinstance(t, str) and t.strip()]
+
+
+def _all_existing_tags() -> list[str]:
+    """
+    Уникальные теги по всем устройствам — для datalist
+    в формах добавления/редактирования.
+
+    Дубликаты сравниваются case-insensitive; сохраняется
+    регистр первого встреченного варианта. Результат
+    отсортирован по алфавиту (case-insensitive).
+    """
+    if not plugin_manager:
+        return []
+
+    seen: dict[str, str] = {}
+    for plugin_data in plugin_manager._plugins.values():
+        for router in plugin_data.get("routers", []):
+            for tag in _safe_router_tags(router):
+                tag = tag.strip()
+                key = tag.lower()
+                if key not in seen:
+                    seen[key] = tag
+
+    return sorted(seen.values(), key=lambda t: t.lower())
+
 def _iter_device_backup_paths():
     """
     Итератор по всем устройствам.
@@ -1177,6 +1252,7 @@ def _build_device_payload(
         "type": device_type,
         "index": index,
         "name": router.get("name") or "",
+        "tags": _safe_router_tags(router),
         "host": ip_addr,
         "ssh_key_local": ssh_key_local,
         "ssh_key_path": ssh_key_path,
@@ -1323,7 +1399,7 @@ def _build_device_summary(
         "index": index,
         "name": router.get("name") or "",
         "host": ip_addr,
-        "tags": router.get("tags") or [],          # пригодится в этапе 1
+        "tags": _safe_router_tags(router),
         "pinned": bool(router.get("pinned")),       # пригодится в этапе 4
         "status": status,
         "last_attempt": last_run_str or None,
@@ -2257,6 +2333,9 @@ def add_router_page(
 
             "default_storage":
                 _storage_defaults_for_template(),
+
+            "all_existing_tags":
+                _all_existing_tags(),
         },
     )
 
@@ -2363,6 +2442,12 @@ async def save_router_endpoint(
         )
 
     new_router["storage"] = _parse_storage_form(form, {})
+    
+    # Теги — опционально. Не пишем пустой массив в routers.json,
+    # чтобы файл оставался компактным.
+    tags = _parse_tags(form.get("tags") or "")
+    if tags:
+        new_router["tags"] = tags
     
     if form.get("debug_connection") == "true":
         new_router["debug_connection"] = True
@@ -3635,6 +3720,9 @@ def edit_router(
 
             "storage_backends":
                 _storage_backends_for_template(),
+
+            "all_existing_tags":
+                _all_existing_tags(),
         },
     )
 
@@ -3783,6 +3871,13 @@ async def update_router(
 
     old_storage = old_router.get("storage") or {}
     updated_router["storage"] = _parse_storage_form(form, old_storage)
+
+    # Теги: словарь пересобирается заново — если поле пустое,
+    # ключ не попадёт, и старые теги удалятся (это ожидаемое
+    # поведение «стёр в форме — стёр в файле»).
+    tags = _parse_tags(form.get("tags") or "")
+    if tags:
+        updated_router["tags"] = tags
 
     if form.get("debug_connection") == "true":
         updated_router["debug_connection"] = True

@@ -60,7 +60,28 @@
                     Отображается в списке устройств и в шапке карточки. Если не задано — показывается адрес.
                 </p>
             </div>
-
+            <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
+                    Теги
+                    <span class="text-xs text-gray-400 dark:text-slate-500 font-normal">(необязательно)</span>
+                </label>
+                <input type="text" name="tags" maxlength="500"
+                       placeholder="office, warehouse, critical"
+                       list="existing-tags"
+                       class="w-full rounded-lg px-3 py-2 text-sm
+                              bg-gray-50 dark:bg-slate-950
+                              border border-gray-200 dark:border-slate-800
+                              placeholder-gray-400 dark:placeholder-slate-500
+                              focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+                <datalist id="existing-tags">
+                    {% for t in all_existing_tags %}
+                        <option value="{{ t }}"></option>
+                    {% endfor %}
+                </datalist>
+                <p class="mt-1 text-[11px] text-gray-500 dark:text-slate-400">
+                    Через запятую. Пример: <code class="font-mono">office, warehouse, critical</code>.
+                </p>
+            </div>
             <div>
                 <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">IP-адрес / Хост:</label>
                 <input type="text" name="ip" placeholder="192.168.88.1" required
