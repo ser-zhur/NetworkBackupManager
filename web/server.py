@@ -1323,6 +1323,55 @@ def _get_git_commit_count(backup_path: Path) -> int:
     except Exception:
         return 0
 
+def _count_backend_errors(router: dict, device_state: dict) -> int:
+    """
+    Количество включённых backend'ов у устройства,
+    которые в последний прогон вернули ok=False.
+
+    Используется для индикатора «⚠N сломанных хранилищ»
+    в списке устройств.
+    """
+    if storage_manager is None:
+        return 0
+
+    storage_cfg = router.get("storage") or {}
+    backends_state = device_state.get("backends") or {}
+
+    count = 0
+    for backend in storage_manager.all():
+        cfg = storage_cfg.get(backend.id) or {}
+        enabled = (
+            backend.always_enabled
+            or backend.is_authority
+            or bool(cfg.get("enabled"))
+        )
+        if not enabled:
+            continue
+        st = backends_state.get(backend.id) or {}
+        if st.get("ok") is False and not st.get("skipped"):
+            count += 1
+    return count
+
+
+def _is_overdue(age_days) -> bool:
+    """
+    True, если устройство давно не опрашивалось.
+    Порог — 2× интервал планировщика (если он включён)
+    либо 7 дней (если планировщик выключен).
+    """
+    if age_days is None:
+        return False
+    try:
+        cfg = scheduler.config
+        if not cfg.get("enabled"):
+            return age_days > 7
+        if cfg.get("mode") == "interval":
+            interval_days = max(1, int(cfg.get("interval_hours", 24)) // 24)
+            return age_days > 2 * interval_days
+        # daily
+        return age_days > 2
+    except Exception:
+        return False
 
 def _build_device_summary(
     device_type: str,
@@ -1410,6 +1459,23 @@ def _build_device_summary(
         "max_backups": router.get("max_backups", 7),
         "backup_in_progress": is_backup_running_for(device_id),
         "sync_in_progress": is_sync_running_for(device_id),
+
+        # ---- Доменные индикаторы ----
+        # 1. Никогда не было ни одной попытки бэкапа.
+        "never_backed_up": (
+            not last_run_str
+            and backup_count == 0
+        ),
+        # 2. Сколько включённых backend'ов в ошибке (для ⚠N).
+        "backends_error_count": _count_backend_errors(
+            router, st,
+        ),
+        # 3. Флаг «давно не опрашивалось» — жёлтый фон.
+        #    Считаем «давно» = 2× интервал планировщика.
+        #    Если планировщик выключен — не подсвечиваем.
+        "overdue": _is_overdue(
+            last_attempt_age_days,
+        ),
     }
 
 # =========================================================

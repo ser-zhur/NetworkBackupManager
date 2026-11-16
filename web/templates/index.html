@@ -63,6 +63,13 @@
             transform: rotate(0deg);
         }
 
+        .device-overdue {
+            background: rgba(254, 243, 199, 0.4); /* amber-50/40 */
+        }
+        .dark .device-overdue {
+            background: rgba(69, 26, 3, 0.25); /* amber-950/25 */
+        }
+
                 /* Чипы фильтров */
         .filter-chip {
             display: inline-flex;
@@ -216,6 +223,7 @@
                                             data-pinned="{{ '1' if d.pinned else '0' }}"
                                             data-last-attempt-age="{{ d.last_attempt_age_days if d.last_attempt_age_days is not none else 999999 }}"
                                             class="device-item group w-full text-left px-4 py-3 border-l-2 transition
+                                                    {% if d.overdue %}device-overdue{% endif %}
                                                    {{ 'bg-brand-50/60 dark:bg-brand-950/30 border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-950/40'
                                                       if (selected and selected.id == d.id)
                                                       else 'border-transparent hover:bg-gray-50 dark:hover:bg-slate-800/60' }}">
@@ -226,10 +234,35 @@
                                             </span>
                                             <div class="min-w-0 flex-1 pr-20">
                                                 <div class="flex items-center justify-between gap-2">
-                                                    <span class="text-[11px] uppercase tracking-wide font-semibold text-gray-500 dark:text-slate-400">{{ d.type }}</span>
+                                                    <span class="text-[11px] uppercase tracking-wide font-semibold text-gray-500 dark:text-slate-400">
+                                                        {{ d.type }}
+                                                    </span>
                                                     <span class="text-[10px] px-1.5 py-0.5 rounded font-medium {{ m.badge }}">{{ m.label }}</span>
                                                 </div>
-                                                <div class="mt-0.5 text-sm font-medium truncate">{{ d.name or d.host }}</div>
+
+                                                <div class="mt-0.5 text-sm font-medium truncate flex items-center gap-1.5">
+                                                    <span class="truncate">{{ d.name or d.host }}</span>
+
+                                                    {% if d.never_backed_up %}
+                                                    <span class="shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded
+                                                                 bg-amber-50 dark:bg-amber-950/40
+                                                                 text-amber-700 dark:text-amber-300
+                                                                 border border-amber-200 dark:border-amber-900"
+                                                          title="Ни разу не запускался бэкап">
+                                                        🚫 ни разу
+                                                    </span>
+                                                    {% endif %}
+
+                                                    {% if d.backends_error_count and d.backends_error_count > 0 %}
+                                                    <span class="shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded
+                                                                 bg-rose-100 dark:bg-rose-900/60
+                                                                 text-rose-700 dark:text-rose-300"
+                                                          title="{{ d.backends_error_count }} из хранилищ в ошибке">
+                                                        ⚠{{ d.backends_error_count }}
+                                                    </span>
+                                                    {% endif %}
+                                                </div>
+
                                                 <div class="mt-0.5 text-[11px] text-gray-500 dark:text-slate-400 truncate flex items-center gap-1">
                                                     {% if d.last_attempt %}
                                                         <span class="rel-time" data-time="{{ d.last_attempt }}" title="{{ d.last_attempt }}"></span>
@@ -301,7 +334,12 @@
                 {% endfor %}
                 {% if not devices %}
                     <div class="px-4 py-8 text-center text-sm text-gray-400 dark:text-slate-500">
-                        Устройства не добавлены.
+                        <div class="text-3xl mb-2">📦</div>
+                        <div class="mb-3">Устройства не добавлены.</div>
+                        <a href="/add" class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg
+                                              bg-brand-600 hover:bg-brand-700 text-white text-xs font-medium transition">
+                            + Добавить устройство
+                        </a>
                     </div>
                 {% endif %}
             </div>
@@ -1237,6 +1275,8 @@ document.addEventListener('DOMContentLoaded', () => {
     applyRelTime();
     applySort();
 
+    initKeyboardNav();
+
     // 2. Перенос закреплённых в отдельный блок.
     //    Должен идти ДО initFilters: счётчики чипов
     //    считают по .device-item, и им всё равно,
@@ -1335,6 +1375,110 @@ function initPinned() {
         pinnedList.appendChild(wrapper);
     });
 }
+
+// ============================================================
+// КЛАВИАТУРНАЯ НАВИГАЦИЯ
+// ============================================================
+//
+//   ↑ / ↓     — переключение между видимыми устройствами
+//   Enter     — выбрать текущее (открыть карточку)
+//   /         — фокус в поиск
+//   Esc       — снять фокус с поиска / закрыть диалоги
+
+let keyboardFocusId = null;
+
+function _getVisibleDeviceItems() {
+    // Возвращает DOM-элементы .device-item, которые сейчас видны
+    // (не скрыты фильтром и лежат в открытой группе или в pinned).
+    const visible = [];
+    const checkVisible = (el) => {
+        if (!el || el.style.display === 'none') return false;
+        // Внутри <details> — родительская группа должна быть open
+        let p = el.parentElement;
+        while (p) {
+            if (p.tagName === 'DETAILS' && !p.open) return false;
+            p = p.parentElement;
+        }
+        return true;
+    };
+
+    // 1. Сначала pinned (сверху)
+    document.querySelectorAll('#pinned-list .device-item').forEach(el => {
+        if (checkVisible(el)) visible.push(el);
+    });
+
+    // 2. Потом обычные в порядке групп
+    document.querySelectorAll('.device-group .device-item').forEach(el => {
+        if (checkVisible(el)) visible.push(el);
+    });
+
+    return visible;
+}
+
+function _applyKeyboardHighlight(item) {
+    document.querySelectorAll('.device-item.kb-focus').forEach(el => {
+        el.classList.remove('kb-focus', 'ring-2', 'ring-brand-400', 'ring-offset-1');
+    });
+    if (!item) {
+        keyboardFocusId = null;
+        return;
+    }
+    item.classList.add('kb-focus', 'ring-2', 'ring-brand-400', 'ring-offset-1');
+    keyboardFocusId = item.dataset.deviceId;
+    // Скроллим, если вне видимой области
+    item.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+function initKeyboardNav() {
+    document.addEventListener('keydown', (e) => {
+        const tag = (e.target.tagName || '').toLowerCase();
+        const isTyping = (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable);
+
+        // "/" — фокус в поиск (только если не печатаем)
+        if (e.key === '/' && !isTyping && !e.ctrlKey && !e.metaKey) {
+            e.preventDefault();
+            const searchEl = document.getElementById('device-search');
+            if (searchEl) searchEl.focus();
+            return;
+        }
+
+        // Esc — снять фокус с поиска или сбросить highlight
+        if (e.key === 'Escape') {
+            if (document.activeElement === document.getElementById('device-search')) {
+                document.getElementById('device-search').blur();
+            }
+            _applyKeyboardHighlight(null);
+            return;
+        }
+
+        if (isTyping) return;
+
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            const items = _getVisibleDeviceItems();
+            if (items.length === 0) return;
+
+            const idx = items.findIndex(el => el.dataset.deviceId === keyboardFocusId);
+            let nextIdx;
+            if (idx === -1) {
+                nextIdx = e.key === 'ArrowDown' ? 0 : items.length - 1;
+            } else {
+                nextIdx = e.key === 'ArrowDown' ? idx + 1 : idx - 1;
+                if (nextIdx < 0) nextIdx = items.length - 1;
+                if (nextIdx >= items.length) nextIdx = 0;
+            }
+            _applyKeyboardHighlight(items[nextIdx]);
+            return;
+        }
+
+        if (e.key === 'Enter' && keyboardFocusId) {
+            e.preventDefault();
+            selectDevice(keyboardFocusId);
+            return;
+        }
+    });
+}
+
 </script>
 
 </body>
