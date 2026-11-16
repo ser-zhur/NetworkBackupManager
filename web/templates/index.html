@@ -47,6 +47,21 @@
             border: 2px solid currentColor; border-top-color: transparent;
             border-radius: 50%; animation: spin .7s linear infinite;
         }
+                /* Группировка по типу (<details>) */
+        details.device-group > summary {
+            list-style: none;
+            cursor: pointer;
+        }
+        details.device-group > summary::-webkit-details-marker { display: none; }
+        details.device-group > summary::marker { content: ""; }
+        details.device-group > summary .chevron {
+            display: inline-block;
+            transition: transform .15s ease;
+            transform: rotate(-90deg);
+        }
+        details.device-group[open] > summary .chevron {
+            transform: rotate(0deg);
+        }
     </style>
 </head>
 <body class="bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-slate-100 transition-colors">
@@ -64,7 +79,7 @@
     <div class="grid grid-cols-1 lg:grid-cols-[340px_minmax(0,1fr)] gap-5">
 
         <aside class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm overflow-hidden flex flex-col lg:h-[calc(100vh-120px)] lg:sticky lg:top-[76px]">
-            <div class="p-3 border-b border-gray-100 dark:border-slate-800">
+            <div class="p-3 border-b border-gray-100 dark:border-slate-800 space-y-2">
                 <div class="relative">
                     <span class="absolute inset-y-0 left-0 pl-3 flex items-center text-gray-400 dark:text-slate-500 pointer-events-none">🔍</span>
                     <input type="text" id="device-search" placeholder="Поиск по IP / хосту…"
@@ -74,34 +89,76 @@
                                   placeholder-gray-400 dark:placeholder-slate-500
                                   focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
                 </div>
+                <div class="flex items-center gap-2">
+                    <label for="sort-mode" class="text-[11px] font-medium text-gray-500 dark:text-slate-400 shrink-0">Сортировка:</label>
+                    <select id="sort-mode"
+                            class="flex-1 rounded-lg px-2 py-1.5 text-[11px]
+                                   bg-gray-50 dark:bg-slate-950
+                                   border border-gray-200 dark:border-slate-800
+                                   focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+                        <option value="status">По статусу</option>
+                        <option value="name">По имени</option>
+                        <option value="last_attempt">По давности связи</option>
+                    </select>
+                </div>
             </div>
 
-            <div class="flex-1 overflow-y-auto scroll-thin divide-y divide-gray-100 dark:divide-slate-800" id="device-list">
-                {% for d in devices %}
-                    {% set m = status_meta(d.status) %}
-                    <button data-device-id="{{ d.id }}"
-                            class="device-item group w-full text-left px-4 py-3 border-l-2 transition
-                                   {{ 'bg-brand-50/60 dark:bg-brand-950/30 border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-950/40'
-                                      if (selected and selected.id == d.id)
-                                      else 'border-transparent hover:bg-gray-50 dark:hover:bg-slate-800/60' }}">
-                        <div class="flex items-start gap-3">
-                            <span class="mt-1.5 w-2.5 h-2.5 rounded-full {{ m.dot }} ring-4 {{ m.ring }} shrink-0"></span>
-                            <div class="min-w-0 flex-1">
-                                <div class="flex items-center justify-between gap-2">
-                                    <span class="text-[11px] uppercase tracking-wide font-semibold text-gray-500 dark:text-slate-400">{{ d.type }}</span>
-                                    <span class="text-[10px] px-1.5 py-0.5 rounded font-medium {{ m.badge }}">{{ m.label }}</span>
-                                </div>
-                                <div class="mt-0.5 text-sm font-medium truncate">{{ d.name or d.host }}</div>
-                                <div class="mt-0.5 text-[11px] text-gray-500 dark:text-slate-400 truncate">
-                                    {% if d.last_attempt %}
-                                        Связь: {{ d.last_attempt[:10] }} · {{ d.backup_count }} копий
-                                    {% else %}
-                                        Бэкапы ещё не создавались
-                                    {% endif %}
-                                </div>
-                            </div>
+            <div class="flex-1 overflow-y-auto scroll-thin" id="device-list">
+                {% for device_type, group in devices | groupby('type') %}
+                    {% set group_list = group | list %}
+                    <details class="device-group border-b border-gray-100 dark:border-slate-800 last:border-b-0"
+                             data-group-type="{{ device_type }}"
+                             open>
+                        <summary class="px-4 py-2 select-none
+                                        text-[11px] font-semibold uppercase tracking-wide
+                                        text-gray-500 dark:text-slate-400
+                                        bg-gray-50 dark:bg-slate-800/40
+                                        hover:bg-gray-100 dark:hover:bg-slate-800
+                                        flex items-center gap-2 transition">
+                            <span class="chevron w-3 inline-flex items-center justify-center">▾</span>
+                            <span>{{ device_type }}</span>
+                            <span class="text-gray-400 dark:text-slate-500 font-normal">({{ group_list | length }})</span>
+                        </summary>
+                        <div class="device-items">
+                            {% for d in group_list %}
+                                {% set m = status_meta(d.status) %}
+                                <button data-device-id="{{ d.id }}"
+                                        data-status="{{ d.status }}"
+                                        data-name="{{ d.name or d.host or '' }}"
+                                        data-last-attempt-age="{{ d.last_attempt_age_days if d.last_attempt_age_days is not none else 999999 }}"
+                                        class="device-item group w-full text-left px-4 py-3 border-l-2 transition
+                                               {{ 'bg-brand-50/60 dark:bg-brand-950/30 border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-950/40'
+                                                  if (selected and selected.id == d.id)
+                                                  else 'border-transparent hover:bg-gray-50 dark:hover:bg-slate-800/60' }}">
+                                    <div class="flex items-start gap-3">
+                                        <span class="relative mt-1.5 w-2.5 h-2.5 shrink-0 inline-flex">
+                                            <span class="status-dot-ping absolute inline-flex h-full w-full rounded-full {{ m.dot }} {% if d.backup_in_progress or d.sync_in_progress %}animate-ping opacity-75{% else %}opacity-0{% endif %}"></span>
+                                            <span class="relative inline-flex w-2.5 h-2.5 rounded-full {{ m.dot }} ring-4 {{ m.ring }}"></span>
+                                        </span>
+                                        <div class="min-w-0 flex-1">
+                                            <div class="flex items-center justify-between gap-2">
+                                                <span class="text-[11px] uppercase tracking-wide font-semibold text-gray-500 dark:text-slate-400">{{ d.type }}</span>
+                                                <span class="text-[10px] px-1.5 py-0.5 rounded font-medium {{ m.badge }}">{{ m.label }}</span>
+                                            </div>
+                                            <div class="mt-0.5 text-sm font-medium truncate">{{ d.name or d.host }}</div>
+                                            <div class="mt-0.5 text-[11px] text-gray-500 dark:text-slate-400 truncate flex items-center gap-1">
+                                                {% if d.last_attempt %}
+                                                    <span class="rel-time" data-time="{{ d.last_attempt }}" title="{{ d.last_attempt }}"></span>
+                                                    <span class="font-bold {{ 'text-emerald-600 dark:text-emerald-400' if d.last_attempt_ok else 'text-rose-600 dark:text-rose-400' }}">
+                                                        {{ '✓' if d.last_attempt_ok else '✗' }}
+                                                    </span>
+                                                    <span class="opacity-60">·</span>
+                                                    <span>{{ d.backup_count }} коп.</span>
+                                                {% else %}
+                                                    <span class="italic">Бэкапы ещё не создавались</span>
+                                                {% endif %}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </button>
+                            {% endfor %}
                         </div>
-                    </button>
+                    </details>
                 {% endfor %}
                 {% if not devices %}
                     <div class="px-4 py-8 text-center text-sm text-gray-400 dark:text-slate-500">
@@ -311,6 +368,25 @@ async function refreshBackupStatus() {
     const running = !!data.running;
     const mass = !!data.mass;
     const deviceSet = new Set(data.devices || []);
+    const syncingSet = new Set(data.syncing || []);
+
+    // ---- Пульс на точках статуса в списке устройств ----
+    document.querySelectorAll('.device-item[data-device-id]').forEach(item => {
+        const ping = item.querySelector('.status-dot-ping');
+        if (!ping) return;
+        const deviceId = item.dataset.deviceId;
+        const isBusy =
+            mass ||
+            deviceSet.has(deviceId) ||
+            syncingSet.has(deviceId);
+        if (isBusy) {
+            ping.classList.remove('opacity-0');
+            ping.classList.add('animate-ping', 'opacity-75');
+        } else {
+            ping.classList.remove('animate-ping', 'opacity-75');
+            ping.classList.add('opacity-0');
+        }
+    });
 
     // ---- Кнопки «Запустить бэкап» в карточках устройств ----
     document.querySelectorAll('[data-run-backup-device]').forEach(form => {
@@ -420,20 +496,6 @@ function disableAllBackups() {
     b.innerHTML = '<span class="spinner"></span> Запуск...';
 }
 
-
-// ============================================================
-// ПОИСК ПО СПИСКУ УСТРОЙСТВ
-// ============================================================
-
-document.getElementById('device-search').addEventListener('input', (e) => {
-    const q = e.target.value.trim().toLowerCase();
-    document.querySelectorAll('.device-item[data-device-id]').forEach(el => {
-        const text = el.textContent.toLowerCase();
-        el.style.display = text.includes(q) ? '' : 'none';
-    });
-});
-
-
 // ============================================================
 // ОПРОС СИСТЕМНОЙ ИНФОРМАЦИИ (раз в 30 секунд)
 // ============================================================
@@ -476,6 +538,143 @@ window.addEventListener('pageshow', (event) => {
         refreshSystemInfo();
     }
 });
+
+// ============================================================
+// RELATIVE TIME
+// ============================================================
+
+function relTime(isoStr) {
+    if (!isoStr) return '';
+    const dt = new Date(isoStr.replace(' ', 'T'));
+    if (isNaN(dt.getTime())) return isoStr.slice(0, 10);
+
+    const sec = Math.floor((Date.now() - dt.getTime()) / 1000);
+    if (sec < 0) return 'только что';
+    if (sec < 60) return 'только что';
+
+    const min = Math.floor(sec / 60);
+    if (min < 60) return min + ' мин назад';
+
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return hr + ' ч назад';
+
+    const days = Math.floor(hr / 24);
+    if (days === 1) return 'вчера';
+    if (days < 7) return days + ' дн назад';
+    if (days < 30) return Math.floor(days / 7) + ' нед назад';
+    if (days < 365) return Math.floor(days / 30) + ' мес назад';
+    return Math.floor(days / 365) + ' г назад';
+}
+
+function applyRelTime() {
+    document.querySelectorAll('.rel-time').forEach(el => {
+        const t = el.dataset.time;
+        if (t) el.textContent = relTime(t);
+    });
+}
+
+
+// ============================================================
+// СОРТИРОВКА
+// ============================================================
+
+const SORT_STORAGE_KEY = 'nbm-sort';
+const STATUS_ORDER = { fail: 0, warn: 1, none: 2, ok: 3 };
+
+function getComparator(mode) {
+    if (mode === 'name') {
+        return (a, b) => (a.dataset.name || '').localeCompare(
+            b.dataset.name || '', 'ru', { numeric: true }
+        );
+    }
+    if (mode === 'last_attempt') {
+        return (a, b) => {
+            const av = parseInt(a.dataset.lastAttemptAge || '999999', 10);
+            const bv = parseInt(b.dataset.lastAttemptAge || '999999', 10);
+            return bv - av;  // давние — сверху
+        };
+    }
+    // status: fail → warn → none → ok, внутри — по имени
+    return (a, b) => {
+        const ao = STATUS_ORDER[a.dataset.status] ?? 4;
+        const bo = STATUS_ORDER[b.dataset.status] ?? 4;
+        if (ao !== bo) return ao - bo;
+        return (a.dataset.name || '').localeCompare(
+            b.dataset.name || '', 'ru', { numeric: true }
+        );
+    };
+}
+
+function applySort() {
+    const sortEl = document.getElementById('sort-mode');
+    const mode = sortEl ? sortEl.value : 'status';
+
+    document.querySelectorAll('.device-group').forEach(group => {
+        const container = group.querySelector('.device-items');
+        if (!container) return;
+        const items = Array.from(container.querySelectorAll('.device-item'));
+        items.sort(getComparator(mode));
+        items.forEach(it => container.appendChild(it));
+    });
+}
+
+
+// ============================================================
+// ПОИСК С УЧЁТОМ ГРУПП
+// ============================================================
+
+function applySearch() {
+    const searchEl = document.getElementById('device-search');
+    const q = (searchEl ? searchEl.value : '').trim().toLowerCase();
+
+    document.querySelectorAll('.device-group').forEach(group => {
+        const container = group.querySelector('.device-items');
+        if (!container) return;
+
+        let visible = 0;
+        container.querySelectorAll('.device-item').forEach(item => {
+            const text = item.textContent.toLowerCase();
+            const match = !q || text.includes(q);
+            item.style.display = match ? '' : 'none';
+            if (match) visible++;
+        });
+
+        group.style.display = visible > 0 ? '' : 'none';
+
+        // При активном поиске — раскрываем группы с совпадениями,
+        // иначе пользователь не увидит найденное в свёрнутой группе.
+        if (q && visible > 0) {
+            group.setAttribute('open', '');
+        }
+    });
+}
+
+
+// ============================================================
+// ИНИЦИАЛИЗАЦИЯ
+// ============================================================
+
+(function initListControls() {
+    const sortEl = document.getElementById('sort-mode');
+    if (sortEl) {
+        sortEl.value = localStorage.getItem(SORT_STORAGE_KEY) || 'status';
+        sortEl.addEventListener('change', () => {
+            localStorage.setItem(SORT_STORAGE_KEY, sortEl.value);
+            applySort();
+        });
+    }
+
+    const searchEl = document.getElementById('device-search');
+    if (searchEl) {
+        searchEl.addEventListener('input', applySearch);
+    }
+
+    applyRelTime();
+    applySort();
+
+    // Обновляем «2 мин назад» → «3 мин назад» и т.д.
+    setInterval(applyRelTime, 60 * 1000);
+})();
 
 </script>
 
