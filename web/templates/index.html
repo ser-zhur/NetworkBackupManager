@@ -62,6 +62,50 @@
         details.device-group[open] > summary .chevron {
             transform: rotate(0deg);
         }
+
+                /* Чипы фильтров */
+        .filter-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.125rem 0.5rem;
+            font-size: 11px;
+            font-weight: 500;
+            border-radius: 0.375rem;
+            border: 1px solid rgb(229 231 235);
+            background: white;
+            color: rgb(55 65 81);
+            cursor: pointer;
+            transition: all .12s ease;
+            white-space: nowrap;
+        }
+        .dark .filter-chip {
+            border-color: rgb(51 65 85);
+            background: rgb(30 41 59);
+            color: rgb(203 213 225);
+        }
+        .filter-chip:hover:not(:disabled) {
+            border-color: rgb(59 130 246);
+        }
+        .filter-chip.chip-active {
+            background: rgb(37 99 235);
+            border-color: rgb(37 99 235);
+            color: white;
+        }
+        .dark .filter-chip.chip-active {
+            background: rgb(37 99 235);
+            border-color: rgb(37 99 235);
+            color: white;
+        }
+        .filter-chip:disabled {
+            cursor: not-allowed;
+            opacity: 0.4;
+        }
+        .chip-count {
+            opacity: 0.75;
+            font-weight: 400;
+        }
+
     </style>
 </head>
 <body class="bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-slate-100 transition-colors">
@@ -103,6 +147,34 @@
                 </div>
             </div>
 
+            <!-- Фильтры -->
+            <div class="px-3 py-2 border-b border-gray-100 dark:border-slate-800 space-y-2" id="filters-bar">
+
+                <div class="flex flex-wrap items-center gap-1" id="filter-status">
+                    <button type="button" class="filter-chip" data-filter-status="all">Все <span class="chip-count">(0)</span></button>
+                    <button type="button" class="filter-chip" data-filter-status="ok">OK <span class="chip-count">(0)</span></button>
+                    <button type="button" class="filter-chip" data-filter-status="warn">⚠ <span class="chip-count">(0)</span></button>
+                    <button type="button" class="filter-chip" data-filter-status="fail">✗ <span class="chip-count">(0)</span></button>
+                    <button type="button" class="filter-chip" data-filter-status="none">— <span class="chip-count">(0)</span></button>
+                </div>
+
+                <div class="flex flex-wrap items-center gap-1" id="filter-type"></div>
+
+                <div class="flex flex-wrap items-center gap-1" id="filter-tag"></div>
+                <button type="button" id="toggle-tags-btn" class="hidden text-[11px] text-brand-600 dark:text-brand-400 hover:underline py-0.5">
+                    Показать все теги
+                </button>
+
+                <button type="button" id="reset-filters"
+                        class="hidden w-full text-[11px] font-medium px-2 py-1.5 rounded-md
+                               text-rose-700 dark:text-rose-300
+                               bg-rose-50 dark:bg-rose-950/40
+                               border border-rose-200 dark:border-rose-900
+                               hover:bg-rose-100 dark:hover:bg-rose-900/60 transition">
+                    ✕ Сбросить все фильтры
+                </button>
+            </div>
+
             <div class="flex-1 overflow-y-auto scroll-thin" id="device-list">
                 {% for device_type, group in devices | groupby('type') %}
                     {% set group_list = group | list %}
@@ -124,6 +196,8 @@
                                 {% set m = status_meta(d.status) %}
                                 <button data-device-id="{{ d.id }}"
                                         data-status="{{ d.status }}"
+                                        data-type="{{ d.type }}"
+                                        data-tags="{{ (d.tags or []) | join(',') }}"
                                         data-name="{{ d.name or d.host or '' }}"
                                         data-last-attempt-age="{{ d.last_attempt_age_days if d.last_attempt_age_days is not none else 999999 }}"
                                         class="device-item group w-full text-left px-4 py-3 border-l-2 transition
@@ -192,6 +266,8 @@
 </main>
 
 <script>
+
+window.currentFilters = null; // Глобальная переменная, доступная везде
 
 // ============================================================
 // ВЫБОР УСТРОЙСТВА (гибрид: SSR при первой загрузке, fetch при клике)
@@ -618,14 +694,95 @@ function applySort() {
     });
 }
 
-
 // ============================================================
-// ПОИСК С УЧЁТОМ ГРУПП
+// ФИЛЬТРЫ (статус / тип / теги)
 // ============================================================
+//
+// Семантика:
+//   • между категориями — AND;
+//   • внутри категории — OR.
+//
+// Источник истины — URL. При отсутствии — localStorage.
+// При изменении оба синхронизируются.
+//
+// Счётчики:
+//   • статусы — глобальные (не зависят от других фильтров);
+//   • типы — с учётом статуса и тегов;
+//   • теги — с учётом статуса и типов.
+// Это классический faceted search.
 
-function applySearch() {
+const FILTER_STORAGE_KEY = 'nbm-filters';
+
+function _getFiltersFromURL() {
+    const params = new URLSearchParams(window.location.search);
+    return {
+        status: params.get('status') || null,
+        type: (params.get('type') || '').split(',').filter(Boolean),
+        tag: (params.get('tag') || '').split(',').filter(Boolean).map(t => t.toLowerCase()),
+    };
+}
+
+function _getFiltersFromStorage() {
+    try {
+        return JSON.parse(localStorage.getItem(FILTER_STORAGE_KEY) || '{}');
+    } catch (e) {
+        return {};
+    }
+}
+
+function getActiveFilters() {
+    const url = _getFiltersFromURL();
+    // URL приоритетнее localStorage, если в нём есть хоть что-то
+    if (url.status || url.type.length || url.tag.length) {
+        return url;
+    }
+    const stored = _getFiltersFromStorage();
+    return {
+        status: stored.status || null,
+        type: Array.isArray(stored.type) ? stored.type : [],
+        tag: Array.isArray(stored.tag) ? stored.tag.map(t => t.toLowerCase()) : [],
+    };
+}
+
+function _persistFilters() {
+    localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(currentFilters));
+
+    const params = new URLSearchParams(window.location.search);
+    if (currentFilters.status) params.set('status', currentFilters.status);
+    else params.delete('status');
+
+    if (currentFilters.type.length) params.set('type', currentFilters.type.join(','));
+    else params.delete('type');
+
+    if (currentFilters.tag.length) params.set('tag', currentFilters.tag.join(','));
+    else params.delete('tag');
+
+    const qs = params.toString();
+    const newURL = window.location.pathname + (qs ? '?' + qs : '');
+    history.replaceState(null, '', newURL);
+}
+
+function _deviceMatchesFilters(item, f) {
+    if (f.status && item.dataset.status !== f.status) return false;
+
+    if (f.type.length && !f.type.includes(item.dataset.type)) return false;
+
+    if (f.tag.length) {
+        const itemTags = (item.dataset.tags || '')
+            .split(',')
+            .map(t => t.trim().toLowerCase())
+            .filter(Boolean);
+        const hasAny = f.tag.some(t => itemTags.includes(t));
+        if (!hasAny) return false;
+    }
+    return true;
+}
+
+function applyView() {
     const searchEl = document.getElementById('device-search');
     const q = (searchEl ? searchEl.value : '').trim().toLowerCase();
+
+    let anyVisible = false;
 
     document.querySelectorAll('.device-group').forEach(group => {
         const container = group.querySelector('.device-items');
@@ -633,28 +790,314 @@ function applySearch() {
 
         let visible = 0;
         container.querySelectorAll('.device-item').forEach(item => {
-            const text = item.textContent.toLowerCase();
-            const match = !q || text.includes(q);
-            item.style.display = match ? '' : 'none';
-            if (match) visible++;
+            const passFilter = _deviceMatchesFilters(item, currentFilters);
+            const passSearch = !q || item.textContent.toLowerCase().includes(q);
+            const show = passFilter && passSearch;
+            item.style.display = show ? '' : 'none';
+            if (show) visible++;
         });
 
         group.style.display = visible > 0 ? '' : 'none';
+        if (visible > 0) anyVisible = true;
 
-        // При активном поиске — раскрываем группы с совпадениями,
-        // иначе пользователь не увидит найденное в свёрнутой группе.
         if (q && visible > 0) {
             group.setAttribute('open', '');
         }
     });
+
+    // Пустой результат
+    let emptyMsg = document.getElementById('filter-empty-msg');
+    if (!anyVisible) {
+        if (!emptyMsg) {
+            emptyMsg = document.createElement('div');
+            emptyMsg.id = 'filter-empty-msg';
+            emptyMsg.className = 'px-4 py-8 text-center text-sm text-gray-400 dark:text-slate-500';
+            emptyMsg.innerHTML =
+                'Ничего не найдено по текущим фильтрам.<br>' +
+                '<button type="button" onclick="resetFilters()" ' +
+                'class="mt-3 px-3 py-1.5 rounded-lg bg-white dark:bg-slate-800 ' +
+                'border border-gray-200 dark:border-slate-700 text-xs ' +
+                'hover:bg-gray-50 dark:hover:bg-slate-700 transition">Сбросить фильтры</button>';
+            document.getElementById('device-list').appendChild(emptyMsg);
+        }
+        emptyMsg.style.display = '';
+    } else if (emptyMsg) {
+        emptyMsg.style.display = 'none';
+    }
 }
 
+function _countStatus() {
+    const counts = { ok: 0, warn: 0, fail: 0, none: 0 };
+    let total = 0;
+    document.querySelectorAll('.device-item').forEach(it => {
+        total++;
+        const s = it.dataset.status;
+        if (s in counts) counts[s]++;
+    });
+    counts.all = total;
+    return counts;
+}
+
+function _countTypes(probeFilters) {
+    const counts = {};
+    document.querySelectorAll('.device-item').forEach(it => {
+        if (_deviceMatchesFilters(it, probeFilters)) {
+            const t = it.dataset.type;
+            counts[t] = (counts[t] || 0) + 1;
+        }
+    });
+    return counts;
+}
+
+function _countTags(probeFilters) {
+    const counts = {};
+    document.querySelectorAll('.device-item').forEach(it => {
+        if (_deviceMatchesFilters(it, probeFilters)) {
+            (it.dataset.tags || '').split(',').map(t => t.trim().toLowerCase()).filter(Boolean).forEach(t => {
+                counts[t] = (counts[t] || 0) + 1;
+            });
+        }
+    });
+    return counts;
+}
+
+function _updateStatusChips() {
+    const counts = _countStatus();
+    document.querySelectorAll('[data-filter-status]').forEach(btn => {
+        const s = btn.dataset.filterStatus;
+        const cntEl = btn.querySelector('.chip-count');
+        if (cntEl) cntEl.textContent = `(${counts[s] || 0})`;
+
+        const active = (s === 'all' && !currentFilters.status)
+                    || (s === currentFilters.status);
+        btn.classList.toggle('chip-active', active);
+    });
+}
+
+function _updateTypeChips() {
+    const probe = {
+        status: currentFilters.status,
+        type: [],
+        tag: currentFilters.tag,
+    };
+    const counts = _countTypes(probe);
+
+    document.querySelectorAll('[data-filter-type]').forEach(btn => {
+        const type = btn.dataset.filterType;
+        const count = counts[type] || 0;
+        const active = currentFilters.type.includes(type);
+
+        const cntEl = btn.querySelector('.chip-count');
+        if (cntEl) cntEl.textContent = `(${count})`;
+
+        btn.classList.toggle('chip-active', active);
+        btn.disabled = !active && count === 0;
+    });
+}
+
+function _updateTagChips() {
+    const probe = {
+        status: currentFilters.status,
+        type: currentFilters.type,
+        tag: [],
+    };
+    const counts = _countTags(probe);
+
+    document.querySelectorAll('[data-filter-tag]').forEach(btn => {
+        const tag = btn.dataset.filterTag;
+        const count = counts[tag] || 0;
+        const active = currentFilters.tag.includes(tag);
+
+        const cntEl = btn.querySelector('.chip-count');
+        if (cntEl) cntEl.textContent = `(${count})`;
+
+        btn.classList.toggle('chip-active', active);
+        btn.disabled = !active && count === 0;
+    });
+}
+
+function _buildTypeChips() {
+    const types = new Set();
+    document.querySelectorAll('.device-item').forEach(it => {
+        if (it.dataset.type) types.add(it.dataset.type);
+    });
+
+    const container = document.getElementById('filter-type');
+    container.innerHTML = '';
+
+    if (types.size === 0) return;
+
+    Array.from(types).sort().forEach(type => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'filter-chip';
+        btn.dataset.filterType = type;
+        btn.innerHTML = `<span>${type}</span> <span class="chip-count">(0)</span>`;
+        btn.addEventListener('click', () => _toggleMultiFilter('type', type));
+        container.appendChild(btn);
+    });
+}
+
+let tagsExpanded = false; // По умолчанию теги свернуты
+
+function _buildTagChips() {
+    const tags = new Map();
+    document.querySelectorAll('.device-item').forEach(it => {
+        (it.dataset.tags || '').split(',').map(t => t.trim()).filter(Boolean).forEach(t => {
+            const k = t.toLowerCase();
+            if (!tags.has(k)) tags.set(k, t);
+        });
+    });
+
+    const container = document.getElementById('filter-tag');
+    const toggleBtn = document.getElementById('toggle-tags-btn');
+    if (!container) return;
+    
+    container.innerHTML = '';
+
+    if (tags.size === 0) {
+        container.innerHTML = '<span class="text-[11px] text-gray-400 dark:text-slate-500 italic">Тегов пока нет</span>';
+        if (toggleBtn) toggleBtn.classList.add('hidden');
+        return;
+    }
+
+    // Сортируем теги по алфавиту
+    const sortedTags = Array.from(tags.entries()).sort((a, b) => a[1].localeCompare(b[1], 'ru'));
+
+    // Константа: сколько тегов показывать в свернутом виде
+    const LIMIT = 6;
+    
+    // Активные теги (выбранные фильтры) должны быть видны всегда
+    const activeKeys = new Set(currentFilters.tag);
+
+    const visibleTags = [];
+    const hiddenTags = [];
+
+    sortedTags.forEach(([key, orig]) => {
+        if (tagsExpanded || activeKeys.has(key) || visibleTags.length < LIMIT) {
+            visibleTags.push([key, orig]);
+        } else {
+            hiddenTags.push([key, orig]);
+        }
+    });
+
+    // Рендерим видимые теги
+    visibleTags.forEach(([key, orig]) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'filter-chip';
+        btn.dataset.filterTag = key;
+        btn.innerHTML = `<span>${orig}</span> <span class="chip-count">(0)</span>`;
+        btn.addEventListener('click', () => _toggleMultiFilter('tag', key));
+        container.appendChild(btn);
+    });
+
+    // Настраиваем кнопку "Показать все"
+    if (toggleBtn) {
+        if (hiddenTags.length > 0 || tagsExpanded) {
+            toggleBtn.classList.remove('hidden');
+            if (tagsExpanded) {
+                toggleBtn.textContent = 'Свернуть теги';
+            } else {
+                toggleBtn.textContent = `+ ещё ${hiddenTags.length}`;
+            }
+        } else {
+            toggleBtn.classList.add('hidden');
+        }
+    }
+}
+
+function _toggleStatusFilter(status) {
+    if (currentFilters.status === status) {
+        currentFilters.status = null;
+    } else {
+        currentFilters.status = status;
+    }
+    _persistFilters();
+    applyAll();
+}
+
+function _toggleMultiFilter(kind, value) {
+    const arr = currentFilters[kind];
+    const idx = arr.indexOf(value);
+    if (idx >= 0) arr.splice(idx, 1);
+    else arr.push(value);
+
+    _persistFilters();
+    applyAll();
+}
+
+function resetFilters() {
+    if (!currentFilters) return;
+    currentFilters = { status: null, type: [], tag: [] };
+    _persistFilters();
+    applyAll();
+}
+
+function applyAll() {
+    _updateStatusChips();
+    _updateTypeChips();
+    _updateTagChips();
+
+    applyView();
+
+    const resetBtn = document.getElementById('reset-filters');
+    if (resetBtn) {
+        const hasActive = currentFilters.status
+            || currentFilters.type.length
+            || currentFilters.tag.length;
+        resetBtn.classList.toggle('hidden', !hasActive);
+    }
+}
+
+function toggleTagFromCard(tag) {
+    if (!currentFilters) return;
+    _toggleMultiFilter('tag', tag.toLowerCase());
+}
+
+function initFilters() {
+    currentFilters = getActiveFilters();
+
+    document.querySelectorAll('[data-filter-status]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const s = btn.dataset.filterStatus;
+            if (s === 'all') {
+                currentFilters.status = null;
+                _persistFilters();
+                applyAll();
+            } else {
+                _toggleStatusFilter(s);
+            }
+        });
+    });
+
+    _buildTypeChips();
+    _buildTagChips();
+
+    const toggleTagsBtn = document.getElementById('toggle-tags-btn');
+    if (toggleTagsBtn) {
+        toggleTagsBtn.addEventListener('click', () => {
+            tagsExpanded = !tagsExpanded;
+            _buildTagChips(); // перерисовываем чипы
+            _updateTagChips(); // обновляем счетчики
+        });
+    }
+
+    const resetBtn = document.getElementById('reset-filters');
+    if (resetBtn) resetBtn.addEventListener('click', resetFilters);
+
+    applyAll();
+}
 
 // ============================================================
-// ИНИЦИАЛИЗАЦИЯ
+// ЗАПУСК ПРИЛОЖЕНИЯ
 // ============================================================
 
-(function initListControls() {
+// Запускаем всё только после того, как DOM полностью загружен.
+// Блок находится в самом конце скрипта — все переменные и функции
+// (включая FILTER_STORAGE_KEY и initFilters) уже объявлены.
+document.addEventListener('DOMContentLoaded', () => {
+    // 1. Инициализация сортировки и поиска
     const sortEl = document.getElementById('sort-mode');
     if (sortEl) {
         sortEl.value = localStorage.getItem(SORT_STORAGE_KEY) || 'status';
@@ -666,15 +1109,15 @@ function applySearch() {
 
     const searchEl = document.getElementById('device-search');
     if (searchEl) {
-        searchEl.addEventListener('input', applySearch);
+        searchEl.addEventListener('input', applyView);
     }
 
     applyRelTime();
     applySort();
 
-    // Обновляем «2 мин назад» → «3 мин назад» и т.д.
-    setInterval(applyRelTime, 60 * 1000);
-})();
+    // 2. Инициализация фильтров
+    initFilters();
+});
 
 </script>
 
