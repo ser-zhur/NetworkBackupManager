@@ -263,8 +263,69 @@ async def lifespan(
 app = FastAPI(
     title="Network Backup Manager",
     lifespan=lifespan,
-    debug=True,
+    # debug=True отдаёт полный traceback (пути, фрагменты
+    # кода и данных) любому клиенту. Ошибки и так пишутся
+    # в app.log.
+    debug=False,
 )
+
+
+# =========================================================
+# CSRF: проверка источника изменяющих запросов
+# =========================================================
+#
+# Авторизация — HTTP Basic: браузер сам подставляет
+# сохранённые логин/пароль в ЛЮБОЙ запрос к нашему адресу,
+# в том числе в форму, отправленную со стороннего сайта.
+# Без проверки чужая страница могла бы удалить устройство
+# или историю.
+#
+# Для POST/PUT/PATCH/DELETE сверяем Origin (или Referer,
+# если Origin нет) с Host запроса. Браузеры всегда шлют
+# Origin в кросс-сайтовых POST. Запросы без обоих
+# заголовков (curl, скрипты) пропускаются — это не браузер,
+# и CSRF к ним неприменим.
+
+_CSRF_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
+
+
+def _csrf_source_ok(request: Request) -> bool:
+    host = (request.headers.get("host") or "").lower()
+
+    origin = request.headers.get("origin")
+    if origin is not None:
+        # "null" — sandbox/file:// и т.п.: источник неизвестен
+        if origin.strip().lower() == "null":
+            return False
+        return urllib.parse.urlsplit(origin).netloc.lower() == host
+
+    referer = request.headers.get("referer")
+    if referer:
+        return urllib.parse.urlsplit(referer).netloc.lower() == host
+
+    return True
+
+
+@app.middleware("http")
+async def csrf_protect(request: Request, call_next):
+    if (
+        request.method not in _CSRF_SAFE_METHODS
+        and not _csrf_source_ok(request)
+    ):
+        logging.warning(
+            "CSRF: отклонён %s %s (Origin=%r, Referer=%r, Host=%r)",
+            request.method,
+            request.url.path,
+            request.headers.get("origin"),
+            request.headers.get("referer"),
+            request.headers.get("host"),
+        )
+        return Response(
+            "Запрос отклонён: отправлен с другого сайта.",
+            status_code=403,
+            media_type="text/plain; charset=utf-8",
+        )
+    return await call_next(request)
 
 
 app.mount(
