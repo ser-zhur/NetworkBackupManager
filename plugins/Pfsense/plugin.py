@@ -52,10 +52,18 @@ def backup_pfsense_ssh(router):
 
     logging.info("📡 Подключение к pfSense %s:%s по SSH", host, port)
 
+    remote_file = "/cf/conf/config.xml"
+    local_file = os.path.join(backup_dir, local_filename)
+    # Скачиваем во временный файл и подменяем config.xml только
+    # после полного скачивания: оборванная загрузка не оставит
+    # обрезанный config.xml в рабочем каталоге.
+    part_file = local_file + ".part"
+
+    key = paramiko.RSAKey.from_private_key_file(key_path)
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
     try:
-        key = paramiko.RSAKey.from_private_key_file(key_path)
-        ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         ssh.connect(
             hostname=host,
             port=port,
@@ -64,13 +72,10 @@ def backup_pfsense_ssh(router):
             timeout=10,
         )
 
-        sftp = ssh.open_sftp()
-        remote_file = "/cf/conf/config.xml"
-        local_file = os.path.join(backup_dir, local_filename)
+        with ssh.open_sftp() as sftp:
+            sftp.get(remote_file, part_file)
 
-        sftp.get(remote_file, local_file)
-        sftp.close()
-        ssh.close()
+        os.replace(part_file, local_file)
 
         full_path = os.path.abspath(local_file)
 
@@ -82,7 +87,17 @@ def backup_pfsense_ssh(router):
             "❌ Сбой подключения к pfSense %s:%s: %s",
             host, port, e,
         )
-        raise e
+        raise
+
+    finally:
+        # Соединение закрывается при любом исходе — раньше при
+        # ошибке в sftp.get оно оставалось открытым.
+        ssh.close()
+        if os.path.exists(part_file):
+            try:
+                os.remove(part_file)
+            except OSError:
+                pass
 
 
 def run_backup(router_config):
