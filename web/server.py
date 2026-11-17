@@ -2555,6 +2555,76 @@ def remote_delete(rid: str, user: str = Depends(require_auth)):
     return RedirectResponse("/settings?tab=storage&message=remote_deleted", status_code=303)
 
 
+@app.post("/settings/storage/{rid}/enable-all")
+def remote_enable_all(rid: str, user: str = Depends(require_auth)):
+    """
+    Включает хранилище у всех устройств (тот же ползунок, что
+    на странице устройства). Уже включённые не трогаются.
+    """
+    backend = next((b for b in _external_backends() if b.id == rid), None)
+    if backend is None:
+        raise HTTPException(404, "Хранилище не найдено")
+    if not global_config.is_configured(backend):
+        return RedirectResponse(
+            "/settings?tab=storage&message=remote_not_configured", status_code=303,
+        )
+
+    def revert(items):
+        for st, prev in items:
+            if prev is None:
+                st.pop(rid, None)
+            else:
+                st[rid] = prev
+
+    devices = 0
+    errors = 0
+    if plugin_manager:
+        with plugin_manager.routers_lock:
+            # 1) Включаем в памяти
+            changed: dict[str, list] = {}
+            for device_type, pd in plugin_manager._plugins.items():
+                for router in pd.get("routers", []):
+                    if global_config.is_enabled_for(router, backend):
+                        continue
+                    st = router.get("storage")
+                    if not isinstance(st, dict):
+                        st = router["storage"] = {}
+                    changed.setdefault(device_type, []).append((st, st.get(rid)))
+                    st[rid] = {"enabled": True}
+
+            # 2) Две папки устройств не должны совпасть на хранилище
+            conflict = _find_any_storage_conflict(global_config.load_global())
+            if conflict:
+                for items in changed.values():
+                    revert(items)
+                return RedirectResponse(
+                    "/settings?tab=storage&error=" + urllib.parse.quote(conflict),
+                    status_code=303,
+                )
+
+            # 3) Сохраняем
+            for device_type, items in changed.items():
+                try:
+                    plugin_manager.save_routers(device_type)
+                    devices += len(items)
+                except Exception as exc:
+                    errors += 1
+                    revert(items)           # в памяти — как на диске
+                    logging.error(
+                        "хранилище %s: не удалось обновить routers.json (%s): %s",
+                        rid, device_type, exc,
+                    )
+
+    logging.info(
+        "☁ Хранилище %s «%s» включено у всех устройств: добавлено %d (запрос от %s)",
+        rid, backend.name, devices, user,
+    )
+    message = "remote_enable_failed" if errors else "remote_enabled_all"
+    return RedirectResponse(
+        f"/settings?tab=storage&message={message}&count={devices}", status_code=303,
+    )
+
+
 @app.post("/api/oauth/start")
 async def api_oauth_start(request: Request, user: str = Depends(require_auth)):
     """
@@ -5610,6 +5680,11 @@ def settings_page(
         context["rclone_version"] = rclone_mod.get_version()
 
         storages = global_config.load_global()
+        context["total_devices"] = sum(
+            len(pd.get("routers", []))
+            for pd in (plugin_manager._plugins.values() if plugin_manager else [])
+        )
+        context["msg_count"] = request.query_params.get("count", "0")
         context["remotes"] = [
             {
                 "backend": b,

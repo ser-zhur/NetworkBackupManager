@@ -7,6 +7,36 @@
 </div>
 {% endif %}
 
+{% if message == 'remote_enabled_all' %}
+<div class="mb-4 px-4 py-3 rounded-lg text-sm
+            bg-emerald-50 dark:bg-emerald-950/40
+            border border-emerald-200 dark:border-emerald-900
+            text-emerald-800 dark:text-emerald-300">
+    {% if msg_count != '0' %}
+        Хранилище включено ещё у {{ msg_count }} устройств. Новые бэкапы пойдут туда
+        автоматически; чтобы выгрузить уже накопленную историю — нажмите
+        «Синхронизировать хранилища» ниже.
+    {% else %}
+        Хранилище уже было включено у всех устройств.
+    {% endif %}
+</div>
+{% elif message == 'remote_enable_failed' %}
+<div class="mb-4 px-4 py-3 rounded-lg text-sm
+            bg-rose-50 dark:bg-rose-950/40
+            border border-rose-200 dark:border-rose-900
+            text-rose-800 dark:text-rose-300">
+    ✗ Не удалось сохранить настройки части устройств (включено у {{ msg_count }}) —
+    подробности в <a href="/logs/main" class="underline">общем логе</a>.
+</div>
+{% elif message == 'remote_not_configured' %}
+<div class="mb-4 px-4 py-3 rounded-lg text-sm
+            bg-amber-50 dark:bg-amber-950/40
+            border border-amber-200 dark:border-amber-900
+            text-amber-800 dark:text-amber-300">
+    Сначала заполните обязательные параметры хранилища.
+</div>
+{% endif %}
+
 {% if message == 'sync_started' %}
 <div class="mb-4 px-4 py-3 rounded-lg text-sm
             bg-emerald-50 dark:bg-emerald-950/40
@@ -71,11 +101,22 @@
                     <div class="mt-0.5 text-xs text-gray-500 dark:text-slate-400">
                         Базовая папка: <span class="font-mono">{{ r.base_dir or '/' }}</span>
                         · {{ 'все бэкапы' if r.mode == 'all' else 'только изменённые' }}
-                        · включено у устройств: {{ item.devices }}
+                        · включено у устройств: {{ item.devices }} из {{ total_devices }}
                     </div>
                     <div class="mt-0.5 text-xs" id="remote-test-{{ b.id }}"></div>
                 </div>
                 <div class="flex items-center gap-2 shrink-0">
+                    {% set missing = total_devices - item.devices %}
+                    <form method="POST" action="/settings/storage/{{ b.id }}/enable-all" class="inline"
+                          onsubmit="return confirm('Включить хранилище «{{ b.name }}» у всех устройств? Добавится к {{ missing }} устройствам.');">
+                        <button type="submit"
+                                {% if not item.configured or missing <= 0 %}disabled{% endif %}
+                                title="{% if not item.configured %}Сначала заполните обязательные параметры{% elif missing <= 0 %}Уже включено у всех устройств{% else %}Включить у устройств, где оно выключено ({{ missing }}){% endif %}"
+                                class="px-3 py-1.5 rounded-lg text-xs font-medium
+                                       bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                                       border border-gray-200 dark:border-slate-700 transition
+                                       disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white dark:disabled:hover:bg-slate-800">➕ Добавить во все устройства</button>
+                    </form>
                     <button type="button" onclick="testRemote('{{ b.id }}')"
                             class="px-3 py-1.5 rounded-lg text-xs font-medium
                                    bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700

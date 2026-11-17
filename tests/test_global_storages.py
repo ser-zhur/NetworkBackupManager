@@ -346,6 +346,49 @@ def test_storage_tab_lists_remotes(web, tmp_path):
     assert "/settings/storage/edit?id=x" in page
 
 
+def test_enable_all_turns_storage_on_for_every_device(web, tmp_path):
+    s, c, routers = web
+    global_config.save_remotes([_local_remote("x", tmp_path / "r")])
+    s.storage_manager.reload_remotes()
+    routers[0]["storage"] = {"x": {"enabled": True}, "git": {"enabled": True}}
+    routers[1].pop("storage")                                  # и без раздела storage
+
+    page = c.get("/settings?tab=storage").text
+    assert "/settings/storage/x/enable-all" in page and "включено у устройств: 1 из 2" in page
+
+    r = c.post("/settings/storage/x/enable-all", follow_redirects=False)
+    assert r.status_code == 303
+    assert "message=remote_enabled_all" in r.headers["location"] and "count=1" in r.headers["location"]
+    assert routers[0]["storage"] == {"x": {"enabled": True}, "git": {"enabled": True}}
+    assert routers[1]["storage"] == {"x": {"enabled": True}}
+
+    page = c.get("/settings?tab=storage&message=remote_enabled_all&count=1").text
+    assert "включено ещё у 1 устройств" in page and "включено у устройств: 2 из 2" in page
+
+
+def test_enable_all_refuses_unconfigured_storage(web):
+    s, c, routers = web
+    global_config.save_remotes([{"id": "w", "name": "Без url", "type": "webdav",
+                                 "options": {}, "base_dir": "/"}])
+    s.storage_manager.reload_remotes()
+    r = c.post("/settings/storage/w/enable-all", follow_redirects=False)
+    assert "remote_not_configured" in r.headers["location"]
+    assert all("w" not in (x.get("storage") or {}) for x in routers)
+
+
+def test_enable_all_rolls_back_on_same_local_folder(web, tmp_path):
+    s, c, routers = web
+    routers[1]["backup_path"] = str(tmp_path / "other" / "a")   # то же имя «a»
+    global_config.save_remotes([_local_remote("x", tmp_path / "r")])
+    s.storage_manager.reload_remotes()
+
+    r = c.post("/settings/storage/x/enable-all", follow_redirects=False)
+    assert r.status_code == 303 and "error=" in r.headers["location"]
+    assert all("x" not in (x.get("storage") or {}) for x in routers)   # откат
+    page = c.get(r.headers["location"]).text
+    assert "одинаковое имя локальной папки" in page
+
+
 def test_device_form_toggles_for_remotes(web, tmp_path):
     s, c, routers = web
     global_config.save_remotes([
