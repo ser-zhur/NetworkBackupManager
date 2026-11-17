@@ -178,6 +178,8 @@ def ensure_default_files() -> None:
         "open_browser": True,
         "max_parallel_backups": 5,
         "backup_timeout_seconds": 300,
+        # Строк тегов в фильтре главной страницы (0 — все)
+        "tag_rows": 2,
 
         # Правила автоматической очистки истории.
         # Подробности — на странице /retention.

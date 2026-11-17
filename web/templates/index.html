@@ -175,11 +175,9 @@
                     <button type="button" class="filter-chip" data-filter-status="disabled" aria-label="Только отключённые" title="Отключённые (выведены из эксплуатации)" aria-pressed="false">⏸ <span class="chip-count">(0)</span></button>
                 </div>
 
-                <div class="flex flex-wrap items-center gap-1" id="filter-type"></div>
-
                 <div class="flex flex-wrap items-center gap-1" id="filter-tag"></div>
                 <button type="button" id="toggle-tags-btn" class="hidden text-[11px] text-brand-600 dark:text-brand-400 hover:underline py-0.5">
-                    Показать все теги
+                    + ещё
                 </button>
 
                 <button type="button" id="reset-filters"
@@ -875,7 +873,6 @@ function _getFiltersFromURL() {
     const params = new URLSearchParams(window.location.search);
     return {
         status: params.get('status') || null,
-        type: (params.get('type') || '').split(',').filter(Boolean),
         tag: (params.get('tag') || '').split(',').filter(Boolean).map(t => t.toLowerCase()),
     };
 }
@@ -891,13 +888,12 @@ function _getFiltersFromStorage() {
 function getActiveFilters() {
     const url = _getFiltersFromURL();
     // URL приоритетнее localStorage, если в нём есть хоть что-то
-    if (url.status || url.type.length || url.tag.length) {
+    if (url.status || url.tag.length) {
         return url;
     }
     const stored = _getFiltersFromStorage();
     return {
         status: stored.status || null,
-        type: Array.isArray(stored.type) ? stored.type : [],
         tag: Array.isArray(stored.tag) ? stored.tag.map(t => t.toLowerCase()) : [],
     };
 }
@@ -909,8 +905,8 @@ function _persistFilters() {
     if (currentFilters.status) params.set('status', currentFilters.status);
     else params.delete('status');
 
-    if (currentFilters.type.length) params.set('type', currentFilters.type.join(','));
-    else params.delete('type');
+    // Фильтра по типу больше нет — чистим параметр из старых ссылок
+    params.delete('type');
 
     if (currentFilters.tag.length) params.set('tag', currentFilters.tag.join(','));
     else params.delete('tag');
@@ -922,8 +918,6 @@ function _persistFilters() {
 
 function _deviceMatchesFilters(item, f) {
     if (f.status && item.dataset.status !== f.status) return false;
-
-    if (f.type.length && !f.type.includes(item.dataset.type)) return false;
 
     if (f.tag.length) {
         const itemTags = (item.dataset.tags || '')
@@ -1117,17 +1111,6 @@ function _countStatus() {
     return counts;
 }
 
-function _countTypes(probeFilters) {
-    const counts = {};
-    document.querySelectorAll('.device-item').forEach(it => {
-        if (_deviceMatchesFilters(it, probeFilters)) {
-            const t = it.dataset.type;
-            counts[t] = (counts[t] || 0) + 1;
-        }
-    });
-    return counts;
-}
-
 function _countTags(probeFilters) {
     const counts = {};
     document.querySelectorAll('.device-item').forEach(it => {
@@ -1154,32 +1137,9 @@ function _updateStatusChips() {
     });
 }
 
-function _updateTypeChips() {
-    const probe = {
-        status: currentFilters.status,
-        type: [],
-        tag: currentFilters.tag,
-    };
-    const counts = _countTypes(probe);
-
-    document.querySelectorAll('[data-filter-type]').forEach(btn => {
-        const type = btn.dataset.filterType;
-        const count = counts[type] || 0;
-        const active = currentFilters.type.includes(type);
-
-        const cntEl = btn.querySelector('.chip-count');
-        if (cntEl) cntEl.textContent = `(${count})`;
-
-        btn.classList.toggle('chip-active', active);
-        btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-        btn.disabled = !active && count === 0;
-    });
-}
-
 function _updateTagChips() {
     const probe = {
         status: currentFilters.status,
-        type: currentFilters.type,
         tag: [],
     };
     const counts = _countTags(probe);
@@ -1199,7 +1159,7 @@ function _updateTagChips() {
 }
 
 // Содержимое чипа фильтра: подпись + счётчик.
-// Только textContent — подпись (тег, тип) вводит пользователь,
+// Только textContent — подпись (тег) вводит пользователь,
 // и через innerHTML она исполнялась бы как HTML.
 function _fillChip(btn, label) {
     const text = document.createElement('span');
@@ -1210,32 +1170,15 @@ function _fillChip(btn, label) {
     btn.append(text, ' ', count);
 }
 
-function _buildTypeChips() {
-    const types = new Set();
-    document.querySelectorAll('.device-item').forEach(it => {
-        if (it.dataset.type) types.add(it.dataset.type);
-    });
-
-    const container = document.getElementById('filter-type');
-    container.innerHTML = '';
-
-    if (types.size === 0) return;
-
-    Array.from(types).sort().forEach(type => {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'filter-chip';
-        btn.dataset.filterType = type;
-        btn.setAttribute('aria-pressed', 'false');
-        btn.setAttribute('aria-label', `Тип ${type}`);
-        _fillChip(btn, type);
-        btn.addEventListener('click', () => _toggleMultiFilter('type', type));
-        container.appendChild(btn);
-    });
-}
-
 let tagsExpanded = false; // По умолчанию теги свернуты
 
+// Сколько строк тегов показывать в свёрнутом виде
+// (Настройки → Общие, config.json → tag_rows). 0 — все.
+const TAG_ROWS = {{ tag_rows | int }};
+
+// Строит ВСЕ чипы тегов. Какие из них видны — решает
+// _applyTagRowLimit() после подсчёта счётчиков (от их
+// ширины зависит раскладка по строкам).
 function _buildTagChips() {
     const tags = new Map();
     document.querySelectorAll('.device-item').forEach(it => {
@@ -1248,7 +1191,7 @@ function _buildTagChips() {
     const container = document.getElementById('filter-tag');
     const toggleBtn = document.getElementById('toggle-tags-btn');
     if (!container) return;
-    
+
     container.innerHTML = '';
 
     if (tags.size === 0) {
@@ -1260,25 +1203,7 @@ function _buildTagChips() {
     // Сортируем теги по алфавиту
     const sortedTags = Array.from(tags.entries()).sort((a, b) => a[1].localeCompare(b[1], 'ru'));
 
-    // Константа: сколько тегов показывать в свернутом виде
-    const LIMIT = 6;
-    
-    // Активные теги (выбранные фильтры) должны быть видны всегда
-    const activeKeys = new Set(currentFilters.tag);
-
-    const visibleTags = [];
-    const hiddenTags = [];
-
     sortedTags.forEach(([key, orig]) => {
-        if (tagsExpanded || activeKeys.has(key) || visibleTags.length < LIMIT) {
-            visibleTags.push([key, orig]);
-        } else {
-            hiddenTags.push([key, orig]);
-        }
-    });
-
-    // Рендерим видимые теги
-    visibleTags.forEach(([key, orig]) => {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'filter-chip';
@@ -1289,19 +1214,63 @@ function _buildTagChips() {
         btn.addEventListener('click', () => _toggleMultiFilter('tag', key));
         container.appendChild(btn);
     });
+}
 
-    // Настраиваем кнопку "Показать все"
-    if (toggleBtn) {
-        if (hiddenTags.length > 0 || tagsExpanded) {
-            toggleBtn.classList.remove('hidden');
-            if (tagsExpanded) {
-                toggleBtn.textContent = 'Свернуть теги';
-            } else {
-                toggleBtn.textContent = `+ ещё ${hiddenTags.length}`;
-            }
-        } else {
-            toggleBtn.classList.add('hidden');
+// Свёрнутый вид: показываем только первые TAG_ROWS строк
+// чипов. Строка определяется по фактической раскладке, так
+// что число видимых тегов зависит от ширины колонки и длины
+// тегов. Выбранные (активные) теги видны всегда.
+function _applyTagRowLimit() {
+    const container = document.getElementById('filter-tag');
+    const toggleBtn = document.getElementById('toggle-tags-btn');
+    if (!container) return;
+
+    const chips = Array.from(container.querySelectorAll('[data-filter-tag]'));
+    chips.forEach(c => { c.style.display = ''; });
+
+    if (!chips.length) {
+        if (toggleBtn) toggleBtn.classList.add('hidden');
+        return;
+    }
+
+    // Номер строки каждого чипа: новая строка — когда верх
+    // чипа ниже верха предыдущей строки (допуск 2px).
+    const rowOf = new Map();
+    let row = -1;
+    let rowTop = -Infinity;
+    chips.forEach(c => {
+        const top = c.getBoundingClientRect().top;
+        if (top > rowTop + 2) {
+            row++;
+            rowTop = top;
         }
+        rowOf.set(c, row);
+    });
+    const totalRows = row + 1;
+
+    // Колонка скрыта (мобильный вид) — все чипы в «строке 0»,
+    // ограничение ничего не спрячет; это нормально.
+    const limitActive = TAG_ROWS > 0 && totalRows > TAG_ROWS;
+
+    let hidden = 0;
+    if (limitActive && !tagsExpanded) {
+        chips.forEach(c => {
+            if (rowOf.get(c) >= TAG_ROWS && !c.classList.contains('chip-active')) {
+                c.style.display = 'none';
+                hidden++;
+            }
+        });
+    }
+
+    if (!toggleBtn) return;
+    if (hidden > 0) {
+        toggleBtn.classList.remove('hidden');
+        toggleBtn.textContent = `+ ещё ${hidden}`;
+    } else if (tagsExpanded && limitActive) {
+        toggleBtn.classList.remove('hidden');
+        toggleBtn.textContent = 'Свернуть теги';
+    } else {
+        toggleBtn.classList.add('hidden');
     }
 }
 
@@ -1327,22 +1296,21 @@ function _toggleMultiFilter(kind, value) {
 
 function resetFilters() {
     if (!currentFilters) return;
-    currentFilters = { status: null, type: [], tag: [] };
+    currentFilters = { status: null, tag: [] };
     _persistFilters();
     applyAll();
 }
 
 function applyAll() {
     _updateStatusChips();
-    _updateTypeChips();
     _updateTagChips();
+    _applyTagRowLimit();
 
     applyView();
 
     const resetBtn = document.getElementById('reset-filters');
     if (resetBtn) {
         const hasActive = currentFilters.status
-            || currentFilters.type.length
             || currentFilters.tag.length;
         resetBtn.classList.toggle('hidden', !hasActive);
     }
@@ -1355,6 +1323,15 @@ function toggleTagFromCard(tag) {
 
 function initFilters() {
     currentFilters = getActiveFilters();
+
+    // Фильтра по типу больше нет: убираем ?type= из старых
+    // ссылок и закладок сразу, а не при первом изменении.
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('type')) {
+        params.delete('type');
+        const qs = params.toString();
+        history.replaceState(null, '', window.location.pathname + (qs ? '?' + qs : ''));
+    }
 
     document.querySelectorAll('[data-filter-status]').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -1369,7 +1346,6 @@ function initFilters() {
         });
     });
 
-    _buildTypeChips();
     _buildTagChips();
 
     const resetBtn = document.getElementById('reset-filters');
@@ -1382,11 +1358,17 @@ function initFilters() {
             const toggleBtn = e.target.closest('#toggle-tags-btn');
             if (toggleBtn) {
                 tagsExpanded = !tagsExpanded;
-                _buildTagChips();
-                _updateTagChips();
+                _applyTagRowLimit();
             }
         });
     }
+
+    // Ширина колонки поменялась — теги разложились по-другому
+    let tagResizeTimer = null;
+    window.addEventListener('resize', () => {
+        clearTimeout(tagResizeTimer);
+        tagResizeTimer = setTimeout(_applyTagRowLimit, 150);
+    });
 
     applyAll();
 }

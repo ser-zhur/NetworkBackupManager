@@ -1826,6 +1826,18 @@ def execute_all_backups_task():
 # MAIN PAGE
 # =========================================================
 
+def _clamp_tag_rows(raw, default: int = 2) -> int:
+    """
+    Число строк тегов в фильтре главной страницы:
+    0 — показывать все, иначе 1..20. Мусор — default.
+    """
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(0, min(20, value))
+
+
 @app.get("/", response_class=HTMLResponse)
 def read_root(
     request: Request,
@@ -1898,6 +1910,9 @@ def read_root(
         request,
         "index.html",
         {
+            "tag_rows": _clamp_tag_rows(
+                load_json(CONFIG_FILE, {}).get("tag_rows", 2)
+            ),
             "devices": devices,
             "selected": selected,
             "scheduler_status": scheduler.get_status_text(),
@@ -5004,6 +5019,8 @@ async def settings_general_save(
     except (TypeError, ValueError):
         timeout = 300
 
+    tag_rows = _clamp_tag_rows(form.get("tag_rows"))
+
     # Загружаем существующий config, чтобы не потерять retention и пр.
     config = load_json(CONFIG_FILE, {})
     config["host"] = host
@@ -5011,6 +5028,7 @@ async def settings_general_save(
     config["open_browser"] = open_browser
     config["max_parallel_backups"] = max_parallel
     config["backup_timeout_seconds"] = timeout
+    config["tag_rows"] = tag_rows
 
     try:
         save_json(CONFIG_FILE, config)
@@ -5020,8 +5038,8 @@ async def settings_general_save(
 
     logging.info(
         "⚙ Общие настройки обновлены: host=%s, port=%d, "
-        "parallel=%d, timeout=%d (от %s)",
-        host, port, max_parallel, timeout, user,
+        "parallel=%d, timeout=%d, tag_rows=%d (от %s)",
+        host, port, max_parallel, timeout, tag_rows, user,
     )
 
     return RedirectResponse(
