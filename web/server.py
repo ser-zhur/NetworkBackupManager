@@ -1215,13 +1215,15 @@ def _build_device_payload(
         last_attempt_age_days = None
         last_attempt_ok = None
 
-    total_bytes = _get_dir_size_excluding_git(b_path_abs)
-    total_size = format_size(total_bytes)
+    # Общий размер — вся папка устройства вместе с .git:
+    # столько бэкапы реально занимают на диске.
+    # Последняя версия — текущие файлы конфигурации (без .git).
+    # Раньше «общим» показывался размер последней версии,
+    # а «средним» — он же, делённый на число версий.
+    total_size = format_size(get_dir_size(b_path_abs))
 
-    if backup_count > 0 and total_bytes > 0:
-        avg_size = format_size(total_bytes // backup_count)
-    else:
-        avg_size = "—"
+    latest_bytes = _get_dir_size_excluding_git(b_path_abs)
+    latest_size = format_size(latest_bytes) if latest_bytes > 0 else "—"
 
     # ---- Статус ----
     #
@@ -1368,7 +1370,7 @@ def _build_device_payload(
         "backup_count": backup_count,
         "max_backups": router.get("max_backups", 7),
         "total_size": total_size,
-        "avg_size": avg_size,
+        "latest_size": latest_size,
         "backup_path": b_path,
         "ssh_key": (
             router.get("ssh_key")

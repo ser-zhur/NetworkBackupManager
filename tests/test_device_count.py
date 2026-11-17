@@ -37,6 +37,20 @@ def test_card_shows_exact_count_above_200(device_with_history):
     assert d["git_recent"][0]["message"] == "Backup #205"
 
 
+def test_card_sizes(device_with_history):
+    from pathlib import Path
+
+    repo = Path(device_with_history["backup_path"])
+    d = s._build_device_payload("mikrotik", 0, device_with_history)
+
+    # Последняя версия — только текущие файлы (без .git)
+    assert d["latest_size"] == s.format_size((repo / "config.rsc").stat().st_size)
+    # Общий — вместе с историей, т.е. больше последней версии
+    assert d["total_size"] == s.format_size(s.get_dir_size(repo))
+    assert s.get_dir_size(repo) > (repo / "config.rsc").stat().st_size
+    assert "avg_size" not in d
+
+
 def test_card_matches_device_list(device_with_history):
     card = s._build_device_payload("mikrotik", 0, device_with_history)
     row = s._build_device_summary("mikrotik", 0, device_with_history, {})

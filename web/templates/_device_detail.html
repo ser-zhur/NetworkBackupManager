@@ -172,7 +172,8 @@
     <div class="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-4">
         <div class="text-[11px] uppercase tracking-wide font-semibold text-gray-500 dark:text-slate-400">Общий размер</div>
         <div class="mt-1.5 text-lg font-bold font-mono">{{ d.total_size }}</div>
-        <div class="mt-1 text-[11px] text-gray-500 dark:text-slate-400">в среднем {{ d.avg_size }}</div>
+        <div class="mt-1 text-[11px] text-gray-500 dark:text-slate-400"
+             title="Общий размер — вместе с историей версий (.git)">последняя версия {{ d.latest_size }}</div>
     </div>
 </div>
 
