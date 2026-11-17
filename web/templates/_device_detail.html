@@ -28,7 +28,8 @@
                 <div class="mt-2 flex flex-wrap items-center gap-1.5">
                     {% for tag in d.tags %}
                         <a href="#"
-                           onclick="event.preventDefault(); toggleTagFromCard({{ tag | tojson }}); return false;"
+                           data-tag="{{ tag }}"
+                           onclick="event.preventDefault(); toggleTagFromCard(this.dataset.tag); return false;"
                            title="Отфильтровать список по тегу «{{ tag }}»"
                            class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium
                                   bg-gray-100 dark:bg-slate-800

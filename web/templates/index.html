@@ -441,9 +441,10 @@ async function selectDevice(id) {
 
         console.error('[selectDevice] ошибка загрузки устройства:', e);
 
-        panel.innerHTML = `<div class="bg-white dark:bg-slate-900 rounded-2xl border border-rose-300 dark:border-rose-800 p-6 text-rose-700 dark:text-rose-300">
-            Не удалось загрузить устройство: ${e.message || e}
-        </div>`;
+        const errBox = document.createElement('div');
+        errBox.className = 'bg-white dark:bg-slate-900 rounded-2xl border border-rose-300 dark:border-rose-800 p-6 text-rose-700 dark:text-rose-300';
+        errBox.textContent = `Не удалось загрузить устройство: ${e.message || e}`;
+        panel.replaceChildren(errBox);
     } finally {
         panel.style.opacity = '1';
         bindRunBackup();
@@ -1190,6 +1191,18 @@ function _updateTagChips() {
     });
 }
 
+// Содержимое чипа фильтра: подпись + счётчик.
+// Только textContent — подпись (тег, тип) вводит пользователь,
+// и через innerHTML она исполнялась бы как HTML.
+function _fillChip(btn, label) {
+    const text = document.createElement('span');
+    text.textContent = label;
+    const count = document.createElement('span');
+    count.className = 'chip-count';
+    count.textContent = '(0)';
+    btn.append(text, ' ', count);
+}
+
 function _buildTypeChips() {
     const types = new Set();
     document.querySelectorAll('.device-item').forEach(it => {
@@ -1208,7 +1221,7 @@ function _buildTypeChips() {
         btn.dataset.filterType = type;
         btn.setAttribute('aria-pressed', 'false');
         btn.setAttribute('aria-label', `Тип ${type}`);
-        btn.innerHTML = `<span>${type}</span> <span class="chip-count">(0)</span>`;
+        _fillChip(btn, type);
         btn.addEventListener('click', () => _toggleMultiFilter('type', type));
         container.appendChild(btn);
     });
@@ -1265,7 +1278,7 @@ function _buildTagChips() {
         btn.dataset.filterTag = key;
         btn.setAttribute('aria-pressed', 'false');
         btn.setAttribute('aria-label', `Тег ${orig}`);
-        btn.innerHTML = `<span>${orig}</span> <span class="chip-count">(0)</span>`;
+        _fillChip(btn, orig);
         btn.addEventListener('click', () => _toggleMultiFilter('tag', key));
         container.appendChild(btn);
     });
