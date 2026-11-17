@@ -69,7 +69,7 @@
         <div class="flex flex-wrap items-center gap-2">
 
             {% if header_show_run_all %}
-            <form action="/run-now" method="POST" class="inline" onsubmit="disableAllBackups()">
+            <form action="/run-now" method="POST" class="inline" onsubmit="if (window.disableAllBackups) disableAllBackups()">
                 <button type="submit"
                         id="run-all-btn"
                         {% if is_backup_running %}disabled{% endif %}

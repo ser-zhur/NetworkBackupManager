@@ -4648,9 +4648,16 @@ def settings_page(
     if tab not in ("general", "scheduler", "retention", "storage", "service"):
         tab = "general"
 
+    # Шапка (_header.html с header_show_status=True) требует
+    # service, scheduler_config, logs_size, is_backup_running —
+    # без них Jinja падает с UndefinedError → 500 на всех вкладках.
     context: dict = {
         "active_tab": tab,
         "message": message,
+        "service": get_status(),
+        "scheduler_config": scheduler.config,
+        "logs_size": format_size(get_dir_size(LOGS_DIR)),
+        "is_backup_running": is_backup_running(),
     }
 
     if tab == "general":
@@ -4674,9 +4681,6 @@ def settings_page(
         context["rclone_path"] = rclone_mod.get_rclone_path()
         context["rclone_available"] = rclone_mod.is_available()
         context["rclone_version"] = rclone_mod.get_version()
-
-    elif tab == "service":
-        context["service"] = get_status()
 
     return templates.TemplateResponse(
         request,
