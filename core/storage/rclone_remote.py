@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import re
 import shutil
 import tempfile
@@ -388,30 +389,46 @@ class RcloneRemote(StorageBackend):
 
         return self._push_result(uploaded, errors, len(ctx.files))
 
-    @staticmethod
+    @classmethod
     def _copy_batch(
-        parent: Path, names: list[str], dest: str,
+        cls, parent: Path, names: list[str], dest: str,
         type_name: str, options: dict, env: dict,
     ) -> tuple[int, list[str]]:
+        """Несколько файлов одной папки. → (загружено, ошибки)."""
+        failed, general = cls._copy_files(parent, names, dest, type_name, options, env)
+        if general is not None:
+            return 0, [f"{len(names)} файлов: {general}"]
+        return len(names) - len(failed), [f"{n}: {msg}" for n, msg in failed.items()]
+
+    @staticmethod
+    def _copy_files(
+        src_root: Path, rel_paths: list[str], dest: str,
+        type_name: str, options: dict, env: dict,
+    ) -> tuple[dict[str, str], str | None]:
         """
-        `rclone copy --files-from-raw`: несколько файлов одной
-        папки за один запуск. → (загружено, ошибки).
-        Какие файлы не загрузились — по строкам «ERROR : <имя>:»
-        журнала rclone; общая ошибка (нет связи, вход) — все.
+        `rclone copy --files-from-raw`: файлы (пути относительно
+        src_root, через '/') за один запуск в dest с той же
+        структурой.
+
+        → (ошибки по файлам {путь: текст}, общая ошибка или None).
+        Какие файлы не загрузились — по строкам «ERROR : <путь>:»
+        журнала rclone; если таких нет, а rclone завершился с
+        ошибкой (нет связи, вход) — общая ошибка, не загружено
+        ничего.
         """
         fd, list_path = tempfile.mkstemp(prefix="nbm_files_", suffix=".txt")
         try:
             with open(fd, "w", encoding="utf-8", newline="\n") as fh:
-                fh.write("\n".join(names) + "\n")
+                fh.write("\n".join(rel_paths) + "\n")
             try:
                 r = rclone_mod.run(
                     ["copy", *_flags(_PUSH_FLAGS, type_name),
                      "-v", "--stats-log-level", "DEBUG",
-                     "--files-from-raw", list_path, str(parent), dest],
-                    env=env, timeout=300 + 20 * len(names),
+                     "--files-from-raw", list_path, str(src_root), dest],
+                    env=env, timeout=300 + 20 * len(rel_paths),
                 )
             except Exception as exc:
-                return 0, [f"{len(names)} файлов: {exc}"]
+                return {}, str(exc)
         finally:
             try:
                 Path(list_path).unlink()
@@ -419,24 +436,129 @@ class RcloneRemote(StorageBackend):
                 pass
 
         if r.returncode == 0:
-            return len(names), []
+            return {}, None
 
         err = r.stderr or r.stdout or ""
-        wanted = set(names)
+        wanted = set(rel_paths)
         failed: dict[str, str] = {}
         for line in err.splitlines():
             m = _FILE_ERROR_RE.match(line.strip())
             if not m:
                 continue
             # «b.rsc.27514f6a.partial» — временное имя при загрузке
-            name = _PARTIAL_RE.sub("", m.group(1))
-            if name in wanted and name not in failed:
-                failed[name] = m.group(2).strip()
+            path = _PARTIAL_RE.sub("", m.group(1).replace("\\", "/"))
+            if path in wanted and path not in failed:
+                failed[path] = m.group(2).strip()
         hint = _hint(err, type_name, options)
         if not failed:
-            return 0, [f"{len(names)} файлов: {_last_lines(err) or 'ошибка rclone'}{hint}"]
-        errors = [f"{n}: {msg[:_MAX_ERROR_LEN]}{hint}" for n, msg in failed.items()]
-        return len(names) - len(failed), errors
+            return {}, (_last_lines(err) or "ошибка rclone") + hint
+        return {p: f"{msg[:_MAX_ERROR_LEN]}{hint}" for p, msg in failed.items()}, None
+
+    # -----------------------------------------------------
+    # PUSH MANY — несколько устройств за один запуск
+    # -----------------------------------------------------
+
+    def push_many(self, config: dict, contexts: list[PushContext]) -> list[PushResult]:
+        """
+        Выгрузка нескольких устройств за одно подключение:
+        файлы раскладываются во временное дерево
+        <папка устройства>/<файл> (жёсткие ссылки, без
+        копирования, где можно) и уходят одним `rclone copy`
+        в общую родительскую папку. Если из-за подстановок в
+        базовой папке ({host}, {type}) родители разные — один
+        запуск на каждого родителя.
+
+        → результаты в порядке contexts.
+        """
+        results: list[PushResult | None] = [None] * len(contexts)
+        if not contexts:
+            return []
+        if not rclone_mod.is_available():
+            fail = PushResult.failure(
+                "rclone не найден (Настройки → Хранилища → путь к rclone)"
+            )
+            return [fail] * len(contexts)
+
+        type_name = config.get("type") or self.type
+        base_dir = config.get("base_dir") or ""
+
+        # Группы по родительской папке на хранилище
+        groups: dict[str, dict[str, int]] = {}
+        alone: list[int] = []
+        for i, ctx in enumerate(contexts):
+            if self._should_skip_for_changes(config, ctx):
+                results[i] = PushResult.skipped("Изменений нет — выгрузка пропущена")
+                continue
+            remote_dir = rclone_path(type_name, base_dir, ctx.remote_dir(base_dir))
+            parent, _, folder = remote_dir.rpartition("/")
+            if not folder:
+                alone.append(i)
+                continue
+            if not parent and remote_dir.startswith("/"):
+                parent = "/"
+            group = groups.setdefault(parent, {})
+            if folder.lower() in {f.lower() for f in group}:
+                alone.append(i)            # та же папка — отдельно, не смешивая
+            else:
+                group[folder] = i
+
+        try:
+            with self._rclone_env(config) as env:
+                for parent, folders in groups.items():
+                    self._push_group(config, contexts, parent, folders, env, results)
+                for i in alone:
+                    results[i] = self._push_with_env(config, contexts[i], env)
+        except Exception as exc:
+            fail = PushResult.failure(f"Ошибка: {exc}")
+            results = [r if r is not None else fail for r in results]
+
+        return [r if r is not None else PushResult.failure("Не выполнено") for r in results]
+
+    def _push_group(
+        self, config: dict, contexts: list[PushContext],
+        parent: str, folders: dict[str, int], env: dict,
+        results: list,
+    ) -> None:
+        type_name = config.get("type") or self.type
+        options = config.get("options") or {}
+        dest = f"{rclone_mod.REMOTE_NAME}:{parent}"
+
+        stage = Path(tempfile.mkdtemp(prefix="nbm_stage_"))
+        try:
+            rels: dict[int, list[str]] = {}
+            for folder, i in folders.items():
+                (stage / folder).mkdir()
+                rels[i] = []
+                for name, local_path in contexts[i].files.items():
+                    if not local_path.is_file():
+                        continue
+                    target = stage / folder / name
+                    try:
+                        os.link(local_path, target)
+                    except OSError:
+                        shutil.copy2(local_path, target)
+                    rels[i].append(f"{folder}/{name}")
+
+            all_rels = [p for paths in rels.values() for p in paths]
+            if not all_rels:
+                for i in folders.values():
+                    results[i] = self._push_result(0, [], 0)
+                return
+
+            failed, general = self._copy_files(stage, all_rels, dest, type_name, options, env)
+        finally:
+            shutil.rmtree(stage, ignore_errors=True)
+
+        for i, paths in rels.items():
+            total = len(contexts[i].files)
+            if general is not None:
+                errors = [f"{len(paths)} файлов: {general}"] if paths else []
+                results[i] = self._push_result(0, errors, total)
+                continue
+            errors = [
+                f"{p.split('/', 1)[1]}: {failed[p]}" for p in paths if p in failed
+            ]
+            results[i] = self._push_result(len(paths) - len(errors), errors, total)
 
     @staticmethod
     def _push_result(uploaded: int, errors: list[str], total: int) -> PushResult:

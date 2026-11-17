@@ -443,61 +443,182 @@ class PluginManager:
                 "errors": [str, ...],  # первые ошибки (для лога)
             }
         """
-        from datetime import datetime as _dt
-        from pathlib import Path as _Path
+        return self.sync_many_to_storages(
+            [(device_type, index)],
+        )[f"{device_type}/{index}"]
+
+    def sync_many_to_storages(
+        self,
+        targets: list[tuple[str, int]],
+        can_start=None,
+        on_prepared=None,
+    ) -> dict[str, dict]:
+        """
+        Синхронизация нескольких устройств: сначала файлы ВСЕХ
+        устройств готовятся во временной папке, затем каждое
+        хранилище получает их за одно подключение
+        (backend.push_many), а не по запуску на устройство.
+
+        can_start(device_type, index) -> bool — перед подготовкой
+        устройства (False — устройство занято, пропускаем; в
+        результатах его нет).
+        on_prepared(device_type, index) — файлы устройства
+        подготовлены (дальше git устройства не нужен —
+        вызывающий может освободить его слот).
+
+        → {device_id: результат как у sync_git_to_storages}.
+        """
         import tempfile as _tmp
+        import time as _time
+
+        from core.storage.base import PushResult
+
+        results: dict[str, dict] = {}
+        jobs: list[dict] = []
+        storages = global_config.load_global()
+
+        with _tmp.TemporaryDirectory(prefix="nbm_sync_") as tmpdir:
+            # ---- 1) подготовка ----
+            for k, (device_type, index) in enumerate(targets):
+                device_id = f"{device_type}/{index}"
+                if can_start is not None and not can_start(device_type, index):
+                    continue
+                try:
+                    job = self._prepare_sync(
+                        device_type, index,
+                        Path(tmpdir) / str(k), storages,
+                    )
+                except Exception as exc:
+                    logging.error(
+                        "☁ sync %s: подготовка: %s", device_id, exc,
+                        exc_info=True,
+                    )
+                    job = {"result": _sync_result(f"Ошибка подготовки: {exc}")}
+                finally:
+                    if on_prepared is not None:
+                        on_prepared(device_type, index)
+                results[device_id] = job["result"]
+                if job.get("ctx") is not None:
+                    jobs.append(job)
+
+            # ---- 2) выгрузка: каждое хранилище — одним заходом ----
+            by_backend: dict[str, tuple] = {}
+            for job in jobs:
+                for b in job["backends"]:
+                    by_backend.setdefault(b.id, (b, []))[1].append(job)
+
+            for backend_id, (backend, bjobs) in by_backend.items():
+                files = sum(len(j["ctx"].files) for j in bjobs)
+                if len(targets) > 1:
+                    logging.info(
+                        "☁ Выгрузка в «%s»: устройств %d, файлов %d",
+                        getattr(backend, "name", backend_id), len(bjobs), files,
+                    )
+                started = _time.monotonic()
+                try:
+                    cfg = self._decrypt_backend_config(
+                        backend,
+                        global_config.effective_config(
+                            bjobs[0]["router"], backend, storages,
+                        ),
+                    )
+                    # Форсируем push — не даём _should_skip_for_changes
+                    # отбросить выгрузку из-за mode=changes_only.
+                    cfg["mode"] = "all"
+                    pushed = backend.push_many(cfg, [j["ctx"] for j in bjobs])
+                except Exception as exc:
+                    logging.error(
+                        "☁ Выгрузка в «%s»: %s",
+                        getattr(backend, "name", backend_id), exc, exc_info=True,
+                    )
+                    pushed = [PushResult.failure(f"Ошибка: {exc}")] * len(bjobs)
+                if len(targets) > 1:
+                    logging.info(
+                        "☁ Выгрузка в «%s» завершена за %.0f с",
+                        getattr(backend, "name", backend_id),
+                        _time.monotonic() - started,
+                    )
+
+                for job, r in zip(bjobs, pushed):
+                    _account_push(job["result"], backend_id, r, len(job["ctx"].files))
+
+        # ---- 3) итоги ----
+        for job in jobs:
+            result = job["result"]
+            total_ok = sum(b["ok"] for b in result["backends"].values())
+            total_err = sum(b["err"] for b in result["backends"].values())
+            result["ok"] = True
+            result["message"] = (
+                f"Версий: {result['commits']}, "
+                f"файлов: {len(job['ctx'].files)}, "
+                f"хранилищ без ошибок: {total_ok} из {len(job['backends'])}"
+                + (f", с ошибками: {total_err}" if total_err else "")
+                + f", файлов загружено: {result['files']}"
+            )
+
+        return results
+
+    def _prepare_sync(
+        self,
+        device_type: str,
+        index: int,
+        folder: Path,
+        storages: dict,
+    ) -> dict:
+        """
+        Файлы всех версий устройства — в folder.
+
+        → {"result": ..., "ctx": PushContext | None,
+           "backends": [...], "router": {...}}
+        ctx=None — выгружать нечего (причина в result).
+        """
+        from datetime import datetime as _dt
 
         from core.git_storage import (
             GitStorage,
             is_available as git_available,
         )
 
-        result = {
-            "ok": False,
-            "message": "",
-            "commits": 0,
-            "files": 0,
-            "backends": {},
-            "errors": [],
-        }
+        result = _sync_result()
+        job = {"result": result, "ctx": None, "backends": [], "router": None}
 
         if self.storage_manager is None:
             result["message"] = "StorageManager не загружен"
-            return result
+            return job
 
         if not git_available():
             result["message"] = "dulwich не установлен"
-            return result
+            return job
 
         routers = self._plugins.get(device_type, {}).get("routers", [])
         if not (0 <= index < len(routers)):
             result["message"] = "Устройство не найдено"
-            return result
+            return job
 
         router = routers[index]
+        job["router"] = router
 
         raw_path = router.get("backup_path", "")
         if not raw_path:
             result["message"] = "У устройства нет backup_path"
-            return result
+            return job
 
         backup_path = resolve_backup_path(raw_path)
 
         if not backup_path.exists():
             result["message"] = f"Каталог не найден: {backup_path}"
-            return result
+            return job
 
         gs = GitStorage(backup_path)
         if not gs.is_initialized():
             result["message"] = "git-репозиторий не инициализирован"
-            return result
+            return job
 
         commits = gs.get_history(limit=100000)
         if not commits:
             result["message"] = "История git пуста"
-            return result
+            return job
 
-        storages = global_config.load_global()
         backends = [
             b for b in self.storage_manager.enabled_for(router)
             if not b.is_authority
@@ -507,7 +628,61 @@ class PluginManager:
             result["message"] = (
                 "Нет включённых и настроенных хранилищ (кроме git)"
             )
-            return result
+            return job
+
+        for b in backends:
+            result["backends"][b.id] = {"ok": 0, "err": 0, "skip": 0}
+
+        folder.mkdir(parents=True, exist_ok=True)
+        versioned: dict = {}
+
+        for commit in commits:
+            sha = commit["sha"]
+            short = commit["short"]
+            filenames = commit.get("files") or []
+            if not filenames:
+                continue
+
+            try:
+                ts = commit.get("ts") or 0
+                time_part = _dt.fromtimestamp(ts).strftime(
+                    "%Y-%m-%d_%H%M%S"
+                )
+            except Exception:
+                time_part = short
+
+            prefix = f"{time_part}_{short}"
+            added = 0
+
+            for fname in filenames:
+                data = gs.get_file_at(sha, fname)
+                if data is None:
+                    continue
+
+                safe_name = Path(fname).name
+                if not safe_name or safe_name in (".", ".."):
+                    continue
+
+                new_name = f"{prefix}_{safe_name}"
+                p = folder / new_name
+                try:
+                    p.write_bytes(data)
+                except OSError as exc:
+                    result["errors"].append(
+                        f"{sha[:7]}/{safe_name}: запись: {exc}"
+                    )
+                    continue
+
+                versioned[new_name] = p
+                added += 1
+
+            if added:
+                result["commits"] += 1
+
+        if not versioned:
+            result["ok"] = True
+            result["message"] = "Нет файлов для выгрузки"
+            return job
 
         device_host = (
             router.get("host")
@@ -515,127 +690,19 @@ class PluginManager:
             or router.get("address")
             or f"#{index}"
         )
-        device_id = f"{device_type}/{index}"
-
-        for b in backends:
-            result["backends"][b.id] = {"ok": 0, "err": 0, "skip": 0}
-
-        # Все версии — в одну временную папку и одной выгрузкой
-        # на хранилище (а не запуском rclone на каждую версию:
-        # на облаках это в разы меньше запросов).
-        with _tmp.TemporaryDirectory(prefix="nbm_sync_") as tmpdir:
-            versioned: dict = {}
-
-            for commit in commits:
-                sha = commit["sha"]
-                short = commit["short"]
-                filenames = commit.get("files") or []
-                if not filenames:
-                    continue
-
-                try:
-                    ts = commit.get("ts") or 0
-                    time_part = _dt.fromtimestamp(ts).strftime(
-                        "%Y-%m-%d_%H%M%S"
-                    )
-                except Exception:
-                    time_part = short
-
-                prefix = f"{time_part}_{short}"
-                added = 0
-
-                for fname in filenames:
-                    data = gs.get_file_at(sha, fname)
-                    if data is None:
-                        continue
-
-                    safe_name = _Path(fname).name
-                    if not safe_name or safe_name in (".", ".."):
-                        continue
-
-                    new_name = f"{prefix}_{safe_name}"
-                    p = _Path(tmpdir) / new_name
-                    try:
-                        p.write_bytes(data)
-                    except OSError as exc:
-                        result["errors"].append(
-                            f"{sha[:7]}/{safe_name}: запись: {exc}"
-                        )
-                        continue
-
-                    versioned[new_name] = p
-                    added += 1
-
-                if added:
-                    result["commits"] += 1
-
-            if not versioned:
-                result["ok"] = True
-                result["message"] = "Нет файлов для выгрузки"
-                return result
-
-            ctx = PushContext(
-                device_id=device_id,
-                device_host=device_host,
-                device_type=device_type,
-                backup_path=backup_path,
-                files=versioned,
-                changed=True,
-                run_time=_dt.now(),
-                normalize=identity_normalize,
-                device_name=router.get("name") or "",
-            )
-
-            for backend in backends:
-                cfg = self._decrypt_backend_config(
-                    backend,
-                    global_config.effective_config(
-                        router, backend, storages,
-                    ),
-                )
-                # Форсируем push — не даём _should_skip_for_changes
-                # отбросить выгрузку из-за mode=changes_only.
-                cfg["mode"] = "all"
-
-                stats = result["backends"][backend.id]
-                try:
-                    r = backend.push(cfg, ctx)
-                except Exception as exc:
-                    stats["err"] += 1
-                    result["errors"].append(f"{backend.id}: {exc}")
-                    continue
-
-                details = r.details or {}
-                if details.get("skipped"):
-                    stats["skip"] += 1
-                    continue
-                uploaded = details.get(
-                    "uploaded", len(versioned) if r.ok else 0,
-                )
-                result["files"] += uploaded
-                if r.ok and not details.get("failed"):
-                    stats["ok"] += 1
-                else:
-                    stats["err"] += 1
-                    result["errors"].append(f"{backend.id}: {r.message}")
-
-        total_ok = sum(
-            b["ok"] for b in result["backends"].values()
+        job["ctx"] = PushContext(
+            device_id=f"{device_type}/{index}",
+            device_host=device_host,
+            device_type=device_type,
+            backup_path=backup_path,
+            files=versioned,
+            changed=True,
+            run_time=_dt.now(),
+            normalize=identity_normalize,
+            device_name=router.get("name") or "",
         )
-        total_err = sum(
-            b["err"] for b in result["backends"].values()
-        )
-
-        result["ok"] = True
-        result["message"] = (
-            f"Версий: {result['commits']}, "
-            f"файлов: {len(versioned)}, "
-            f"хранилищ без ошибок: {total_ok} из {len(backends)}"
-            + (f", с ошибками: {total_err}" if total_err else "")
-            + f", файлов загружено: {result['files']}"
-        )
-
-        return result
+        job["backends"] = backends
+        return job
 
     @staticmethod
     def _log_storage_result(backend_id: str, result) -> None:
@@ -1061,3 +1128,33 @@ class PluginManager:
             failed,
             total,
         )
+
+
+# =========================================================
+# Синхронизация: служебное
+# =========================================================
+
+def _sync_result(message: str = "") -> dict:
+    return {
+        "ok": False,
+        "message": message,
+        "commits": 0,
+        "files": 0,
+        "backends": {},
+        "errors": [],
+    }
+
+
+def _account_push(result: dict, backend_id: str, r, total_files: int) -> None:
+    """Учесть результат выгрузки одного хранилища в итоге устройства."""
+    stats = result["backends"][backend_id]
+    details = r.details or {}
+    if details.get("skipped"):
+        stats["skip"] += 1
+        return
+    result["files"] += details.get("uploaded", total_files if r.ok else 0)
+    if r.ok and not details.get("failed"):
+        stats["ok"] += 1
+    else:
+        stats["err"] += 1
+        result["errors"].append(f"{backend_id}: {r.message}")

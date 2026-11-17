@@ -328,6 +328,20 @@ class StorageBackend:
             f"{self.__class__.__name__}.push() не реализован"
         )
 
+    def push_many(self, config: dict, contexts: list[PushContext]) -> list[PushResult]:
+        """
+        Выгрузка нескольких устройств (синхронизация всех).
+        По умолчанию — push() по очереди; backend может
+        сделать это за одно подключение (см. RcloneRemote).
+        """
+        results = []
+        for ctx in contexts:
+            try:
+                results.append(self.push(config, ctx))
+            except Exception as exc:
+                results.append(PushResult.failure(f"Ошибка: {exc}"))
+        return results
+
     # =====================================================
     # Опциональные методы — по умолчанию заглушки
     # =====================================================

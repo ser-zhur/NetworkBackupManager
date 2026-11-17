@@ -151,3 +151,86 @@ def test_sync_uploads_whole_history_in_one_run(make_repo, tmp_path, monkeypatch,
     uploaded = list((tmp_path / "remote" / repo_path.name).iterdir())
     assert len(uploaded) == 4 and all(p.name.endswith("_config.rsc") for p in uploaded)
     assert "хранилищ без ошибок: 1 из 1" in result["message"]
+
+
+def _many_devices(make_repo, tmp_path, monkeypatch, base_dir, types=("mikrotik",) * 3):
+    from core.plugin_manager import PluginManager
+
+    cfg = tmp_path / "config.json"
+    cfg.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(global_config, "CONFIG_FILE", cfg)
+    remote = _local_remote("r", tmp_path / "remote")
+    remote["base_dir"] = remote["base_dir"] + base_dir
+    global_config.save_remotes([remote])
+
+    sm = StorageManager()
+    sm.discover()
+    pm = PluginManager(storage_manager=sm)
+    pm._plugins = {}
+    targets, repos = [], []
+    for k, device_type in enumerate(types):
+        repo_path, _ = make_repo(n=k + 2)                    # 2, 3, 4 версии
+        repos.append(repo_path)
+        routers = pm._plugins.setdefault(
+            device_type, {"func": None, "dir": str(tmp_path), "routers": []},
+        )["routers"]
+        routers.append({"host": f"10.0.0.{k}", "backup_path": str(repo_path),
+                        "storage": {"r": {"enabled": True}}})
+        targets.append((device_type, len(routers) - 1))
+    return pm, targets, repos
+
+
+def test_sync_many_devices_in_one_rclone_run(make_repo, tmp_path, monkeypatch, rclone_calls):
+    pm, targets, repos = _many_devices(make_repo, tmp_path, monkeypatch, "")
+    prepared = []
+
+    results = pm.sync_many_to_storages(targets, on_prepared=lambda t, i: prepared.append(i))
+
+    assert rclone_calls == ["copy"]                          # все устройства — один запуск
+    assert prepared == [0, 1, 2]
+    for (t, i), repo, n in zip(targets, repos, (2, 3, 4)):
+        r = results[f"{t}/{i}"]
+        assert r["ok"] and r["files"] == n and r["backends"]["r"]["ok"] == 1, r
+        assert len(list((tmp_path / "remote" / repo.name).iterdir())) == n
+
+
+def test_sync_many_groups_by_substituted_base_dir(make_repo, tmp_path, monkeypatch, rclone_calls):
+    pm, targets, repos = _many_devices(
+        make_repo, tmp_path, monkeypatch, "/{type}", types=("mikrotik", "cisco", "mikrotik"),
+    )
+    results = pm.sync_many_to_storages(targets)
+
+    assert rclone_calls == ["copy", "copy"]                  # две родительские папки
+    assert all(r["ok"] and r["backends"]["r"]["ok"] == 1 for r in results.values())
+    assert (tmp_path / "remote" / "cisco" / repos[1].name).is_dir()
+    assert len(list((tmp_path / "remote" / "mikrotik").iterdir())) == 2
+
+
+def test_sync_many_skips_busy_device(make_repo, tmp_path, monkeypatch, rclone_calls):
+    pm, targets, repos = _many_devices(make_repo, tmp_path, monkeypatch, "")
+    results = pm.sync_many_to_storages(targets, can_start=lambda t, i: i != 1)
+
+    assert sorted(results) == ["mikrotik/0", "mikrotik/2"]
+    assert not (tmp_path / "remote" / repos[1].name).exists()
+
+
+def test_push_many_reports_failure_per_device(tmp_path, monkeypatch):
+    devs = []
+    for name in ("A", "B"):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "x.rsc").write_bytes(b"x")
+        devs.append(_ctx(d, {"x.rsc": d / "x.rsc"}))
+
+    def fake_run(args, *a, **kw):
+        return subprocess.CompletedProcess(args, 1, "", (
+            "2026/11/17 20:00:00 INFO  : A/x.rsc: Copied (new)\n"
+            "2026/11/17 20:00:01 ERROR : B/x.rsc.0a1b2c3d.partial: Failed to copy: quota\n"
+        ))
+
+    monkeypatch.setattr(rclone_mod, "run", fake_run)
+    remote = _local_remote("r", tmp_path / "remote")
+    a, b = RcloneRemote(remote).push_many(remote, devs)
+
+    assert a.ok and a.details == {"uploaded": 1}
+    assert not b.ok and "x.rsc: Failed to copy: quota" in b.message

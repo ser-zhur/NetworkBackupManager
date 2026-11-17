@@ -1765,10 +1765,11 @@ def execute_storage_sync_task(
 # SYNC ALL (все устройства)
 # =========================================================
 #
-# Синхронизация хранилищ на всех устройствах — по очереди,
-# по одному устройству за раз (каждое выгружает всю свою
-# git-историю; параллельно это лишь перегрузило бы сервер
-# хранилища).
+# Синхронизация хранилищ на всех устройствах: сначала файлы
+# всех устройств (вся git-история) готовятся во временной
+# папке, затем каждое хранилище получает их за одно
+# подключение (rclone copy) — а не по подключению на
+# устройство.
 #
 # Занятые устройства (идёт бэкап или их синхронизация)
 # пропускаются — это видно в итоговой строке лога.
@@ -1816,22 +1817,64 @@ def execute_sync_all_task(user: str) -> dict:
             "(от %s)", len(targets), user,
         )
 
-        for device_type, idx, router in targets:
-            device_id = f"{device_type}/{idx}"
-            stats["devices"] += 1
+        stats["devices"] = len(targets)
+        routers_by_id = {f"{t}/{i}": r for t, i, r in targets}
 
+        # Слот устройства занят только на время подготовки его
+        # файлов (чтение git); выгрузка идёт уже без него, и
+        # бэкапы в это время не блокируются.
+        held: set[str] = set()
+
+        def can_start(device_type: str, idx: int) -> bool:
+            device_id = f"{device_type}/{idx}"
             if not try_start_sync(device_id):
                 stats["skipped"] += 1
                 logging.info(
                     "☁ sync-all: %s пропущено — идёт бэкап "
                     "или синхронизация", device_id,
                 )
-                continue
+                return False
+            held.add(device_id)
+            return True
 
-            result = execute_storage_sync_task(device_type, idx, user)
+        def on_prepared(device_type: str, idx: int) -> None:
+            device_id = f"{device_type}/{idx}"
+            if device_id in held:
+                held.discard(device_id)
+                finish_sync(device_id)
+
+        try:
+            results = plugin_manager.sync_many_to_storages(
+                [(t, i) for t, i, _ in targets],
+                can_start=can_start,
+                on_prepared=on_prepared,
+            )
+        finally:
+            for device_id in list(held):
+                finish_sync(device_id)
+
+        # Итог — в лог каждого устройства, как при одиночной
+        for device_id, result in results.items():
+            router = routers_by_id.get(device_id) or {}
+            device_type = device_id.rsplit("/", 1)[0]
+            set_device_context(device_log_tag(device_type, router) if router else device_id)
+            try:
+                if result.get("ok"):
+                    logging.info(
+                        "☁ Синхронизация завершена (все устройства, от %s): %s",
+                        user, result["message"],
+                    )
+                else:
+                    logging.error(
+                        "☁ Синхронизация прервана: %s", result["message"],
+                    )
+                for err in result.get("errors", [])[:10]:
+                    logging.error("☁ sync: %s", err)
+            finally:
+                clear_device_context()
+
             failed = (
-                result is None
-                or not result.get("ok")
+                not result.get("ok")
                 or any(
                     b.get("err") for b in result.get("backends", {}).values()
                 )

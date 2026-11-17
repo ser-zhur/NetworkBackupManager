@@ -5,8 +5,8 @@
 # «Синхронизировать хранилища» на всех устройствах
 # (Настройки → Хранилища).
 #
-# Устройства фиктивные, config.json временный; сама
-# синхронизация одного устройства подменена — сеть и git
+# Устройства фиктивные, config.json временный; подготовка
+# файлов устройства и само хранилище подменены — сеть и git
 # не используются.
 #
 # =========================================================
@@ -45,17 +45,44 @@ def env(tmp_path, monkeypatch):
     })
 
     synced = []
+    pushes = []
 
-    def fake_sync(device_type, index):
+    from datetime import datetime
+
+    from core.plugin_manager import _sync_result
+    from core.storage.base import PushContext, PushResult
+
+    class FakeBackend:
+        id = "webdav"
+        name = "Т"
+        always_enabled = False
+
+        def push_many(self, cfg, contexts):
+            pushes.append([c.device_id for c in contexts])
+            # Во время выгрузки слоты устройств уже свободны
+            assert backup_state.get_sync_status()["devices"] == []
+            return [PushResult.failure("нет места") if c.device_id == "fake/3"
+                    else PushResult.success("ok", uploaded=1) for c in contexts]
+
+    backend = FakeBackend()
+
+    def fake_prepare(device_type, index, folder, storages):
         synced.append(index)
-        # Во время синхронизации устройство занято
+        # Во время подготовки устройство занято
         assert backup_state.is_sync_running_for(f"{device_type}/{index}")
-        ok = index != 3
-        return {"ok": ok, "message": "", "errors": [],
-                "backends": {"webdav": {"ok": 1, "err": 0 if ok else 1, "skip": 0}}}
+        result = _sync_result()
+        result["backends"]["webdav"] = {"ok": 0, "err": 0, "skip": 0}
+        result["commits"] = 1
+        ctx = PushContext(
+            device_id=f"{device_type}/{index}", device_host="h", device_type=device_type,
+            backup_path=tmp_path / str(index), files={"f": tmp_path / "f"},
+            changed=True, run_time=datetime.now(),
+        )
+        return {"result": result, "ctx": ctx, "backends": [backend], "router": routers[index]}
 
-    monkeypatch.setattr(s.plugin_manager, "sync_git_to_storages", fake_sync)
-    yield synced
+    monkeypatch.setattr(s.plugin_manager, "_prepare_sync", fake_prepare)
+    monkeypatch.setattr(s.plugin_manager, "_decrypt_backend_config", lambda b, cfg: dict(cfg))
+    yield synced, pushes
 
     for d in backup_state.get_sync_status()["devices"]:
         backup_state.finish_sync(d)
@@ -71,8 +98,8 @@ def test_targets_only_devices_with_enabled_storage(env):
     assert [i for _, i, _ in s._sync_all_targets()] == [0, 2, 3]
 
 
-def test_syncs_sequentially_skips_busy_and_counts(env):
-    synced = env
+def test_prepares_all_then_pushes_once_skips_busy_and_counts(env):
+    synced, pushes = env
     backup_state.try_start_device("fake/2")            # идёт бэкап устройства 2
 
     with s._sync_all_lock:
@@ -80,6 +107,7 @@ def test_syncs_sequentially_skips_busy_and_counts(env):
     stats = s.execute_sync_all_task("test")
 
     assert synced == [0, 3]
+    assert pushes == [["fake/0", "fake/3"]]                 # одна выгрузка на хранилище
     assert stats == {"devices": 3, "ok": 1, "errors": 1, "skipped": 1}
     assert s.is_sync_all_running() is False                 # флаг сброшен
     assert backup_state.get_sync_status()["devices"] == []  # слоты освобождены
