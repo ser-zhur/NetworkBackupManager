@@ -469,7 +469,17 @@ def _age_class(days) -> str:
     return "text-rose-600 dark:text-rose-400"
 
 
+def _static_version() -> str:
+    """Версия CSS для ?v= в ссылке (время изменения файла):
+    после пересборки браузер не возьмёт старый из кэша."""
+    try:
+        return str(int((WEB_DIR / "static" / "css" / "tailwind.css").stat().st_mtime))
+    except OSError:
+        return "0"
+
+
 if templates is not None:
+    templates.env.globals["static_version"] = _static_version()
     templates.env.globals["status_meta"] = _status_meta
     templates.env.globals["age_label"] = _age_label
     templates.env.globals["age_class"] = _age_class
