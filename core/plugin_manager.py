@@ -41,7 +41,8 @@ class PluginManager:
     def __init__(self, storage_manager=None):
         self.plugins_dir = PLUGINS_DIR
         self._plugins = {}
-        self.storage = SecureStorage()
+        # Явно тот же ключ, что и у web/server.py.
+        self.storage = SecureStorage(BASE_DIR)
         self.storage_manager = storage_manager
 
     # =====================================================

@@ -10,8 +10,13 @@ logger = logging.getLogger(__name__)
 class SecureStorage:
     def __init__(self, storage_dir=None):
         if storage_dir is None:
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-            self.storage_dir = os.path.dirname(base_dir)
+            # Ключ всегда рядом с приложением (BASE_DIR):
+            # в исходниках — корень проекта, в EXE — папка
+            # с .exe. Вычислять от __file__ нельзя: в EXE
+            # модуль лежит внутри _internal/, и там был бы
+            # создан второй, «чужой» ключ.
+            from core.context import BASE_DIR
+            self.storage_dir = str(BASE_DIR)
         else:
             self.storage_dir = str(storage_dir)
 
