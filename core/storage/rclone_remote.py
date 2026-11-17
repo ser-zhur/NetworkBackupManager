@@ -39,6 +39,7 @@ import threading
 from pathlib import Path
 
 from core import rclone as rclone_mod
+from core.storage import encryption
 from core.storage.base import (
     PushContext,
     PushResult,
@@ -330,6 +331,10 @@ class RcloneRemote(StorageBackend):
         if self._should_skip_for_changes(config, ctx):
             return PushResult.skipped("Изменений нет — выгрузка пропущена")
 
+        if config.get("encrypt"):
+            # Шифрование — через общий путь (временная папка с архивами)
+            return self.push_many(config, [ctx])[0]
+
         if not rclone_mod.is_available():
             return PushResult.failure(
                 "rclone не найден (Настройки → Хранилища → путь к rclone)"
@@ -367,16 +372,21 @@ class RcloneRemote(StorageBackend):
             if len(names) == 1:
                 singles.append((names[0], parent / names[0]))
                 continue
-            done, errs = self._copy_batch(parent, names, dest, type_name, options, env)
+            done, errs = self._copy_batch(
+                parent, names, dest, type_name, options, env,
+                ignore_existing=ctx.immutable,
+            )
             uploaded += done
             errors += errs
 
         for name, local_path in singles:
             target = f"{dest}/{name}" if remote_dir else f"{dest}{name}"
+            args = ["copyto", *_flags(_PUSH_FLAGS, type_name)]
+            if ctx.immutable:
+                args.append("--ignore-existing")
             try:
                 r = rclone_mod.run(
-                    ["copyto", *_flags(_PUSH_FLAGS, type_name), str(local_path), target],
-                    env=env, timeout=300,
+                    [*args, str(local_path), target], env=env, timeout=300,
                 )
             except Exception as exc:
                 errors.append(f"{name}: {exc}")
@@ -393,9 +403,13 @@ class RcloneRemote(StorageBackend):
     def _copy_batch(
         cls, parent: Path, names: list[str], dest: str,
         type_name: str, options: dict, env: dict,
+        ignore_existing: bool = False,
     ) -> tuple[int, list[str]]:
         """Несколько файлов одной папки. → (загружено, ошибки)."""
-        failed, general = cls._copy_files(parent, names, dest, type_name, options, env)
+        failed, general = cls._copy_files(
+            parent, names, dest, type_name, options, env,
+            ignore_existing=ignore_existing,
+        )
         if general is not None:
             return 0, [f"{len(names)} файлов: {general}"]
         return len(names) - len(failed), [f"{n}: {msg}" for n, msg in failed.items()]
@@ -404,11 +418,13 @@ class RcloneRemote(StorageBackend):
     def _copy_files(
         src_root: Path, rel_paths: list[str], dest: str,
         type_name: str, options: dict, env: dict,
+        ignore_existing: bool = False,
     ) -> tuple[dict[str, str], str | None]:
         """
         `rclone copy --files-from-raw`: файлы (пути относительно
         src_root, через '/') за один запуск в dest с той же
-        структурой.
+        структурой. ignore_existing — уже лежащие на хранилище
+        не перезаливать (неизменяемые версии).
 
         → (ошибки по файлам {путь: текст}, общая ошибка или None).
         Какие файлы не загрузились — по строкам «ERROR : <путь>:»
@@ -416,25 +432,13 @@ class RcloneRemote(StorageBackend):
         ошибкой (нет связи, вход) — общая ошибка, не загружено
         ничего.
         """
-        fd, list_path = tempfile.mkstemp(prefix="nbm_files_", suffix=".txt")
-        try:
-            with open(fd, "w", encoding="utf-8", newline="\n") as fh:
-                fh.write("\n".join(rel_paths) + "\n")
-            try:
-                r = rclone_mod.run(
-                    ["copy", *_flags(_PUSH_FLAGS, type_name),
-                     "-v", "--stats-log-level", "DEBUG",
-                     "--files-from-raw", list_path, str(src_root), dest],
-                    env=env, timeout=300 + 20 * len(rel_paths),
-                )
-            except Exception as exc:
-                return {}, str(exc)
-        finally:
-            try:
-                Path(list_path).unlink()
-            except OSError:
-                pass
-
+        args = ["copy", *_flags(_PUSH_FLAGS, type_name), "-v", "--stats-log-level", "DEBUG"]
+        if ignore_existing:
+            args.append("--ignore-existing")
+        r, err = _run_with_list(args, rel_paths, [str(src_root), dest], env,
+                                timeout=300 + 20 * len(rel_paths))
+        if r is None:
+            return {}, err
         if r.returncode == 0:
             return {}, None
 
@@ -463,28 +467,44 @@ class RcloneRemote(StorageBackend):
         Выгрузка нескольких устройств за одно подключение:
         файлы раскладываются во временное дерево
         <папка устройства>/<файл> (жёсткие ссылки, без
-        копирования, где можно) и уходят одним `rclone copy`
-        в общую родительскую папку. Если из-за подстановок в
-        базовой папке ({host}, {type}) родители разные — один
-        запуск на каждого родителя.
+        копирования, где можно; при шифровании — архивы 7z) и
+        уходят одним `rclone copy` в общую родительскую папку.
+        Если из-за подстановок в базовой папке ({host}, {type})
+        родители разные — один запуск на каждого родителя.
 
         → результаты в порядке contexts.
         """
         results: list[PushResult | None] = [None] * len(contexts)
         if not contexts:
             return []
+
+        def fail_all(message: str) -> list[PushResult]:
+            return [PushResult.failure(message)] * len(contexts)
+
         if not rclone_mod.is_available():
-            fail = PushResult.failure(
-                "rclone не найден (Настройки → Хранилища → путь к rclone)"
-            )
-            return [fail] * len(contexts)
+            return fail_all("rclone не найден (Настройки → Хранилища → путь к rclone)")
+
+        password = ""
+        if config.get("encrypt"):
+            if not encryption.is_available():
+                return fail_all(
+                    "шифрование: не установлена библиотека py7zr "
+                    "(pip install py7zr) — файлы не выгружены"
+                )
+            password = encryption.get_password()
+            if not password:
+                return fail_all(
+                    "шифрование включено, но пароль не задан "
+                    "(Настройки → Хранилища → Шифрование) — файлы не выгружены"
+                )
 
         type_name = config.get("type") or self.type
         base_dir = config.get("base_dir") or ""
 
         # Группы по родительской папке на хранилище
-        groups: dict[str, dict[str, int]] = {}
-        alone: list[int] = []
+        groups: list[tuple[str, dict[str, int]]] = []
+        by_parent: dict[str, dict[str, int]] = {}
+        no_folder: list[int] = []
         for i, ctx in enumerate(contexts):
             if self._should_skip_for_changes(config, ctx):
                 results[i] = PushResult.skipped("Изменений нет — выгрузка пропущена")
@@ -492,22 +512,28 @@ class RcloneRemote(StorageBackend):
             remote_dir = rclone_path(type_name, base_dir, ctx.remote_dir(base_dir))
             parent, _, folder = remote_dir.rpartition("/")
             if not folder:
-                alone.append(i)
+                no_folder.append(i)
                 continue
             if not parent and remote_dir.startswith("/"):
                 parent = "/"
-            group = groups.setdefault(parent, {})
+            group = by_parent.get(parent)
+            if group is None:
+                group = by_parent[parent] = {}
+                groups.append((parent, group))
             if folder.lower() in {f.lower() for f in group}:
-                alone.append(i)            # та же папка — отдельно, не смешивая
+                groups.append((parent, {folder: i}))   # та же папка — отдельно
             else:
                 group[folder] = i
 
         try:
             with self._rclone_env(config) as env:
-                for parent, folders in groups.items():
-                    self._push_group(config, contexts, parent, folders, env, results)
-                for i in alone:
-                    results[i] = self._push_with_env(config, contexts[i], env)
+                for parent, folders in groups:
+                    self._push_group(config, contexts, parent, folders, env, results, password)
+                for i in no_folder:
+                    results[i] = (
+                        PushResult.failure("шифрование: у устройства нет своей папки")
+                        if password else self._push_with_env(config, contexts[i], env)
+                    )
         except Exception as exc:
             fail = PushResult.failure(f"Ошибка: {exc}")
             results = [r if r is not None else fail for r in results]
@@ -517,65 +543,219 @@ class RcloneRemote(StorageBackend):
     def _push_group(
         self, config: dict, contexts: list[PushContext],
         parent: str, folders: dict[str, int], env: dict,
-        results: list,
+        results: list, password: str = "",
     ) -> None:
         type_name = config.get("type") or self.type
         options = config.get("options") or {}
         dest = f"{rclone_mod.REMOTE_NAME}:{parent}"
+        immutable = any(contexts[i].immutable for i in folders.values())
+
+        # Что уже лежит на хранилище (только синхронизация с
+        # шифрованием: не шифровать заново уже выгруженное и
+        # найти открытые копии).
+        existing: set[str] | None = None
+        if password and immutable:
+            existing = self._list_files(dest, set(folders), type_name, env)
 
         stage = Path(tempfile.mkdtemp(prefix="nbm_stage_"))
+        # rels[i] = [(путь на хранилище, имя файла устройства)]
+        rels: dict[int, list[tuple[str, str]]] = {}
+        present: dict[int, list[tuple[str, str]]] = {}
+        stage_errors: dict[int, list[str]] = {}
         try:
-            rels: dict[int, list[str]] = {}
             for folder, i in folders.items():
                 (stage / folder).mkdir()
-                rels[i] = []
+                rels[i], present[i], stage_errors[i] = [], [], []
                 for name, local_path in contexts[i].files.items():
                     if not local_path.is_file():
                         continue
-                    target = stage / folder / name
+                    remote_name = encryption.archive_name(name) if password else name
+                    rel = f"{folder}/{remote_name}"
+                    if existing is not None and rel in existing:
+                        present[i].append((rel, name))      # уже зашифровано
+                        continue
+                    target = stage / folder / remote_name
                     try:
-                        os.link(local_path, target)
-                    except OSError:
-                        shutil.copy2(local_path, target)
-                    rels[i].append(f"{folder}/{name}")
+                        if password:
+                            encryption.make_archive(local_path, target, name, password)
+                        else:
+                            try:
+                                os.link(local_path, target)
+                            except OSError:
+                                shutil.copy2(local_path, target)
+                    except Exception as exc:
+                        stage_errors[i].append(f"{name}: шифрование: {exc}")
+                        continue
+                    rels[i].append((rel, name))
 
-            all_rels = [p for paths in rels.values() for p in paths]
-            if not all_rels:
-                for i in folders.values():
-                    results[i] = self._push_result(0, [], 0)
-                return
+            all_rels = [rel for items in rels.values() for rel, _ in items]
+            if password and immutable and all_rels:
+                (stage / encryption.README_NAME).write_text(
+                    encryption.README_TEXT, encoding="utf-8",
+                )
+                all_rels.append(encryption.README_NAME)
 
-            failed, general = self._copy_files(stage, all_rels, dest, type_name, options, env)
+            failed: dict[str, str] = {}
+            general = None
+            if all_rels:
+                failed, general = self._copy_files(
+                    stage, all_rels, dest, type_name, options, env,
+                    ignore_existing=immutable,
+                )
         finally:
             shutil.rmtree(stage, ignore_errors=True)
 
-        for i, paths in rels.items():
+        # Открытые копии — удалить, если рядом есть зашифрованная
+        cleanup: dict[int, tuple[int, int]] = {}
+        if password and general is None:
+            cleanup = self._remove_plain_copies(
+                dest, folders, rels, present, failed, existing, type_name, env,
+            )
+
+        for i in rels:
             total = len(contexts[i].files)
+            errors = list(stage_errors[i])
+            done = len(present[i])
             if general is not None:
-                errors = [f"{len(paths)} файлов: {general}"] if paths else []
-                results[i] = self._push_result(0, errors, total)
-                continue
-            errors = [
-                f"{p.split('/', 1)[1]}: {failed[p]}" for p in paths if p in failed
-            ]
-            results[i] = self._push_result(len(paths) - len(errors), errors, total)
+                if rels[i]:
+                    errors.append(f"{len(rels[i])} файлов: {general}")
+            else:
+                errors += [f"{name}: {failed[rel]}" for rel, name in rels[i] if rel in failed]
+                done += sum(1 for rel, _ in rels[i] if rel not in failed)
+            extra = {}
+            if password:
+                deleted, left = cleanup.get(i, (0, 0))
+                extra = {"encrypted": True, "plain_deleted": deleted, "plain_left": left}
+            results[i] = self._push_result(done, errors, total, extra)
+
+    def _list_files(self, dest: str, folders: set[str], type_name: str, env: dict) -> set[str]:
+        """Файлы в папках устройств: {'<папка>/<файл>'}; нет папки — пусто."""
+        try:
+            r = rclone_mod.run(
+                ["lsf", "-R", "--files-only", "--max-depth", "2",
+                 *_flags(_PUSH_FLAGS, type_name), dest],
+                env=env, timeout=600,
+            )
+        except Exception as exc:
+            logger.warning("storage[%s]: список файлов: %s", self.id, exc)
+            return set()
+        if r.returncode != 0:
+            # Папки ещё нет — нормально; прочее — просто без пропусков
+            return set()
+        wanted = {f.lower() for f in folders}
+        out = set()
+        for line in (r.stdout or "").splitlines():
+            path = line.strip().replace("\\", "/")
+            folder, _, name = path.partition("/")
+            if name and "/" not in name and folder.lower() in wanted:
+                out.add(path)
+        return out
+
+    def _remove_plain_copies(
+        self, dest: str, folders: dict[str, int],
+        rels: dict, present: dict, failed: dict,
+        existing: set[str] | None, type_name: str, env: dict,
+    ) -> dict[int, tuple[int, int]]:
+        """
+        Удаляет открытые файлы, у которых на хранилище есть
+        зашифрованная пара (X → X.7z). Открытые без пары
+        (например, версии, удалённые из локальной истории)
+        НЕ удаляются — иначе пропали бы совсем; их число
+        возвращается.
+
+        → {i: (удалено, оставлено без пары)}.
+        """
+        encrypted: set[str] = {
+            rel for items in rels.values() for rel, _ in items if rel not in failed
+        } | {rel for items in present.values() for rel, _ in items}
+        if existing is not None:
+            encrypted |= {p for p in existing if encryption.is_archive_name(p)}
+
+        to_delete: dict[int, list[str]] = {}
+        left: dict[int, int] = {}
+        for folder, i in folders.items():
+            if existing is not None:
+                plain = [
+                    p for p in existing
+                    if p.split("/", 1)[0] == folder and not encryption.is_archive_name(p)
+                ]
+            else:
+                # Обычный бэкап: открытые копии только что выгруженных файлов
+                plain = [f"{folder}/{name}" for _, name in rels.get(i, [])]
+            to_delete[i] = [p for p in plain if encryption.archive_name(p) in encrypted]
+            left[i] = (
+                sum(1 for p in plain if encryption.archive_name(p) not in encrypted)
+                if existing is not None else 0
+            )
+
+        all_paths = [p for paths in to_delete.values() for p in paths]
+        deleted_ok = True
+        if all_paths:
+            r, err = _run_with_list(
+                ["delete", *_flags(_PUSH_FLAGS, type_name), "--max-depth", "2"],
+                all_paths, [dest], env, timeout=300 + 5 * len(all_paths),
+            )
+            if r is None or r.returncode != 0:
+                deleted_ok = False
+                logger.warning(
+                    "storage[%s]: не удалось удалить открытые копии: %s", self.id,
+                    err if r is None else _last_lines(r.stderr or r.stdout),
+                )
+            elif existing is not None:
+                logger.info(
+                    "storage[%s]: удалено открытых копий (есть зашифрованные): %d",
+                    self.id, len(all_paths),
+                )
+
+        return {
+            i: (len(to_delete[i]) if deleted_ok else 0, left[i])
+            for i in folders.values()
+        }
 
     @staticmethod
-    def _push_result(uploaded: int, errors: list[str], total: int) -> PushResult:
+    def _push_result(
+        uploaded: int, errors: list[str], total: int, extra: dict | None = None,
+    ) -> PushResult:
+        extra = extra or {}
         if uploaded == 0 and errors:
-            return PushResult.failure("Ни один файл не загружен: " + "; ".join(errors[:2]))
+            return PushResult.failure(
+                "Ни один файл не загружен: " + "; ".join(errors[:2]), **extra,
+            )
         if uploaded == 0:
-            return PushResult.failure("Нечего загружать")
+            return PushResult.failure("Нечего загружать", **extra)
+        what = "Зашифровано и загружено" if extra.get("encrypted") else "Загружено"
         if errors:
             return PushResult(
                 ok=True,
                 message=(
-                    f"Загружено {uploaded} из {total} файлов; "
+                    f"{what} {uploaded} из {total} файлов; "
                     f"ошибки: {'; '.join(errors[:2])}"
                 ),
-                details={"uploaded": uploaded, "failed": len(errors)},
+                details={"uploaded": uploaded, "failed": len(errors), **extra},
             )
-        return PushResult.success(f"Загружено файлов: {uploaded}", uploaded=uploaded)
+        return PushResult.success(f"{what} файлов: {uploaded}", uploaded=uploaded, **extra)
+
+
+def _run_with_list(args: list[str], paths: list[str], tail: list[str], env: dict, timeout: int):
+    """
+    rclone <args> --files-from-raw <список> <tail...>.
+    → (CompletedProcess | None, текст исключения).
+    """
+    fd, list_path = tempfile.mkstemp(prefix="nbm_files_", suffix=".txt")
+    try:
+        with open(fd, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("\n".join(paths) + "\n")
+        try:
+            return rclone_mod.run(
+                [*args, "--files-from-raw", list_path, *tail], env=env, timeout=timeout,
+            ), ""
+        except Exception as exc:
+            return None, str(exc)
+    finally:
+        try:
+            Path(list_path).unlink()
+        except OSError:
+            pass
 
 
 _LOG_PREFIX_RE = re.compile(

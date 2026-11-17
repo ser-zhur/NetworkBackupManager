@@ -143,6 +143,32 @@
                         {% if type_name == 'smb' %}Для SMB первая часть пути — имя общей папки (шары).{% endif %}
                     </p>
                 </div>
+                <div class="md:col-span-2 flex items-start justify-between gap-4 pt-1">
+                    <div class="min-w-0">
+                        <div class="text-sm font-medium text-gray-700 dark:text-slate-300">🔒 Шифровать</div>
+                        <p class="mt-0.5 text-[11px] text-gray-500 dark:text-slate-400">
+                            Файлы уходят архивами 7z (AES-256) с общим паролем; открываются 7-Zip.
+                            {% if encryption_password_set %}
+                                После включения запустите «Синхронизировать хранилища»: история будет
+                                зашифрована, открытые копии с зашифрованной парой — удалены.
+                            {% else %}
+                                Сначала задайте пароль: <a href="/settings?tab=storage" class="underline">Настройки → Хранилища → Шифрование</a>.
+                            {% endif %}
+                        </p>
+                    </div>
+                    <label class="relative inline-flex items-center shrink-0
+                                  {{ 'cursor-pointer' if (encryption_password_set and encryption_available) or encrypt else 'opacity-50 cursor-not-allowed' }}">
+                        <input type="checkbox" name="encrypt" value="true"
+                               {% if encrypt %}checked{% endif %}
+                               {% if not ((encryption_password_set and encryption_available) or encrypt) %}disabled{% endif %}
+                               class="sr-only peer">
+                        <div class="w-11 h-6 bg-gray-200 dark:bg-slate-700 rounded-full
+                                    peer-checked:bg-brand-600 transition
+                                    after:content-[''] after:absolute after:top-0.5 after:left-0.5
+                                    after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all
+                                    peer-checked:after:translate-x-5"></div>
+                    </label>
+                </div>
             </div>
         </section>
 

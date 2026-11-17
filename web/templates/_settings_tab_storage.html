@@ -7,6 +7,24 @@
 </div>
 {% endif %}
 
+{% if message in ('encryption_set', 'encryption_changed', 'encryption_same') %}
+<div class="mb-4 px-4 py-3 rounded-lg text-sm
+            {{ 'bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-900 text-amber-800 dark:text-amber-300'
+               if message == 'encryption_changed' else
+               'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-900 text-emerald-800 dark:text-emerald-300' }}
+            border">
+    {% if message == 'encryption_set' %}
+        🔒 Пароль шифрования задан. Включите «Шифровать» в настройках нужных хранилищ.
+    {% elif message == 'encryption_same' %}
+        Пароль не изменился.
+    {% else %}
+        🔒 Пароль шифрования изменён. Новые архивы шифруются новым паролем;
+        <b>уже выгруженные остаются со старым</b> — сохраните старый пароль,
+        иначе их не открыть.
+    {% endif %}
+</div>
+{% endif %}
+
 {% if message == 'remote_enabled_all' %}
 <div class="mb-4 px-4 py-3 rounded-lg text-sm
             bg-emerald-50 dark:bg-emerald-950/40
@@ -94,6 +112,10 @@
                     <div class="text-sm font-medium flex items-center gap-2">
                         {{ b.icon }} {{ b.name }}
                         <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-gray-100 dark:bg-slate-800 text-gray-500 dark:text-slate-400">{{ r.type }}</span>
+                        {% if r.encrypt %}
+                            <span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300"
+                                  title="Файлы выгружаются архивами 7z (AES-256)">🔒 шифрование</span>
+                        {% endif %}
                         {% if not item.configured %}
                             <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/60 text-amber-700 dark:text-amber-300">не заполнены обязательные параметры</span>
                         {% endif %}
@@ -163,6 +185,71 @@ async function testRemote(id) {
 }
 </script>
 
+<section class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm p-6 space-y-4">
+    <div class="flex flex-wrap items-start justify-between gap-3">
+        <div class="min-w-0">
+            <h3 class="text-sm font-semibold text-gray-700 dark:text-slate-200">🔒 Шифрование</h3>
+            <p class="mt-1 text-xs text-gray-500 dark:text-slate-400">
+                На хранилища, где включено «Шифровать», каждый файл уходит архивом
+                <b>7z (AES-256)</b> — зашифрованы и данные, и имена внутри. Открыть можно без
+                этой программы: <a href="https://www.7-zip.org" target="_blank" rel="noopener" class="underline">7-Zip</a>,
+                PeaZip, WinRAR, <code class="font-mono">7z x</code> в Linux/macOS. Пароль один на все хранилища.
+                Синхронизация шифрует историю и удаляет открытые копии, у которых есть зашифрованная пара.
+            </p>
+        </div>
+        {% if encryption_password_set %}
+            <span class="shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium
+                         bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300">✓ Пароль задан</span>
+        {% else %}
+            <span class="shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium
+                         bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-300">Пароль не задан</span>
+        {% endif %}
+    </div>
+
+    {% if not encryption_available %}
+    <div class="px-4 py-3 rounded-lg text-sm bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 text-amber-800 dark:text-amber-300">
+        Не установлена библиотека <code class="font-mono">py7zr</code> — шифрование недоступно
+        (<code class="font-mono">pip install py7zr</code>).
+    </div>
+    {% endif %}
+
+    <div class="px-4 py-3 rounded-lg text-xs bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-rose-800 dark:text-rose-300">
+        ⚠ Сохраните пароль в надёжном месте (менеджер паролей, сейф). <b>Без него зашифрованные
+        бэкапы не открыть никому</b> — восстановить пароль невозможно. При смене пароля уже
+        выгруженные архивы остаются со старым.
+    </div>
+
+    <form method="POST" action="/settings/storage/encryption" class="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end"
+          {% if encryption_password_set %}onsubmit="return confirm('Сменить пароль шифрования? Уже выгруженные архивы останутся со старым паролем.');"{% endif %}>
+        <label class="block">
+            <span class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
+                {{ 'Новый пароль' if encryption_password_set else 'Пароль' }}
+            </span>
+            <input type="password" name="password" required minlength="{{ encryption_min_length }}" autocomplete="new-password"
+                   class="w-full rounded-lg px-3 py-2 text-sm bg-gray-50 dark:bg-slate-950
+                          border border-gray-200 dark:border-slate-800
+                          focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+        </label>
+        <label class="block">
+            <span class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Повторите пароль</span>
+            <input type="password" name="confirm" required minlength="{{ encryption_min_length }}" autocomplete="new-password"
+                   class="w-full rounded-lg px-3 py-2 text-sm bg-gray-50 dark:bg-slate-950
+                          border border-gray-200 dark:border-slate-800
+                          focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+        </label>
+        <button type="submit"
+                class="px-5 py-2 rounded-lg text-sm font-medium
+                       bg-brand-600 hover:bg-brand-700 text-white shadow-sm transition">
+            {{ 'Сменить пароль' if encryption_password_set else 'Задать пароль' }}
+        </button>
+    </form>
+    <p class="text-[11px] text-gray-500 dark:text-slate-400">
+        Не короче {{ encryption_min_length }} символов. Хранится в программе зашифрованным
+        (<code class="font-mono">secret.key</code>) — защищает данные на хранилище, но не от
+        взлома самого сервера с программой.
+    </p>
+</section>
+
 <section class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm p-6">
     <div class="flex flex-wrap items-center justify-between gap-4">
         <div class="min-w-0">
@@ -172,7 +259,10 @@ async function testRemote(id) {
             <p class="mt-1 text-xs text-gray-500 dark:text-slate-400">
                 Выгружает всю историю версий каждого устройства во включённые у него
                 хранилища — например, после смены сервера или базовой папки.
-                Устройства обрабатываются по очереди; занятые бэкапом пропускаются.
+                Файлы всех устройств готовятся заранее и уходят на каждое хранилище за одно
+                подключение; устройства, занятые бэкапом, пропускаются. На хранилищах с
+                шифрованием история шифруется, а открытые копии, у которых есть
+                зашифрованная пара, удаляются.
                 Может занять продолжительное время. Ход — в
                 <a href="/logs/main" class="underline">общем логе</a>.
             </p>

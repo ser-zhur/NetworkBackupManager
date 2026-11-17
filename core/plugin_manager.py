@@ -553,7 +553,11 @@ class PluginManager:
                 f"файлов: {len(job['ctx'].files)}, "
                 f"хранилищ без ошибок: {total_ok} из {len(job['backends'])}"
                 + (f", с ошибками: {total_err}" if total_err else "")
-                + f", файлов загружено: {result['files']}"
+                + f", файлов на хранилищах: {result['files']}"
+                + (f", открытых копий удалено: {result['plain_deleted']}"
+                   if result["plain_deleted"] else "")
+                + (f", открытых без зашифрованной копии оставлено: "
+                   f"{result['plain_left']}" if result["plain_left"] else "")
             )
 
         return results
@@ -700,6 +704,7 @@ class PluginManager:
             run_time=_dt.now(),
             normalize=identity_normalize,
             device_name=router.get("name") or "",
+            immutable=True,
         )
         job["backends"] = backends
         return job
@@ -1142,6 +1147,8 @@ def _sync_result(message: str = "") -> dict:
         "files": 0,
         "backends": {},
         "errors": [],
+        "plain_deleted": 0,     # открытые копии, удалённые (есть .7z)
+        "plain_left": 0,        # открытые без зашифрованной пары
     }
 
 
@@ -1152,6 +1159,8 @@ def _account_push(result: dict, backend_id: str, r, total_files: int) -> None:
     if details.get("skipped"):
         stats["skip"] += 1
         return
+    result["plain_deleted"] += details.get("plain_deleted", 0)
+    result["plain_left"] += details.get("plain_left", 0)
     result["files"] += details.get("uploaded", total_files if r.ok else 0)
     if r.ok and not details.get("failed"):
         stats["ok"] += 1

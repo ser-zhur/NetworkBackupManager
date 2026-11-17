@@ -188,7 +188,7 @@ REM ========================================================
 
 echo [3/9] Checking dependencies...
 
-python -c "import fastapi, uvicorn, jinja2, paramiko, scp, nacl, cryptography, bcrypt, dulwich" 2>nul
+python -c "import fastapi, uvicorn, jinja2, paramiko, scp, nacl, cryptography, bcrypt, dulwich, py7zr" 2>nul
 if errorlevel 1 (
     echo ERROR: Some Python dependencies are missing.
     echo Run: pip install -r requirements.txt
@@ -310,6 +310,8 @@ python -m PyInstaller ^
   --collect-all nacl ^
   --collect-all scp ^
   --collect-all dulwich ^
+  --collect-all py7zr ^
+  --collect-all Cryptodome ^
   main.py > "%PYI_TEMP%" 2>&1
 
 set "PYI_EXIT=%ERRORLEVEL%"

@@ -105,6 +105,7 @@ from core.git_storage import (
 
 from core.plugin_manager import is_device_disabled
 from core.storage import global_config
+from core.storage import encryption as storage_encryption
 from core.storage.base import device_remote_dir
 
 from core.maintenance import (
@@ -2356,6 +2357,12 @@ def _remote_edit_context(info, remote, *, type_name, error="", submitted=None) -
         "name": src.get("name") or (remote or {}).get("name") or "",
         "base_dir": src.get("base_dir") if src.get("base_dir") is not None else "/",
         "mode": src.get("mode") or "changes_only",
+        "encrypt": (
+            src.get("encrypt") in (True, "true", "on")
+            if submitted is not None else bool((remote or {}).get("encrypt"))
+        ),
+        "encryption_password_set": storage_encryption.is_password_set(),
+        "encryption_available": storage_encryption.is_available(),
         "basic_options": [o for o in options if not o["advanced"]],
         "advanced_options": [o for o in options if o["advanced"]],
         "advanced_open": bool(error) and any(
@@ -2495,10 +2502,12 @@ async def remote_save(request: Request, user: str = Depends(require_auth)):
     name = (form.get("name") or "").strip()[:80]
     base_dir = (form.get("base_dir") or "").strip() or "/"
     mode = form.get("mode") if form.get("mode") in ("changes_only", "all") else "changes_only"
+    encrypt = form.get("encrypt") == "true"
 
     def fail(message: str):
         submitted = {k: form.get(k) for k in form.keys()}
-        submitted.update({"name": name, "base_dir": base_dir, "mode": mode})
+        submitted.update({"name": name, "base_dir": base_dir, "mode": mode,
+                          "encrypt": encrypt})
         return templates.TemplateResponse(
             request, "storage_edit.html",
             _remote_edit_context(info, old, type_name=type_name,
@@ -2510,6 +2519,13 @@ async def remote_save(request: Request, user: str = Depends(require_auth)):
         return fail("укажите название")
     if missing:
         return fail("не заполнены обязательные параметры: " + ", ".join(missing))
+    if encrypt and not storage_encryption.is_password_set():
+        return fail(
+            "для шифрования сначала задайте пароль: "
+            "Настройки → Хранилища → Шифрование"
+        )
+    if encrypt and not storage_encryption.is_available():
+        return fail("для шифрования нужна библиотека py7zr (pip install py7zr)")
 
     # Результат входа через браузер / токена (OneDrive, Drive, ...)
     flow = rclone_oauth.get(form.get("oauth_flow") or "")
@@ -2529,6 +2545,7 @@ async def remote_save(request: Request, user: str = Depends(require_auth)):
         "options": options,
         "base_dir": base_dir,
         "mode": mode,
+        "encrypt": encrypt,
     }
     new_list = (
         [remote if r["id"] == rid else r for r in remotes] if old
@@ -2596,6 +2613,36 @@ def remote_delete(rid: str, user: str = Depends(require_auth)):
         rid, remote.get("name"), devices, user,
     )
     return RedirectResponse("/settings?tab=storage&message=remote_deleted", status_code=303)
+
+
+@app.post("/settings/storage/encryption")
+async def storage_encryption_save(request: Request, user: str = Depends(require_auth)):
+    """
+    Пароль шифрования внешних хранилищ (один на все). При
+    смене уже выгруженные архивы остаются со старым паролем.
+    """
+    form = await request.form()
+    password = form.get("password") or ""
+    error = storage_encryption.validate_password(password, form.get("confirm") or "")
+    if error:
+        return RedirectResponse(
+            "/settings?tab=storage&error=" + urllib.parse.quote("пароль шифрования: " + error),
+            status_code=303,
+        )
+    changed = storage_encryption.is_password_set()
+    if changed and password == storage_encryption.get_password():
+        return RedirectResponse("/settings?tab=storage&message=encryption_same", status_code=303)
+
+    storage_encryption.set_password(password)
+    logging.info(
+        "🔒 Пароль шифрования хранилищ %s (запрос от %s)",
+        "изменён" if changed else "задан", user,
+    )
+    return RedirectResponse(
+        "/settings?tab=storage&message="
+        + ("encryption_changed" if changed else "encryption_set"),
+        status_code=303,
+    )
 
 
 @app.post("/settings/storage/{rid}/enable-all")
@@ -5728,6 +5775,9 @@ def settings_page(
             for pd in (plugin_manager._plugins.values() if plugin_manager else [])
         )
         context["msg_count"] = request.query_params.get("count", "0")
+        context["encryption_password_set"] = storage_encryption.is_password_set()
+        context["encryption_available"] = storage_encryption.is_available()
+        context["encryption_min_length"] = storage_encryption.MIN_PASSWORD_LENGTH
         context["remotes"] = [
             {
                 "backend": b,
