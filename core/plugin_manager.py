@@ -14,6 +14,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
+from core import backup_state
 from core.secure_storage import SecureStorage
 from core.context import (
     PLUGINS_DIR,
@@ -859,6 +860,12 @@ class PluginManager:
             device_tag = device_log_tag(device_type, router)
             debug_connection = bool(router.get("debug_connection"))
 
+            # Устройство занято, пока ЭТОТ поток реально
+            # работает — даже если прогон уже завершился
+            # по общему таймауту (finish_device в finally).
+            device_id = f"{device_type}/{task['index']}"
+            backup_state.mark_device_running(device_id)
+
             set_device_context(device_tag)
             if debug_connection:
                 set_connection_debug(device_tag)
@@ -923,6 +930,7 @@ class PluginManager:
                     )
                     clear_connection_debug()
                 clear_device_context()
+                backup_state.finish_device(device_id)
 
         executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
         try:
@@ -973,8 +981,22 @@ class PluginManager:
                     "ip",
                     task["router"].get("host", "Unknown"),
                 )
-                logging.error("⏰ Таймаут бэкапа: %s", ip)
-                future.cancel()
+                if future.cancel():
+                    logging.error(
+                        "⏰ Таймаут бэкапа: %s — не запускался, снят",
+                        ip,
+                    )
+                else:
+                    # Поток уже работает и остановить его нельзя.
+                    # Устройство остаётся занятым (см.
+                    # mark_device_running) — новые бэкапы его и
+                    # массовые прогоны подождут, пока поток не
+                    # завершится.
+                    logging.error(
+                        "⏰ Таймаут бэкапа: %s — поток ещё работает; "
+                        "устройство занято до его завершения",
+                        ip,
+                    )
 
             failed += len(still_pending)
 

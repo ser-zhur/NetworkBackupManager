@@ -14,16 +14,20 @@ import pytest
 from core import backup_state
 
 
+def _reset():
+    backup_state.finish_mass()
+    for d in backup_state.get_backup_status()["devices"]:
+        backup_state.finish_device(d)
+    for d in backup_state.get_sync_status()["devices"]:
+        backup_state.finish_sync(d)
+
+
 @pytest.fixture(autouse=True)
 def clean_state():
     """Каждый тест начинает и заканчивает со свободным состоянием."""
-    backup_state.finish_mass()
-    for d in backup_state.get_backup_status()["devices"]:
-        backup_state.finish_device(d)
+    _reset()
     yield
-    backup_state.finish_mass()
-    for d in backup_state.get_backup_status()["devices"]:
-        backup_state.finish_device(d)
+    _reset()
 
 
 # =========================================================
@@ -148,3 +152,88 @@ def test_scheduler_waits_while_manual_backup_running(monkeypatch):
     assert pm.runs == 0
     assert not sched.config.get("last_run")
     assert backup_state.get_backup_status()["devices"] == ["mikrotik/0"]
+
+
+# =========================================================
+# Синхронизация хранилищ
+# =========================================================
+
+def test_sync_blocks_mass_and_same_device_backup():
+    assert backup_state.try_start_sync("mikrotik/0") is True
+    assert backup_state.try_start_mass() is False
+    assert backup_state.try_start_device("mikrotik/0") is False
+    assert backup_state.try_start_sync("mikrotik/0") is False
+    # Другое устройство — можно
+    assert backup_state.try_start_device("mikrotik/1") is True
+    assert backup_state.try_start_sync("mikrotik/2") is True
+
+    backup_state.finish_sync("mikrotik/0")
+    backup_state.finish_sync("mikrotik/2")
+    backup_state.finish_device("mikrotik/1")
+    assert backup_state.try_start_mass() is True
+
+
+def test_mass_and_backup_block_sync():
+    assert backup_state.try_start_mass() is True
+    assert backup_state.try_start_sync("mikrotik/0") is False
+    backup_state.finish_mass()
+
+    assert backup_state.try_start_device("mikrotik/0") is True
+    assert backup_state.try_start_sync("mikrotik/0") is False
+    assert backup_state.is_sync_running_for("mikrotik/0") is False
+
+
+# =========================================================
+# Зависший поток после общего таймаута прогона
+# =========================================================
+
+def test_hung_worker_keeps_device_busy_after_timeout(tmp_path, monkeypatch):
+    import core.plugin_manager as pm_mod
+    from concurrent.futures import TimeoutError as FuturesTimeoutError
+    from core.plugin_manager import PluginManager
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def hanging_plugin(router):
+        started.set()
+        release.wait(10)
+        return []
+
+    def instant_timeout(futures, timeout=None):
+        # Дождаться старта потока и сразу «истечь»
+        started.wait(5)
+        raise FuturesTimeoutError()
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(pm_mod, "as_completed", instant_timeout)
+
+    pm = PluginManager()
+    pm._plugins["fake"] = {
+        "func": hanging_plugin,
+        "routers": [{"host": "10.0.0.1", "backup_path": str(tmp_path)}],
+        "dir": str(tmp_path),
+    }
+
+    assert backup_state.try_start_mass() is True
+    try:
+        pm.run_all_backups()          # вернулся по «таймауту»
+    finally:
+        backup_state.finish_mass()
+
+    try:
+        # Поток ещё работает — устройство занято, новый прогон
+        # и бэкап этого устройства не стартуют
+        assert backup_state.is_backup_running_for("fake/0") is True
+        assert backup_state.try_start_mass() is False
+        assert backup_state.try_start_device("fake/0") is False
+    finally:
+        release.set()
+
+    # Поток завершился — устройство освобождено
+    for _ in range(100):
+        if not backup_state.is_backup_running():
+            break
+        threading.Event().wait(0.05)
+    assert backup_state.is_backup_running() is False
+    assert backup_state.try_start_mass() is True

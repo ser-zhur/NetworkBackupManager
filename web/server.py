@@ -132,34 +132,11 @@ from core.backup_state import (
     is_backup_running,
     is_backup_running_for,
     get_backup_status,
+    try_start_sync,
+    finish_sync,
+    is_sync_running_for,
+    get_sync_status,
 )
-
-# =========================================================
-# SYNC STATE (git → storages)
-# =========================================================
-
-sync_lock = threading.Lock()
-active_syncs: set[str] = set()
-
-
-def is_sync_running_for(device_id: str) -> bool:
-    with sync_lock:
-        return device_id in active_syncs
-
-
-def get_sync_status() -> dict:
-    with sync_lock:
-        return {"devices": sorted(active_syncs)}
-
-
-def sync_started(device_id: str) -> None:
-    with sync_lock:
-        active_syncs.add(device_id)
-
-
-def sync_finished(device_id: str) -> None:
-    with sync_lock:
-        active_syncs.discard(device_id)
 
 
 # =========================================================
@@ -1601,7 +1578,8 @@ def execute_storage_sync_task(
         if 0 <= index < len(routers)
         else device_id
     )
-    sync_started(device_id)
+    # Слот синхронизации уже занят в sync_storages_endpoint()
+    # через try_start_sync(); здесь только освобождаем.
 
     try:
         logging.info(
@@ -1638,7 +1616,7 @@ def execute_storage_sync_task(
             "☁ sync: исключение: %s", exc, exc_info=True,
         )
     finally:
-        sync_finished(device_id)
+        finish_sync(device_id)
         clear_device_context()
 
 # =========================================================
@@ -2674,6 +2652,16 @@ def sync_storages_endpoint(
     )
     if not (0 <= index < len(routers)):
         raise HTTPException(404, "Устройство не найдено")
+
+    # Атомарно: не стартуем во время массового прогона,
+    # бэкапа или другой синхронизации этого устройства.
+    if not try_start_sync(device_id):
+        if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+            return Response(status_code=204)
+        return RedirectResponse(
+            url=f"/?selected={device_id}",
+            status_code=303,
+        )
 
     background_tasks.add_task(
         execute_storage_sync_task,
