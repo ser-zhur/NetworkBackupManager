@@ -82,6 +82,7 @@ from core.context import (
     CONFIG_FILE,
     save_json,
     load_json,
+    resolve_backup_path,
 )
 
 from core.logger import (
@@ -896,10 +897,8 @@ def _raise_routers_save_error(where: str, exc: Exception):
 
 
 def _resolve_backup_path(backup_path) -> Path:
-    path = Path(backup_path)
-    if not path.is_absolute():
-        path = BASE_DIR / path
-    return path
+    # Единое правило — core.context.resolve_backup_path
+    return resolve_backup_path(backup_path)
 
 # =========================================================
 # TAGS
@@ -2478,8 +2477,11 @@ async def save_router_endpoint(
         "ssh_pass":
             encrypted_ssh_pass,
 
+        # Сразу абсолютный — как после загрузки routers.json.
+        # Иначе до перезапуска плагин, git и UI разрешали бы
+        # относительный путь от разных каталогов.
         "backup_path":
-            backup_path,
+            str(resolve_backup_path(backup_path)),
 
         "max_backups":
             int(max_backups),
@@ -2686,6 +2688,14 @@ def run_backup(
             secure_router[
                 "ssh_pass"
             ]
+        )
+
+    # Плагин и git получают абсолютный путь по общему
+    # правилу (относительный — от BASE_DIR), а не разрешают
+    # его каждый по-своему.
+    if secure_router.get("backup_path"):
+        secure_router["backup_path"] = str(
+            resolve_backup_path(secure_router["backup_path"])
         )
 
     # Атомарно проверяем и занимаем устройство. Проверка
@@ -2928,19 +2938,9 @@ def download_backup(
         plugin["routers"][index]
     )
 
-    backup_path = Path(
-        router.get(
-            "backup_path",
-            "backups",
-        )
+    backup_path = resolve_backup_path(
+        router.get("backup_path", "backups")
     )
-
-    if not backup_path.is_absolute():
-
-        backup_path = (
-            BASE_DIR
-            / backup_path
-        )
 
     backup_root = (
         backup_path.resolve()
@@ -3922,8 +3922,11 @@ async def update_router(
         "ssh_pass":
             ssh_pass_encrypted,
 
+        # Сразу абсолютный — как после загрузки routers.json.
+        # Иначе до перезапуска плагин, git и UI разрешали бы
+        # относительный путь от разных каталогов.
         "backup_path":
-            backup_path,
+            str(resolve_backup_path(backup_path)),
 
         "max_backups":
             int(max_backups),

@@ -96,7 +96,7 @@ def _iter_devices(plugin_manager):
     backup_path — абсолютный Path. Молча пропускает
     устройства без backup_path и с неразрешимым путём.
     """
-    from core.context import BASE_DIR
+    from core.context import resolve_backup_path
 
     if plugin_manager is None:
         return
@@ -108,9 +108,7 @@ def _iter_devices(plugin_manager):
             if not raw:
                 continue
 
-            backup_path = Path(raw)
-            if not backup_path.is_absolute():
-                backup_path = (BASE_DIR / backup_path).resolve()
+            backup_path = resolve_backup_path(raw)
 
             yield (
                 f"{device_type}/{idx}",

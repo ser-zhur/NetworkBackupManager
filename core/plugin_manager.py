@@ -21,6 +21,7 @@ from core.context import (
     STATE_FILE,
     load_json,
     save_json,
+    resolve_backup_path,
 )
 from core.storage import PushContext
 from core.storage.base import identity_normalize
@@ -145,11 +146,9 @@ class PluginManager:
                     for router in routers_data:
                         backup_path = router.get("backup_path")
                         if backup_path:
-                            p = Path(backup_path)
-                            if not p.is_absolute():
-                                router["backup_path"] = str(
-                                    (BASE_DIR / p).resolve()
-                                )
+                            router["backup_path"] = str(
+                                resolve_backup_path(backup_path)
+                            )
 
                 # Ищем нормализатор, объявленный плагином.
                 # Если его нет — используем identity.
@@ -456,9 +455,7 @@ class PluginManager:
             result["message"] = "У устройства нет backup_path"
             return result
 
-        backup_path = _Path(raw_path)
-        if not backup_path.is_absolute():
-            backup_path = (BASE_DIR / backup_path).resolve()
+        backup_path = resolve_backup_path(raw_path)
 
         if not backup_path.exists():
             result["message"] = f"Каталог не найден: {backup_path}"
@@ -866,9 +863,12 @@ class PluginManager:
                 )
 
             try:
-                backup_path = router["backup_path"]
+                backup_path = resolve_backup_path(router["backup_path"])
 
                 secure_router = copy.deepcopy(router)
+                # Плагин получает уже абсолютный путь — сам
+                # он относительные пути не разрешает.
+                secure_router["backup_path"] = str(backup_path)
 
                 if "ssh_pass" in secure_router:
                     secure_router["ssh_pass"] = self.storage.decrypt(

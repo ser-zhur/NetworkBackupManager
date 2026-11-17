@@ -671,17 +671,12 @@ def backup_router(router):
     логи MikroTik.
     """
 
-    backup_path = router["backup_path"]
+    # PluginManager передаёт уже абсолютный путь. На случай
+    # прямого вызова — то же общее правило (от BASE_DIR),
+    # а не от папки плагина.
+    from core.context import resolve_backup_path
 
-    if not os.path.isabs(backup_path):
-        current_plugin_dir = os.path.dirname(
-            os.path.abspath(__file__)
-        )
-        backup_path = os.path.join(
-            current_plugin_dir, backup_path,
-        )
-
-    backup_path = os.path.abspath(backup_path)
+    backup_path = str(resolve_backup_path(router["backup_path"]))
     os.makedirs(backup_path, exist_ok=True)
 
     host = router.get("host", "unknown")
