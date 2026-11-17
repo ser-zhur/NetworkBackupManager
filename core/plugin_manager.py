@@ -847,6 +847,7 @@ class PluginManager:
                 clear_device_context,
                 set_connection_debug,
                 clear_connection_debug,
+                device_log_tag,
             )
 
             device_type = task["device_type"]
@@ -854,7 +855,8 @@ class PluginManager:
             router = task["router"]
 
             ip = router.get("ip", router.get("host", "Unknown"))
-            device_tag = f"{device_type}/{ip}"          # ← ОБЯЗАТЕЛЬНО
+            # Тег — тот же, по которому фильтрует /logs/device
+            device_tag = device_log_tag(device_type, router)
             debug_connection = bool(router.get("debug_connection"))
 
             set_device_context(device_tag)

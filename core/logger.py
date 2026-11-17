@@ -59,6 +59,24 @@ def get_device_context() -> str:
     return getattr(_device_context, "device", DEFAULT_DEVICE)
 
 
+def device_log_tag(device_type: str, router: dict) -> str:
+    """
+    Тег устройства в app.log: '<device_type>/<host>'.
+
+    ЕДИНСТВЕННОЕ место, где он формируется: и запись логов
+    (бэкап, массовый бэкап, синхронизация), и фильтр
+    /logs/device/... обязаны использовать эту функцию,
+    иначе строки не попадут в лог устройства.
+    """
+    host = (
+        router.get("host")
+        or router.get("ip")
+        or router.get("address")
+        or "?"
+    )
+    return f"{device_type}/{host}"
+
+
 # =========================================================
 # CONNECTION DEBUG CONTEXT
 # =========================================================

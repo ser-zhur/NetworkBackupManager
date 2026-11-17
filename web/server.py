@@ -93,6 +93,7 @@ from core.logger import (
     clear_device_context,
     set_connection_debug,
     clear_connection_debug,
+    device_log_tag,
 )
 
 from core.git_storage import (
@@ -612,12 +613,7 @@ def _device_filter_tag(device_type: str, index: int) -> str | None:
     if not (0 <= index < len(routers)):
         return None
 
-    router = routers[index]
-    host = router.get("host") or router.get("ip") or router.get("address")
-    if not host:
-        return None
-
-    return f"{device_type}/{host}"
+    return device_log_tag(device_type, routers[index])
 
 
 # =========================================================
@@ -1584,7 +1580,17 @@ def execute_storage_sync_task(
 ) -> None:
     device_id = f"{device_type}/{index}"
 
-    set_device_context(device_id)
+    # Тег как у бэкапа — иначе строки синхронизации не видны
+    # в логе устройства (/logs/device/...).
+    routers = (
+        plugin_manager._plugins.get(device_type, {}).get("routers", [])
+        if plugin_manager else []
+    )
+    set_device_context(
+        device_log_tag(device_type, routers[index])
+        if 0 <= index < len(routers)
+        else device_id
+    )
     sync_started(device_id)
 
     try:
@@ -1651,10 +1657,11 @@ def execute_device_backup_task(
 
     debug_connection = bool(secure_router.get("debug_connection"))
 
-    set_device_context(f"{device_type}/{host}")
+    device_tag = device_log_tag(device_type, secure_router)
+    set_device_context(device_tag)
 
     if debug_connection:
-        set_connection_debug(f"{device_type}/{host}")
+        set_connection_debug(device_tag)
         logging.info(
             "🐛 Debug подключения включён: %s/%s", device_type, host
         )
