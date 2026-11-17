@@ -72,7 +72,7 @@
             {% else %}
                 <div class="{{ 'md:col-span-2' if field.name == backend.remote_dir_field else '' }}">
                     <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
-                        {% if field.name == backend.remote_dir_field %}Шаблон папки на сервере{% else %}{{ field.label }}{% endif %}{% if field.required %} *{% endif %}
+                        {{ field.label }}{% if field.required %} *{% endif %}
                     </label>
                     <input type="{{ 'password' if field.type == 'password' else ('number' if field.type == 'number' else 'text') }}"
                            name="{{ fname }}"
@@ -85,12 +85,10 @@
                                   focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
                     {% if field.name == backend.remote_dir_field %}
                         <p class="mt-1 text-[11px] text-gray-500 dark:text-slate-400">
-                            Одна папка-шаблон для всех устройств. Подстановки:
-                            <code class="font-mono">{host}</code> — адрес,
-                            <code class="font-mono">{name}</code> — название,
-                            <code class="font-mono">{type}</code> — тип устройства.
-                            У каждого устройства должна получаться своя папка — например,
-                            <code class="font-mono">/{host}</code> или <code class="font-mono">/{host}_{name}</code>.
+                            {{ field.help }}
+                            Например: <code class="font-mono">{{ (val or '/').rstrip('/') }}/192.0.2.1_Office</code>
+                            для устройства с локальной папкой
+                            <code class="font-mono">Backups\192.0.2.1_Office</code>.
                         </p>
                     {% elif field.help %}
                         <p class="mt-1 text-[11px] text-gray-500 dark:text-slate-400">{{ field.help }}</p>

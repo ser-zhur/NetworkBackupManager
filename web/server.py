@@ -104,7 +104,7 @@ from core.git_storage import (
 
 from core.plugin_manager import is_device_disabled
 from core.storage import global_config
-from core.storage.base import expand_remote_dir
+from core.storage.base import device_remote_dir
 
 from core.maintenance import (
     apply_retention,
@@ -948,6 +948,13 @@ def _device_host(r: dict) -> str:
     return r.get("host") or r.get("ip") or r.get("address") or ""
 
 
+def _device_folder(r: dict) -> str:
+    """Имя локальной папки бэкапов устройства — так же
+    называется его папка на внешних хранилищах."""
+    raw = r.get("backup_path")
+    return resolve_backup_path(raw).name if raw else ""
+
+
 def _find_storage_conflict(
     storages: dict,
     device_type: str,
@@ -975,6 +982,7 @@ def _find_storage_conflict(
             host=_device_host(router),
             name=router.get("name") or "",
             device_type=device_type,
+            folder=_device_folder(router),
         )
         if key is None:
             continue
@@ -990,16 +998,17 @@ def _find_storage_conflict(
                     host=_device_host(other),
                     name=other.get("name") or "",
                     device_type=other_type,
+                    folder=_device_folder(other),
                 )
                 if other_key == key:
                     me = router.get("name") or _device_host(router)
                     them = other.get("name") or _device_host(other)
                     return (
                         f"{backend.name}: устройства «{me}» и «{them}» "
-                        f"попадают в одну папку «{key[2]}» — файлы "
-                        f"перезаписывали бы друг друга. Добавьте в "
-                        f"шаблон папки подстановку {{host}} "
-                        f"(Настройки → Хранилища)."
+                        f"попадают в одну папку «{key[2]}» — у них "
+                        f"одинаковое имя локальной папки бэкапов, и "
+                        f"файлы перезаписывали бы друг друга. Задайте "
+                        f"устройствам разные локальные папки."
                     )
     return None
 
@@ -1056,19 +1065,24 @@ def _device_storage_view(
             enabled = global_config.is_enabled_for(router, backend)
 
         dir_field = getattr(backend, "remote_dir_field", None)
-        template = (
+        base = (
             (storages.get(backend.id) or {}).get(dir_field, "")
             if dir_field else ""
         )
-        if router is not None and template:
-            folder = expand_remote_dir(
-                template,
+        if not dir_field or not configured:
+            folder = ""
+        elif router is not None:
+            folder = device_remote_dir(
+                base,
+                folder=_device_folder(router),
                 host=_device_host(router),
                 name=router.get("name") or "",
                 device_type=device_type,
             )
         else:
-            folder = template
+            # Форма добавления: локальной папки ещё нет
+            base_dir = device_remote_dir(base, folder="").rstrip("/")
+            folder = f"{base_dir}/<имя локальной папки>"
 
         rows.append({
             "backend": backend,
@@ -1718,7 +1732,14 @@ def execute_storage_sync_task(
     device_type: str,
     index: int,
     user: str,
-) -> None:
+) -> dict | None:
+    """
+    Синхронизация хранилищ одного устройства. Слот уже занят
+    вызывающим (try_start_sync); здесь только освобождается.
+
+    Возвращает результат sync_git_to_storages или None при
+    исключении.
+    """
     device_id = f"{device_type}/{index}"
 
     # Тег как у бэкапа — иначе строки синхронизации не видны
@@ -1750,6 +1771,7 @@ def execute_storage_sync_task(
         result = plugin_manager.sync_git_to_storages(
             device_type, index,
         )
+        returned = result
 
         if result["ok"]:
             logging.info(
@@ -1765,13 +1787,112 @@ def execute_storage_sync_task(
         for err in result.get("errors", [])[:10]:
             logging.error("☁ sync: %s", err)
 
+        return returned
+
     except Exception as exc:
         logging.error(
             "☁ sync: исключение: %s", exc, exc_info=True,
         )
+        return None
     finally:
         finish_sync(device_id)
         clear_device_context()
+
+
+# =========================================================
+# SYNC ALL (все устройства)
+# =========================================================
+#
+# Синхронизация хранилищ на всех устройствах — по очереди,
+# по одному устройству за раз (каждое выгружает всю свою
+# git-историю; параллельно это лишь перегрузило бы сервер
+# хранилища).
+#
+# Занятые устройства (идёт бэкап или их синхронизация)
+# пропускаются — это видно в итоговой строке лога.
+
+_sync_all_lock = threading.Lock()
+_sync_all_running = False
+
+
+def is_sync_all_running() -> bool:
+    with _sync_all_lock:
+        return _sync_all_running
+
+
+def _sync_all_targets() -> list[tuple[str, int, dict]]:
+    """Устройства, у которых включено хоть одно настроенное
+    внешнее хранилище — только им есть что синхронизировать."""
+    if not plugin_manager or storage_manager is None:
+        return []
+    storages = global_config.load_global()
+    externals = [
+        b for b in _external_backends()
+        if global_config.is_configured(b, storages)
+    ]
+    targets = []
+    for device_type, plugin_data in plugin_manager._plugins.items():
+        for idx, router in enumerate(plugin_data.get("routers", [])):
+            if any(global_config.is_enabled_for(router, b) for b in externals):
+                targets.append((device_type, idx, router))
+    return targets
+
+
+def execute_sync_all_task(user: str) -> dict:
+    """
+    Фоновая задача «Синхронизировать хранилища» для всех
+    устройств. Флаг _sync_all_running уже выставлен
+    обработчиком; здесь только сбрасывается.
+    """
+    global _sync_all_running
+
+    stats = {"devices": 0, "ok": 0, "errors": 0, "skipped": 0}
+    try:
+        targets = _sync_all_targets()
+        logging.info(
+            "☁ Синхронизация хранилищ всех устройств: %d устройств "
+            "(от %s)", len(targets), user,
+        )
+
+        for device_type, idx, router in targets:
+            device_id = f"{device_type}/{idx}"
+            stats["devices"] += 1
+
+            if not try_start_sync(device_id):
+                stats["skipped"] += 1
+                logging.info(
+                    "☁ sync-all: %s пропущено — идёт бэкап "
+                    "или синхронизация", device_id,
+                )
+                continue
+
+            result = execute_storage_sync_task(device_type, idx, user)
+            failed = (
+                result is None
+                or not result.get("ok")
+                or any(
+                    b.get("err") for b in result.get("backends", {}).values()
+                )
+            )
+            stats["errors" if failed else "ok"] += 1
+
+        logging.info(
+            "☁ Синхронизация хранилищ всех устройств завершена: "
+            "устройств %d, успешно %d, с ошибками %d, пропущено %d",
+            stats["devices"], stats["ok"], stats["errors"],
+            stats["skipped"],
+        )
+        return stats
+
+    except Exception as exc:
+        logging.error(
+            "☁ sync-all: исключение: %s", exc, exc_info=True,
+        )
+        return stats
+
+    finally:
+        with _sync_all_lock:
+            _sync_all_running = False
 
 # =========================================================
 # BACKUP TASKS
@@ -4588,6 +4709,33 @@ def maintenance_unmark_all(
 # STORAGE SETTINGS PAGE
 # =========================================================
 
+@app.post("/maintenance/sync-all")
+def sync_all_endpoint(
+    background_tasks: BackgroundTasks,
+    user: str = Depends(require_auth),
+):
+    """Синхронизировать хранилища на всех устройствах."""
+    global _sync_all_running
+
+    with _sync_all_lock:
+        if _sync_all_running:
+            return RedirectResponse(
+                "/settings?tab=storage&message=sync_running",
+                status_code=303,
+            )
+        _sync_all_running = True
+
+    background_tasks.add_task(execute_sync_all_task, user)
+    logging.info(
+        "☁ Запрошена синхронизация хранилищ всех устройств (от %s)",
+        user,
+    )
+    return RedirectResponse(
+        "/settings?tab=storage&message=sync_started",
+        status_code=303,
+    )
+
+
 @app.post("/settings/storages/save")
 async def settings_storages_save(
     request: Request,
@@ -5144,6 +5292,8 @@ def settings_page(
             for b in _external_backends()
         ]
         context["error"] = request.query_params.get("error", "")
+        context["sync_all_running"] = is_sync_all_running()
+        context["sync_all_devices"] = len(_sync_all_targets())
 
     return templates.TemplateResponse(
         request,

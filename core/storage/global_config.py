@@ -7,15 +7,15 @@
 #   config.json:
 #       "storages": {
 #           "webdav": {"url": ..., "user": ..., "pass": <enc>,
-#                      "remote_dir": "/{host}", "mode": ...},
+#                      "remote_dir": "/", "mode": ...},
 #           "ftp":    {...},
 #       }
 #
 #   routers.json (у устройства — только включено или нет):
 #       "storage": {"webdav": {"enabled": true}, ...}
 #
-# Папка на сервере — шаблон с {host}/{name}/{type}, чтобы у
-# каждого устройства была своя (см. core.storage.base).
+# Папка устройства на сервере = <базовая папка>/<имя его
+# локальной папки бэкапов> (core.storage.base.device_remote_dir).
 #
 # Пароли хранятся зашифрованными (SecureStorage) — как и
 # раньше в routers.json. Расшифровка — в PluginManager.
@@ -126,7 +126,8 @@ def build_global_from_routers(storage_manager, all_routers: list[dict]) -> dict:
     Для каждого внешнего хранилища берётся самый частый
     набор полей среди устройств, где оно включено (а если
     нигде не включено — среди всех с заполненными полями).
-    Папка — общая родительская папка нынешних + /{host}.
+    Базовая папка — общая родительская папка нынешних;
+    папка устройства внутри неё = имя его локальной папки.
     """
     result: dict = {}
 
@@ -166,8 +167,9 @@ def build_global_from_routers(storage_manager, all_routers: list[dict]) -> dict:
         chosen = json.loads(counter.most_common(1)[0][0])
         chosen = {k: v for k, v in chosen.items() if v is not None}
 
-        base = _common_dir([str(c.get("remote_dir") or "") for c in candidates])
-        chosen["remote_dir"] = posixpath.join(base, "{host}")
+        chosen["remote_dir"] = _common_dir(
+            [str(c.get("remote_dir") or "") for c in candidates]
+        )
 
         result[backend.id] = chosen
 

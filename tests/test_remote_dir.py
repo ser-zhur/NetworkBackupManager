@@ -15,6 +15,7 @@ import pytest
 
 from core.storage.base import (
     PushContext,
+    device_remote_dir,
     expand_remote_dir,
     normalize_remote_dir,
 )
@@ -54,6 +55,14 @@ def test_malformed_braces_returned_as_is():
     assert expand_remote_dir("/b/{}", host="h") == "/b/{}"
 
 
+def test_device_dir_is_base_plus_local_folder():
+    assert device_remote_dir("/", folder="192.0.2.1_Office") == "/192.0.2.1_Office"
+    assert device_remote_dir("/home/ftptest/", folder="ZpStal") == "/home/ftptest/ZpStal"
+    assert device_remote_dir("backup", folder="EU_DC") == "/backup/EU_DC"
+    assert device_remote_dir("/b/{type}", folder="X", device_type="mikrotik") == "/b/mikrotik/X"
+    assert device_remote_dir("/b", folder="") == "/b"
+
+
 def test_normalize_remote_dir():
     assert normalize_remote_dir("a//b/") == "/a/b"
     assert normalize_remote_dir("\\a\\b") == "/a/b"
@@ -73,19 +82,19 @@ def backends():
     return sm
 
 
-def test_same_server_same_dir_conflicts(backends):
+def test_same_local_folder_conflicts(backends):
     ftp = backends.get("ftp")
     cfg = {"host": "ftp.test", "port": 21, "remote_dir": "/shared"}
-    assert ftp.target_key(cfg, host="10.0.0.1") == ftp.target_key(
-        {**cfg, "remote_dir": "shared/"}, host="10.0.0.2",
+    assert ftp.target_key(cfg, host="10.0.0.1", folder="Office") == ftp.target_key(
+        {**cfg, "remote_dir": "shared/"}, host="10.0.0.2", folder="office",
     )
 
 
-def test_host_placeholder_separates_devices(backends):
+def test_local_folder_separates_devices(backends):
     ftp = backends.get("ftp")
-    cfg = {"host": "ftp.test", "port": 21, "remote_dir": "/b/{host}"}
-    assert ftp.target_key(cfg, host="10.0.0.1") != ftp.target_key(
-        cfg, host="10.0.0.2",
+    cfg = {"host": "ftp.test", "port": 21, "remote_dir": "/b"}
+    assert ftp.target_key(cfg, host="x", folder="A") != ftp.target_key(
+        cfg, host="x", folder="B",
     )
 
 
@@ -106,11 +115,11 @@ def test_git_not_checked(backends):
     assert backends.get("git").target_key({}, host="x") is None
 
 
-def test_default_folder_template_uses_host(backends):
-    # Шаблон папки по умолчанию (общие настройки хранилищ)
+def test_default_base_folder(backends):
+    # Базовая папка по умолчанию; папка устройства — внутри
     for bid in ("ftp", "webdav"):
         field = next(f for f in backends.get(bid).fields if f.name == "remote_dir")
-        assert field.default == "/network_backups/{host}"
+        assert field.default == "/network_backups"
 
 
 # =========================================================
@@ -118,13 +127,16 @@ def test_default_folder_template_uses_host(backends):
 # =========================================================
 
 def _ctx(tmp_path, host="10.0.0.7", name="Core SW"):
-    f = tmp_path / "config.rsc"
+    # Локальная папка устройства — «Core_SW_local»
+    local = tmp_path / "Core_SW_local"
+    local.mkdir(exist_ok=True)
+    f = local / "config.rsc"
     f.write_bytes(b"x")
     return PushContext(
         device_id="mikrotik/0",
         device_host=host,
         device_type="mikrotik",
-        backup_path=tmp_path,
+        backup_path=local,
         files={"config.rsc": f},
         changed=True,
         run_time=datetime.now(),
@@ -146,12 +158,12 @@ def test_ftp_push_uses_expanded_dir(backends, tmp_path, monkeypatch):
     monkeypatch.setattr(type(ftp), "_connect", staticmethod(lambda cfg: FakeFTP()))
 
     r = ftp.push(
-        {"host": "ftp.test", "remote_dir": "/b/{host}/{name}", "mode": "all"},
+        {"host": "ftp.test", "remote_dir": "/b", "mode": "all"},
         _ctx(tmp_path),
     )
 
     assert r.ok, r.message
-    assert ("cwd", "/b/10.0.0.7/Core SW") in calls
+    assert ("cwd", "/b/Core_SW_local") in calls
     assert ("stor", "STOR config.rsc") in calls
 
 
@@ -176,12 +188,13 @@ def test_webdav_push_uses_expanded_dir(backends, tmp_path, monkeypatch):
     monkeypatch.setattr(rclone_mod, "run", fake_run)
 
     r = webdav.push(
-        {"url": "https://dav.test/", "user": "u", "remote_dir": "/b/{host}", "mode": "all"},
+        {"url": "https://dav.test/", "user": "u", "remote_dir": "/", "mode": "all"},
         _ctx(tmp_path),
     )
 
     assert r.ok, r.message
-    assert targets == ["nbm_webdav:b/10.0.0.7/config.rsc"]
+    # Папка на WebDAV = имя локальной папки
+    assert targets == ["nbm_webdav:Core_SW_local/config.rsc"]
 
 
 # =========================================================
@@ -190,21 +203,22 @@ def test_webdav_push_uses_expanded_dir(backends, tmp_path, monkeypatch):
 
 def test_save_router_rejects_conflicting_dir(monkeypatch, tmp_path):
     """
-    Папка — из общего шаблона. Шаблон без {host} сводит два
-    устройства в одну папку → второе не сохраняется.
+    Папка на хранилище = имя локальной папки. Два устройства
+    с одинаковым именем локальной папки (в разных каталогах)
+    попали бы в одну удалённую папку → второе не сохраняется.
     """
     pytest.importorskip("httpx2", reason="нужен httpx2 для TestClient")
     from fastapi.testclient import TestClient
     import web.server as s
     from core.storage import global_config
 
-    if not s.plugin_manager or s.storage_manager is None             or s.storage_manager.get("ftp") is None:
+    if not s.plugin_manager or s.storage_manager is None \
+            or s.storage_manager.get("ftp") is None:
         pytest.skip("нет PluginManager или FTP backend")
 
-    template = {"value": "/nbm_shared"}
     monkeypatch.setattr(global_config, "load_global", lambda: {
         "ftp": {"host": "ftp.nbm-test.invalid", "port": 21,
-                "user": "u", "remote_dir": template["value"]},
+                "user": "u", "remote_dir": "/backups"},
     })
     routers = []
     monkeypatch.setattr(s.plugin_manager, "_plugins", {
@@ -214,24 +228,23 @@ def test_save_router_rejects_conflicting_dir(monkeypatch, tmp_path):
     s.app.dependency_overrides[s.require_auth] = lambda: "test"
     client = TestClient(s.app)
 
-    def post(ip):
+    def post(ip, backup_path):
         return client.post("/save-router", data={
             "device_type": "mikrotik",
             "ip": ip,
-            "backup_path": str(tmp_path / ip),
+            "backup_path": str(backup_path),
             "storage_ftp_enabled": "true",
         }, follow_redirects=False)
 
     try:
-        assert post("192.0.2.1").status_code == 303
-        r = post("192.0.2.2")
+        assert post("192.0.2.1", tmp_path / "site1" / "Office").status_code == 303
+        r = post("192.0.2.2", tmp_path / "site2" / "Office")
         assert r.status_code == 400
         assert "192.0.2.1" in r.json()["detail"]
         assert len(routers) == 1                      # второе не добавлено
 
-        # Шаблон с {host} — папки разные, сохраняется
-        template["value"] = "/nbm_shared/{host}"
-        assert post("192.0.2.3").status_code == 303
+        # Другое имя локальной папки — сохраняется
+        assert post("192.0.2.3", tmp_path / "site2" / "Office2").status_code == 303
         assert len(routers) == 2
     finally:
         s.app.dependency_overrides.clear()

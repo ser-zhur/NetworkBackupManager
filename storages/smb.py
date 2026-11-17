@@ -91,16 +91,15 @@ class SmbStorageBackend(StorageBackend):
         ),
         StorageField(
             name="remote_dir",
-            label="Каталог на сервере",
+            label="Базовая папка на сервере",
             required=True,
             default="",
             placeholder="backup/mikrotik",
             help=(
-                "Первый сегмент — имя SMB-шары. Пример: "
-                "backup/mikrotik/{host}. Подкаталоги создаются "
-                "автоматически. Подстановки: {host}, {name}, "
-                "{type}. У каждого устройства должен быть "
-                "свой каталог."
+                "Первый сегмент — имя SMB-шары, например "
+                "backup/mikrotik. Внутри создаётся папка "
+                "устройства с тем же именем, что и его "
+                "локальная папка бэкапов."
             ),
         ),
         StorageField(
@@ -182,7 +181,8 @@ class SmbStorageBackend(StorageBackend):
         """
         raw = config.get("remote_dir") or ""
         if ctx is not None:
-            raw = ctx.expand(raw)
+            # Базовая папка + имя локальной папки устройства
+            raw = ctx.remote_dir(raw)
         return raw.strip().strip("/")
 
     # -----------------------------------------------------

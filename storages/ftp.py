@@ -45,13 +45,12 @@ class FtpStorageBackend(StorageBackend):
         ),
         StorageField(
             name="remote_dir",
-            label="Каталог на сервере",
-            default="/network_backups/{host}",
-            placeholder="/network_backups/{host}",
+            label="Базовая папка на сервере",
+            default="/network_backups",
+            placeholder="/network_backups",
             help=(
-                "Подстановки: {host} — адрес устройства, "
-                "{name} — название, {type} — тип. У каждого "
-                "устройства должен быть свой каталог."
+                "Внутри создаётся папка устройства с тем же "
+                "именем, что и его локальная папка бэкапов."
             ),
         ),
         StorageField(
@@ -244,7 +243,8 @@ class FtpStorageBackend(StorageBackend):
         except Exception as exc:
             return PushResult.failure(f"Ошибка подключения: {exc}")
 
-        remote_dir = ctx.expand(config.get("remote_dir") or "/").strip()
+        # Базовая папка + имя локальной папки устройства
+        remote_dir = ctx.remote_dir(config.get("remote_dir") or "/")
 
         try:
             self._ensure_remote_dir(ftp, remote_dir)

@@ -116,6 +116,36 @@ def normalize_remote_dir(path: str) -> str:
     return "/" + "/".join(parts)
 
 
+def device_remote_dir(
+    base,
+    *,
+    folder: str,
+    host: str = "",
+    name: str = "",
+    device_type: str = "",
+) -> str:
+    """
+    Папка устройства на внешнем хранилище:
+
+        <базовая папка>/<имя локальной папки бэкапов>
+
+    Имя совпадает с локальной папкой устройства
+    (backup_path) — правило, а не настройка, чтобы локальное
+    и удалённое хранилища не расходились. В базовой папке
+    по-прежнему работают подстановки {host}/{name}/{type}.
+
+    Результат — '/a/b/<folder>' (ведущий '/', без хвостового).
+    """
+    expanded = expand_remote_dir(
+        base, host=host, name=name, device_type=device_type,
+    )
+    parts = [p for p in str(expanded or "").replace("\\", "/").split("/") if p]
+    folder = str(folder or "").strip().strip("/\\")
+    if folder:
+        parts.append(folder)
+    return "/" + "/".join(parts)
+
+
 # =========================================================
 # FIELD — описание поля формы
 # =========================================================
@@ -224,10 +254,14 @@ class PushContext:
     # в remote_dir). Пусто — {name} = {host}.
     device_name: str = ""
 
-    def expand(self, raw) -> str:
-        """remote_dir с подставленными {host}/{name}/{type}."""
-        return expand_remote_dir(
-            raw,
+    def remote_dir(self, base) -> str:
+        """
+        Папка устройства на хранилище: базовая папка +
+        имя локальной папки бэкапов (см. device_remote_dir).
+        """
+        return device_remote_dir(
+            base,
+            folder=Path(self.backup_path).name,
             host=self.device_host,
             name=self.device_name,
             device_type=self.device_type,
@@ -328,9 +362,12 @@ class StorageBackend:
         host: str,
         name: str = "",
         device_type: str = "",
+        folder: str = "",
     ) -> tuple | None:
         """
         Куда фактически пишет устройство: (сервер, каталог).
+        Каталог = базовая папка + folder (имя локальной папки
+        бэкапов устройства).
 
         Два устройства с одинаковым ключом перезаписывали бы
         файлы друг друга (имена файлов фиксированные:
@@ -348,13 +385,12 @@ class StorageBackend:
             str(config.get(f) or "").strip().rstrip("/").lower()
             for f in self.server_fields
         )
-        directory = normalize_remote_dir(
-            expand_remote_dir(
-                config.get(self.remote_dir_field) or "",
-                host=host,
-                name=name,
-                device_type=device_type,
-            )
+        directory = device_remote_dir(
+            config.get(self.remote_dir_field) or "",
+            folder=folder,
+            host=host,
+            name=name,
+            device_type=device_type,
         ).lower()
         return (self.id, server, directory)
 

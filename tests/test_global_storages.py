@@ -106,7 +106,7 @@ def test_build_global_from_routers(sm):
     assert g["webdav"]["url"] == "https://dav.test/x"
     assert g["webdav"]["vendor"] == "nextcloud"      # самый частый
     assert g["webdav"]["pass"] == "ENC"              # зашифрованный — как есть
-    assert g["webdav"]["remote_dir"] == "/{host}"
+    assert g["webdav"]["remote_dir"] == "/"          # базовая папка
     assert "enabled" not in g["webdav"]
     assert global_config.is_configured(sm.get("ftp"), g) is False
 
@@ -127,7 +127,7 @@ def test_migrate_creates_global_strips_devices_and_backs_up(sm, cfg_file, tmp_pa
 
     assert report["created_global"] is True
     assert report["devices_stripped"] == 2
-    assert global_config.load_global()["webdav"]["remote_dir"] == "/{host}"
+    assert global_config.load_global()["webdav"]["remote_dir"] == "/"
     assert json.loads(cfg_file.read_text(encoding="utf-8"))["port"] == 8080   # не потеряно
 
     saved = json.loads((plugin_dir / "routers.json").read_text(encoding="utf-8"))
@@ -168,7 +168,7 @@ def test_push_uses_global_settings(sm, cfg_file, tmp_path, monkeypatch):
     global_config.save_global({
         "ftp": {"host": "ftp.test", "port": 21, "user": "u",
                 "pass": pm.storage.encrypt("secret"),
-                "remote_dir": "/b/{host}", "mode": "all"},
+                "remote_dir": "/b", "mode": "all"},
     })
 
     seen = {}
@@ -189,13 +189,15 @@ def test_push_uses_global_settings(sm, cfg_file, tmp_path, monkeypatch):
     monkeypatch.setattr(sm.get("git"), "push",
                         lambda cfg, ctx: PushResult(True, "ok", {"changed": True}))
 
-    f = tmp_path / "config.rsc"
+    local = tmp_path / "Dev_Local"
+    local.mkdir()
+    f = local / "config.rsc"
     f.write_bytes(b"x")
     router = {"host": "10.0.0.7", "storage": {"ftp": {"enabled": True}, "webdav": {"enabled": True}}}
 
-    pm._push_to_storages("mikrotik", 0, "10.0.0.7", router, tmp_path, [str(f)])
+    pm._push_to_storages("mikrotik", 0, "10.0.0.7", router, local, [str(f)])
 
-    assert seen["cwd"] == "/b/10.0.0.7"
+    assert seen["cwd"] == "/b/Dev_Local"                   # = имя локальной папки
     assert seen["pass"] == "secret"                       # расшифрован
     state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
     webdav = state["mikrotik/0"]["backends"]["webdav"]
@@ -254,13 +256,19 @@ def test_settings_save_encrypts_and_keeps_password(web):
     assert global_config.load_global()["webdav"]["pass"] == enc
 
 
-def test_settings_save_rejects_template_without_host(web):
-    s, c, _ = web
-    c.post("/settings/storages/save", data=_webdav_form("/{host}", "pw"))
-    r = c.post("/settings/storages/save", data=_webdav_form("/shared"),
+def test_settings_save_rejects_same_local_folder(web, tmp_path):
+    s, c, routers = web
+    # Два устройства с одинаковым именем локальной папки
+    routers[1]["backup_path"] = str(tmp_path / "other" / "a")
+    r = c.post("/settings/storages/save", data=_webdav_form("/", "pw"),
                follow_redirects=False)
     assert r.status_code == 303 and "error=" in r.headers["location"]
-    assert global_config.load_global()["webdav"]["remote_dir"] == "/{host}"   # не сохранено
+    assert "webdav" not in global_config.load_global()        # не сохранено
+
+    routers[1]["backup_path"] = str(tmp_path / "b")
+    r = c.post("/settings/storages/save", data=_webdav_form("/", "pw"),
+               follow_redirects=False)
+    assert "storages_saved" in r.headers["location"]
 
 
 def test_device_form_only_toggles(web):
@@ -271,7 +279,7 @@ def test_device_form_only_toggles(web):
 
     assert 'name="storage_webdav_enabled"' in page
     assert 'name="storage_webdav_url"' not in page              # полей нет
-    assert "/10.0.0.1" in page                                    # итоговая папка
+    assert "/10.0.0.1/a" in page          # итоговая папка = база + имя локальной
     assert 'name="storage_ftp_enabled"' in page and "Не настроено" in page
 
     add = c.get("/add").text

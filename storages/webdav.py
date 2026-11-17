@@ -79,14 +79,13 @@ class WebDavStorageBackend(StorageBackend):
         ),
         StorageField(
             name="remote_dir",
-            label="Каталог на сервере",
-            default="/network_backups/{host}",
-            placeholder="/network_backups/{host}",
+            label="Базовая папка на сервере",
+            default="/network_backups",
+            placeholder="/network_backups",
             help=(
-                "Абсолютный путь от корня WebDAV, создаётся "
-                "при необходимости. Подстановки: {host}, "
-                "{name}, {type}. У каждого устройства должен "
-                "быть свой каталог."
+                "Путь от корня WebDAV. Внутри создаётся папка "
+                "устройства с тем же именем, что и его "
+                "локальная папка бэкапов."
             ),
         ),
         StorageField(
@@ -153,7 +152,8 @@ class WebDavStorageBackend(StorageBackend):
         """
         raw = config.get("remote_dir") or ""
         if ctx is not None:
-            raw = ctx.expand(raw)
+            # Базовая папка + имя локальной папки устройства
+            raw = ctx.remote_dir(raw)
         return raw.strip().strip("/")
 
     # -----------------------------------------------------
