@@ -54,8 +54,12 @@ class FakeSFTP:
 
 
 def make_ssh(behaviour, closed):
+    import paramiko
+
     class FakeSSH:
-        def set_missing_host_key_policy(self, p): pass
+        def __init__(self): self._keys = paramiko.HostKeys()
+        def get_host_keys(self): return self._keys
+        def set_missing_host_key_policy(self, p): self.policy = p
         def connect(self, **kw):
             if behaviour == "connect_fail":
                 raise socket.timeout("timed out")

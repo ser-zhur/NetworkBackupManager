@@ -4,6 +4,8 @@ import logging
 import paramiko
 import socket
 
+from core import host_keys
+
 
 def backup_pfsense_ssh(router):
     host = router["host"]
@@ -61,7 +63,9 @@ def backup_pfsense_ssh(router):
 
     key = paramiko.RSAKey.from_private_key_file(key_path)
     ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    # Ключ хоста: запомнить при первом подключении, отказать
+    # при изменённом (раньше AutoAddPolicy принимал любой).
+    host_keys.prepare_client(ssh, port)
 
     try:
         ssh.connect(

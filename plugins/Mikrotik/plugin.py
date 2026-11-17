@@ -9,6 +9,8 @@ from datetime import datetime
 import paramiko
 from scp import SCPClient
 
+from core import host_keys
+
 _debug_log = logging.getLogger("nbm.debug")
 
 # =========================================================
@@ -84,6 +86,10 @@ def _do_ros7(router, backup_path):
             debug=bool(router.get("debug_connection")),
         )
     except Exception as exc:
+        # Изменённый ключ хоста — не «не та версия ROS»:
+        # пробовать другой путь подключения нельзя.
+        if host_keys.is_host_key_error(exc):
+            raise
         if _is_auth_error(exc):
             raise _AuthFailure(
                 f"{type(exc).__name__}: {exc}"
@@ -111,6 +117,8 @@ def _do_ros6(router, backup_path):
     try:
         return backup_router_ros6(router, backup_path)
     except Exception as exc:
+        if host_keys.is_host_key_error(exc):
+            raise
         if _is_auth_error(exc):
             raise _AuthFailure(
                 f"{type(exc).__name__}: {exc}"
@@ -253,12 +261,17 @@ def backup_router_ros6(router, local_dir):
     ssh_verbose = ["-vvv"] if debug else []
     scp_verbose = ["-v"]   if debug else []
 
+    # Ключ хоста: accept-new — запомнить при первом
+    # подключении, отказать при изменённом (раньше
+    # StrictHostKeyChecking=no принимал любой).
+    host_key_opts = host_keys.ssh_exe_options()
+
     ssh_base = [
         "ssh", *ssh_verbose,
         "-p", str(port), "-i", key,
         "-T", "-n", "-oBatchMode=yes", "-oConnectTimeout=10",
-        "-oServerAliveInterval=5", "-oStrictHostKeyChecking=no",
-        "-oUserKnownHostsFile=/dev/null", "-oMACs=hmac-sha1,hmac-md5",
+        "-oServerAliveInterval=5", *host_key_opts,
+        "-oMACs=hmac-sha1,hmac-md5",
         "-oKexAlgorithms=+diffie-hellman-group1-sha1",
         "-oPubkeyAcceptedAlgorithms=+ssh-rsa",
         f"{user}@{host}",
@@ -268,7 +281,7 @@ def backup_router_ros6(router, local_dir):
         "scp", *scp_verbose,
         "-P", str(port), "-i", key,
         "-oBatchMode=yes", "-oConnectTimeout=10",
-        "-oStrictHostKeyChecking=no", "-oUserKnownHostsFile=/dev/null",
+        *host_key_opts,
         "-oMACs=hmac-sha1,hmac-md5",
         "-oKexAlgorithms=+diffie-hellman-group1-sha1",
         "-oPubkeyAcceptedAlgorithms=+ssh-rsa",
@@ -469,6 +482,10 @@ def _connect_ros7(
 
         try:
             transport.start_client(timeout=10)
+
+            # Ключ хоста — до аутентификации, чтобы не
+            # предъявлять наш ключ подменённому серверу.
+            host_keys.verify_transport(transport, host, port)
 
             if debug:
                 try:

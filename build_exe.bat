@@ -288,6 +288,7 @@ python -m PyInstaller ^
   --hidden-import core.plugin_manager ^
   --hidden-import core.secure_storage ^
   --hidden-import core.scheduler ^
+  --hidden-import core.host_keys ^
   --hidden-import web ^
   --hidden-import web.server ^
   --hidden-import fastapi ^

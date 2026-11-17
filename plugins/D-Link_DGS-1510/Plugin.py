@@ -6,6 +6,8 @@ import logging
 
 import paramiko
 
+from core import host_keys
+
 
 # ANSI escape sequences (приглашение, цвета и т.п.)
 ANSI_RE = re.compile(r'\x1b\[[0-9;?]*[a-zA-Z]')
@@ -76,7 +78,9 @@ def backup_dlink_ssh(router):
     logging.info("📡 Подключение к D-Link %s:%s по SSH", host, port)
 
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    # Ключ хоста: запомнить при первом подключении, отказать
+    # при изменённом (раньше AutoAddPolicy принимал любой).
+    host_keys.prepare_client(client, port)
 
     try:
         client.connect(
