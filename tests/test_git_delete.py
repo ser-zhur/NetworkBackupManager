@@ -8,8 +8,6 @@
 
 from datetime import datetime, timedelta
 
-import pytest
-
 
 # =========================================================
 # MARK / UNMARK
@@ -374,10 +372,8 @@ def test_retention_ignores_recent(make_repo):
 
 def test_retention_empty_repo(tmp_path):
     from core.maintenance import apply_retention
-    from core.git_storage import GitStorage
 
     empty = tmp_path / "empty"
-    gs = GitStorage(empty)
 
     marked = apply_retention(empty, {"keep_last": 5})
     assert marked == []

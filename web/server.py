@@ -6,6 +6,7 @@ import threading
 import secrets
 import hashlib
 import base64
+import binascii
 import time
 import urllib.parse
 
@@ -147,7 +148,53 @@ storage = SecureStorage(
     str(BASE_DIR)
 )
 
-security = HTTPBasic()
+# WWW-Authenticate для всех 401: charset="UTF-8" (RFC 7617)
+# подсказывает браузеру кодировать логин/пароль в UTF-8.
+_WWW_AUTHENTICATE = 'Basic charset="UTF-8"'
+
+
+class Utf8HTTPBasic(HTTPBasic):
+    """
+    HTTP Basic с поддержкой не-ASCII логина и пароля.
+
+    Стандартный HTTPBasic декодирует учётные данные как
+    ASCII: пользователь, созданный с кириллицей в логине
+    или пароле (--create-user это разрешает), не мог войти
+    вовсе. Здесь — UTF-8 (так шлют современные браузеры),
+    при ошибке — Latin-1.
+    """
+
+    async def __call__(self, request: Request) -> HTTPBasicCredentials:
+        def unauthorized(detail: str):
+            return HTTPException(
+                status_code=401,
+                detail=detail,
+                headers={"WWW-Authenticate": _WWW_AUTHENTICATE},
+            )
+
+        authorization = request.headers.get("Authorization") or ""
+        scheme, _, param = authorization.partition(" ")
+        if scheme.lower() != "basic" or not param:
+            raise unauthorized("Not authenticated")
+
+        try:
+            raw = base64.b64decode(param.strip(), validate=True)
+        except (ValueError, binascii.Error):
+            raise unauthorized("Invalid authentication credentials")
+
+        try:
+            data = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            data = raw.decode("latin-1")
+
+        username, sep, password = data.partition(":")
+        if not sep:
+            raise unauthorized("Invalid authentication credentials")
+
+        return HTTPBasicCredentials(username=username, password=password)
+
+
+security = Utf8HTTPBasic()
 
 
 # =========================================================
@@ -468,7 +515,7 @@ def require_auth(
             ),
             headers={
                 "WWW-Authenticate":
-                "Basic"
+                _WWW_AUTHENTICATE
             },
         )
 
@@ -502,14 +549,16 @@ def require_auth(
             ),
             headers={
                 "WWW-Authenticate":
-                "Basic"
+                _WWW_AUTHENTICATE
             },
         )
 
     valid = (
+        # Байты, а не str: compare_digest не принимает строки
+        # с не-ASCII символами (TypeError → 500 вместо 401).
         secrets.compare_digest(
-            credentials.username,
-            username,
+            credentials.username.encode("utf-8"),
+            str(username).encode("utf-8"),
         )
         and
         verify_password(
@@ -525,7 +574,7 @@ def require_auth(
             detail="Неверный логин или пароль.",
             headers={
                 "WWW-Authenticate":
-                "Basic"
+                _WWW_AUTHENTICATE
             },
         )
 
@@ -1237,18 +1286,6 @@ def _build_device_payload(
             "files":   c.get("files", []) or [],
             "note":    c.get("note", ""),
         })
-
-    # ---- Версия прошивки ----
-    # Плагины не заполняют это поле автоматически —
-    # ожидаем, что пользователь вводит его вручную
-    # (см. add.html / edit.html) или что оно появится
-    # в routers.json из внешнего источника.
-    version = (
-        router.get("version")
-        or router.get("os_version")
-        or router.get("firmware")
-        or "—"
-    )
 
     # ---- Включён ли git-бэкенд для этого устройства ----
     # Логика зеркалит StorageManager.enabled_for():
@@ -3199,9 +3236,28 @@ def git_download_file(
         content=data,
         media_type="application/octet-stream",
         headers={
-            "Content-Disposition":
-                f'attachment; filename="{filename}"',
+            "Content-Disposition": _attachment_header(filename),
         },
+    )
+
+
+def _attachment_header(filename: str) -> str:
+    """
+    Content-Disposition для скачивания (RFC 6266 / 5987).
+
+    Заголовки HTTP — только latin-1: не-ASCII имя вида
+    «конфиг.rsc» в filename="..." роняло ответ (500).
+    Кавычка в имени ломала заголовок. Даём ASCII-имя для
+    старых клиентов и точное имя в filename*=UTF-8''...
+    """
+    fallback = "".join(
+        ch if 32 <= ord(ch) < 127 and ch not in ('"', chr(92)) else "_"
+        for ch in filename
+    ) or "download"
+    quoted = urllib.parse.quote(filename, safe="")
+    return (
+        f'attachment; filename="{fallback}"; '
+        f"filename*=UTF-8''{quoted}"
     )
 
 
@@ -4769,13 +4825,21 @@ async def delete_device(
     else:
         key_status = "сохранён"
 
+    # Раньше лог всегда писал «файлов N», даже если каталог
+    # бэкапов не удалялся (защита _is_safe_to_delete).
+    if backup_removed:
+        backups_status = f"удалено файлов {removed_bytes} ({size_str})"
+    elif backup_path:
+        backups_status = "каталог бэкапов сохранён"
+    else:
+        backups_status = "каталога бэкапов нет"
+
     logging.info(
-        "🗑 Удалено устройство %s (%s): "
-        "файлов %d (%s), SSH-ключ %s, запрос от %s",
+        "🗑 Удалено устройство %s (%s): %s, SSH-ключ %s, "
+        "запрос от %s",
         device_name,
         device_id,
-        removed_bytes,
-        size_str,
+        backups_status,
         key_status,
         user,
     )

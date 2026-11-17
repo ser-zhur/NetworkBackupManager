@@ -130,7 +130,6 @@ from core.service_installer import (
     uninstall_service,
     start_service,
     stop_service,
-    schedule_stop,
     schedule_restart,
     relaunch_elevated,
     wait_for_http,
@@ -913,7 +912,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         sys.exit(130)
 
-    except Exception as exc:
+    except Exception:
 
         # FIX: теперь критичная ошибка гарантированно попадает
         # в app.log с полным traceback.

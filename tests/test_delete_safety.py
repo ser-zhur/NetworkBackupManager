@@ -10,8 +10,6 @@
 #
 # =========================================================
 
-import json
-
 import pytest
 
 s = pytest.importorskip("web.server")

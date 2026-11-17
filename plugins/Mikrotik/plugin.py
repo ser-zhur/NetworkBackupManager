@@ -4,7 +4,6 @@ import sys
 import time
 import subprocess
 import logging
-from datetime import datetime
 
 import paramiko
 from scp import SCPClient
