@@ -2590,6 +2590,7 @@ async def save_router_endpoint(
 
 @app.post("/sync-storages/{device_type}/{index}")
 def sync_storages_endpoint(
+    request: Request,           # <--- ДОБАВЛЕНО
     device_type: str,
     index: int,
     background_tasks: BackgroundTasks,
@@ -2628,6 +2629,9 @@ def sync_storages_endpoint(
         device_id, user,
     )
 
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return Response(status_code=204)
+
     return RedirectResponse(
         url=f"/?selected={device_id}",
         status_code=303,
@@ -2650,25 +2654,21 @@ def run_backup(
         require_auth
     ),
 ):
-
     device_id = f"{device_type}/{index}"
+    is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
 
     # Блокируем запуск, если:
     #   • занято именно это устройство;
     #   • идёт массовый прогон;
     #   • идёт синхронизация хранилищ этого устройства
-    #     (см. /sync-storages/...).
-    # Параллельный бэкап ДРУГОГО устройства — разрешён.
     if (
         is_backup_running_for(device_id)
         or is_sync_running_for(device_id)
     ):
-
+        if is_ajax:
+            return Response(status_code=204)
         return RedirectResponse(
-            url=(
-                f"/logs/device/"
-                f"{device_type}/{index}"
-            ),
+            url=f"/logs/device/{device_type}/{index}",
             status_code=303,
         )
 
@@ -2690,7 +2690,8 @@ def run_backup(
             )
         )
     ):
-
+        if is_ajax:
+            return Response(status_code=404)
         return HTMLResponse(
             "<h3>Устройство не найдено</h3>"
             "<a href='/'>Назад</a>",
@@ -2712,7 +2713,6 @@ def run_backup(
             "ssh_pass"
         ]
     ):
-
         secure_router[
             "ssh_pass"
         ] = storage.decrypt(
@@ -2728,8 +2728,8 @@ def run_backup(
         secure_router,
     )
 
-    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
-        return Response(status_code=204)  # No Content — остаемся на странице
+    if is_ajax:
+        return Response(status_code=204)
     return RedirectResponse(
         url=f"/logs/device/{device_type}/{index}",
         status_code=303,
@@ -4038,11 +4038,6 @@ async def update_router(
     for field in _SERVICE_FIELDS:
         if field in old_router:
             updated_router[field] = old_router[field]
-
-    if form.get("debug_connection") == "true":
-        updated_router["debug_connection"] = True
-
-    routers_list[index] = updated_router
 
 
     for p_folder in (

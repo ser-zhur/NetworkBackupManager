@@ -1352,17 +1352,21 @@ function initFilters() {
     _buildTypeChips();
     _buildTagChips();
 
-    const toggleTagsBtn = document.getElementById('toggle-tags-btn');
-    if (toggleTagsBtn) {
-        toggleTagsBtn.addEventListener('click', () => {
-            tagsExpanded = !tagsExpanded;
-            _buildTagChips(); // перерисовываем чипы
-            _updateTagChips(); // обновляем счетчики
-        });
-    }
-
     const resetBtn = document.getElementById('reset-filters');
     if (resetBtn) resetBtn.addEventListener('click', resetFilters);
+
+    // Делегирование клика для кнопки "Показать все теги"
+    const filtersBar = document.getElementById('filters-bar');
+    if (filtersBar) {
+        filtersBar.addEventListener('click', (e) => {
+            const toggleBtn = e.target.closest('#toggle-tags-btn');
+            if (toggleBtn) {
+                tagsExpanded = !tagsExpanded;
+                _buildTagChips();
+                _updateTagChips();
+            }
+        });
+    }
 
     applyAll();
 }
@@ -1393,29 +1397,21 @@ document.addEventListener('DOMContentLoaded', () => {
     applyRelTime();
     applySort();
 
+    // 2. Перенос закреплённых в отдельный блок.
+    //    Должен идти ДО initFilters.
     initPinned();
+
+    // 3. Инициализация фильтров, клавиатуры и групп
     initFilters();
     initKeyboardNav();
     initGroupPersistence(); 
 
-    // 2. Перенос закреплённых в отдельный блок.
-    //    Должен идти ДО initFilters: счётчики чипов
-    //    считают по .device-item, и им всё равно,
-    //    в каком контейнере они лежат. Но фильтры
-    //    вызывают applyView, которая обходит только
-    //    .device-group — если перенести закреплённых
-    //    раньше, группы не «потеряют» их случайно.
-    initPinned();
-
-
-        // Перехват отправки форм бэкапа (AJAX вместо перехода)
+    // 4. Перехват отправки форм бэкапа (AJAX вместо перехода)
     document.addEventListener('submit', async (e) => {
         const form = e.target;
-        // Ищем формы бэкапа: одиночный и массовый
         if (form.action.includes('/run-progress/') || form.action.includes('/run-now')) {
             e.preventDefault();
             
-            // Блокируем кнопку визуально, если это одиночный бэкап в списке
             const submitBtn = form.querySelector('button[type="submit"]');
             if (submitBtn) {
                 submitBtn.disabled = true;
@@ -1428,27 +1424,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
-            // Отправляем на сервер в фоне
             try {
                 await fetch(form.action, {
                     method: 'POST',
                     headers: { 'X-Requested-With': 'XMLHttpRequest' }
                 });
                 
-                // Сразу обновляем статусы (спиннеры, пульсации) через 500мс
                 setTimeout(refreshBackupStatus, 500);
                 setTimeout(refreshBackupStatus, 1500);
             } catch (err) {
                 console.error('Ошибка запуска бэкапа:', err);
-                // Разблокируем кнопку при ошибке
                 if (submitBtn) submitBtn.disabled = false;
             }
         }
     });
-
-    // 3. Инициализация фильтров
-    initFilters();
-});
+}); 
 
 // ============================================================
 // ЗАКРЕПЛЁННЫЕ
