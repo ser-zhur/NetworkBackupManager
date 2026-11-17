@@ -722,8 +722,21 @@ class PluginManager:
     def run_all_backups(self):
         """Параллельный запуск бэкапов для всех устройств"""
 
-        MAX_WORKERS = 5
-        BACKUP_TIMEOUT = 300  # секунд
+        # Читаем лимиты из config.json, чтобы настройки из UI работали.
+        # Клампим значения, чтобы не сломать систему безумными цифрами
+        # (например, 1000 потоков или 0-секундный таймаут).
+        from core.context import CONFIG_FILE, load_json
+        app_cfg = load_json(CONFIG_FILE, {})
+
+        try:
+            MAX_WORKERS = max(1, min(20, int(app_cfg.get("max_parallel_backups", 5))))
+        except (TypeError, ValueError):
+            MAX_WORKERS = 5
+
+        try:
+            BACKUP_TIMEOUT = max(30, int(app_cfg.get("backup_timeout_seconds", 300)))
+        except (TypeError, ValueError):
+            BACKUP_TIMEOUT = 300
 
         tasks = []
 

@@ -680,6 +680,72 @@ class GitStorage:
             )
             return {}
 
+    def _save_notes(self, notes: dict) -> None:
+        """
+        Атомарная запись заметок (tmp + os.replace).
+
+        Вызывать под self._lock.
+        """
+        import os
+
+        path = self._notes_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        try:
+            tmp.write_text(
+                json.dumps(notes, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+
+    def _remap_notes(
+        self,
+        sha_map: dict[str, str],
+        deleted: set[str],
+    ) -> None:
+        """
+        Переносит заметки на новые sha после пересборки.
+
+        • sha есть в sha_map  → заметка переезжает на новый sha;
+        • sha удалён          → заметка удаляется вместе с версией;
+        • прочие (неизвестные) — оставляем как есть, не теряем.
+
+        Вызывать под self._lock. Ошибки логируются, но не
+        поднимаются: история уже пересобрана.
+        """
+        notes = self.get_notes()
+        if not notes:
+            return
+
+        new_notes: dict[str, str] = {}
+        for sha, text in notes.items():
+            if sha in sha_map:
+                new_notes[sha_map[sha]] = text
+            elif sha in deleted:
+                continue
+            else:
+                new_notes[sha] = text
+
+        if new_notes == notes:
+            return
+
+        try:
+            self._save_notes(new_notes)
+        except Exception as exc:
+            logger.error(
+                "git[%s]: не удалось перенести заметки "
+                "после пересборки: %s",
+                self.repo_path.name,
+                exc,
+                exc_info=True,
+            )
+
     def set_note(self, sha: str, note: str) -> None:
         with self._lock:
             notes = self.get_notes()
@@ -688,14 +754,7 @@ class GitStorage:
             else:
                 notes.pop(sha, None)
 
-            path = self._notes_path()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                json.dumps(
-                    notes, ensure_ascii=False, indent=2
-                ),
-                encoding="utf-8",
-            )
+            self._save_notes(notes)
 
     def get_note(self, sha: str) -> str:
         return self.get_notes().get(sha, "")
@@ -832,8 +891,14 @@ class GitStorage:
                 self._save_deleted(set())
                 return True, "Нечего удалять"
 
-            # Идём от старых к новым, пересобирая цепочку
+            # Идём от старых к новым, пересобирая цепочку.
+            #
+            # sha_map: старый sha → новый sha. Коммиты ниже
+            # первого удалённого получают тот же sha (объект
+            # идентичен), выше — новый. Карта нужна, чтобы
+            # перенести заметки: они привязаны к sha.
             new_parent: bytes | None = None
+            sha_map: dict[str, str] = {}
 
             for old_commit in reversed(kept):
                 new_commit = Commit()
@@ -856,12 +921,24 @@ class GitStorage:
 
                 repo.object_store.add_object(new_commit)
                 new_parent = new_commit.id
+                sha_map[old_commit.id.decode()] = new_commit.id.decode()
 
             repo.refs[b"refs/heads/master"] = new_parent
 
             removed = len(all_commits) - len(kept)
 
             self._save_deleted(set())
+
+            # Заметки — после обновления ref: история уже
+            # пересобрана, и даже если запись заметок упадёт,
+            # репозиторий останется консистентным.
+            self._remap_notes(
+                sha_map,
+                {
+                    s.decode() if isinstance(s, bytes) else s
+                    for s in shas_to_delete
+                },
+            )
 
             logger.info(
                 "git[%s]: rebuild — удалено %d из %d",

@@ -88,7 +88,7 @@
             </form>
             {% endif %}
             
-            <div class="flex flex-wrap items-center gap-1.5">
+                        <div class="flex flex-wrap items-center gap-1.5">
                 {% if not header_is_home %}
                 <a href="/" class="px-3 py-2 rounded-lg text-xs font-medium
                                   bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
@@ -96,31 +96,50 @@
                     🏠 Главная
                 </a>
                 {% endif %}
-                <a href="/scheduler" class="px-3 py-2 rounded-lg text-xs font-medium
-                                           bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
-                                           border border-gray-200 dark:border-slate-700 transition">
-                    ⏰ Планировщик
-                </a>
-                <a href="/service" class="px-3 py-2 rounded-lg text-xs font-medium
-                                         bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
-                                         border border-gray-200 dark:border-slate-700 transition">
-                    ⚙ Служба
-                </a>
+
                 <a href="/logs/main" class="px-3 py-2 rounded-lg text-xs font-medium
                                            bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
                                            border border-gray-200 dark:border-slate-700 transition">
                     📜 Общий лог
                 </a>
-                <a href="/retention" class="px-3 py-2 rounded-lg text-xs font-medium
-                                           bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
-                                           border border-gray-200 dark:border-slate-700 transition">
-                    🧹 Очистка
-                </a>
-                <a href="/storage-settings" class="px-3 py-2 rounded-lg text-xs font-medium
-                                                  bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
-                                                  border border-gray-200 dark:border-slate-700 transition">
-                    🗄 Хранилища
-                </a>
+
+                <details class="settings-menu relative inline-block">
+                    <summary class="cursor-pointer list-none px-3 py-2 rounded-lg text-xs font-medium
+                                    bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                                    border border-gray-200 dark:border-slate-700 transition
+                                    inline-flex items-center gap-1">
+                        ⚙ Настройки
+                        <span class="text-[9px] opacity-60">▾</span>
+                    </summary>
+                    <div class="absolute right-0 top-full mt-1 min-w-[210px]
+                                bg-white dark:bg-slate-900
+                                border border-gray-200 dark:border-slate-700
+                                rounded-lg shadow-lg py-1 z-50">
+                        <a href="/settings?tab=general"
+                           class="block px-4 py-2 text-xs hover:bg-gray-100 dark:hover:bg-slate-800">
+                            Общие параметры
+                        </a>
+                        <div class="border-t border-gray-100 dark:border-slate-800 my-1"></div>
+                        <a href="/settings?tab=scheduler"
+                           class="block px-4 py-2 text-xs hover:bg-gray-100 dark:hover:bg-slate-800">
+                            ⏰ Планировщик
+                        </a>
+                        <a href="/settings?tab=retention"
+                           class="block px-4 py-2 text-xs hover:bg-gray-100 dark:hover:bg-slate-800">
+                            🧹 Очистка истории
+                        </a>
+                        <a href="/settings?tab=storage"
+                           class="block px-4 py-2 text-xs hover:bg-gray-100 dark:hover:bg-slate-800">
+                            🗄 Хранилища
+                        </a>
+                        <div class="border-t border-gray-100 dark:border-slate-800 my-1"></div>
+                        <a href="/settings?tab=service"
+                           class="block px-4 py-2 text-xs hover:bg-gray-100 dark:hover:bg-slate-800">
+                            ⚙ Служба Windows
+                        </a>
+                    </div>
+                </details>
+
                 {% if header_show_add %}
                 <a href="/add" class="px-3 py-2 rounded-lg text-xs font-medium
                                      bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
@@ -155,4 +174,15 @@
             );
         });
     })();
+</script>
+<style>
+    details.settings-menu > summary::-webkit-details-marker { display: none; }
+    details.settings-menu > summary::marker { content: ""; }
+</style>
+<script>
+    document.addEventListener('click', function (e) {
+        document.querySelectorAll('details.settings-menu[open]').forEach(function (d) {
+            if (!d.contains(e.target)) d.open = false;
+        });
+    });
 </script>

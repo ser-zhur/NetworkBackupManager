@@ -167,6 +167,82 @@ def test_sweep_preserves_content(make_repo):
         )
 
 
+def test_sweep_preserves_notes(make_repo):
+    """
+    Пересборка меняет sha коммитов выше удалённого.
+    Заметки должны переехать на новые sha, а не потеряться.
+    """
+    from core.maintenance import sweep_repo
+
+    repo_path, gs = make_repo(n=5)
+    history = gs.get_history()
+
+    # #005 (новейший) и #001 (ниже удаляемого) — с заметками
+    gs.set_note(history[0]["sha"], "важная версия")
+    gs.set_note(history[4]["sha"], "самая первая")
+
+    gs.mark_deleted({history[2]["sha"]})  # удаляем #003
+    ok, msg = sweep_repo(repo_path)
+    assert ok is True, msg
+
+    notes = gs.get_notes()
+    by_message = {
+        c["message"]: notes.get(c["sha"], "")
+        for c in gs.get_history()
+    }
+
+    assert by_message["Backup #005"] == "важная версия"
+    assert by_message["Backup #001"] == "самая первая"
+    # Ни одной «осиротевшей» заметки
+    live = {c["sha"] for c in gs.get_history()}
+    assert set(notes) <= live
+
+
+def test_sweep_drops_note_of_deleted_commit(make_repo):
+    from core.maintenance import sweep_repo
+
+    repo_path, gs = make_repo(n=4)
+    target = gs.get_history()[1]["sha"]
+
+    gs.set_note(target, "удаляется вместе с версией")
+    gs.mark_deleted({target})
+    ok, msg = sweep_repo(repo_path)
+    assert ok is True, msg
+
+    assert target not in gs.get_notes()
+    assert gs.get_notes() == {}
+
+
+def test_retention_after_sweep_still_protects_notes(make_repo):
+    """
+    Сценарий автоочистки: retention → sweep → retention.
+    Версия с заметкой не должна быть помечена во втором
+    прогоне (раньше заметка терялась при sweep).
+    """
+    from core.maintenance import apply_retention, sweep_repo
+
+    repo_path, gs = make_repo(n=6)
+    history = gs.get_history()
+    noted_msg = history[1]["message"]
+    gs.set_note(history[1]["sha"], "не удалять")
+
+    rules = {"keep_last": 0, "max_age_days": 1, "keep_with_notes": True}
+    future = datetime.now() + timedelta(days=30)
+
+    # Удаляем самую старую версию — sha выше неё меняются
+    gs.mark_deleted({history[-1]["sha"]})
+    ok, msg = sweep_repo(repo_path)
+    assert ok is True, msg
+
+    marked = apply_retention(repo_path, rules, now=future)
+
+    noted_sha = next(
+        c["sha"] for c in gs.get_history(include_marked=True)
+        if c["message"] == noted_msg
+    )
+    assert noted_sha not in marked
+
+
 def test_sweep_deletes_first_commit(make_repo):
     """Удаление самого старого коммита — новый корень."""
     from core.maintenance import sweep_repo

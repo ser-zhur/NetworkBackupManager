@@ -1906,31 +1906,6 @@ async def api_storage_test(
 
 
 # =========================================================
-# SERVICE PAGE
-# =========================================================
-
-@app.get(
-    "/service",
-    response_class=HTMLResponse,
-)
-def service_page(
-    request: Request,
-    user: str = Depends(
-        require_auth
-    ),
-):
-
-    return templates.TemplateResponse(
-        request,
-        "service.html",
-        {
-            "service":
-                get_status(),
-        },
-    )
-
-
-# =========================================================
 # SERVICE INSTALL
 # =========================================================
 
@@ -2868,27 +2843,6 @@ def backups_page(
 # SCHEDULER
 # =========================================================
 
-@app.get(
-    "/scheduler",
-    response_class=HTMLResponse,
-)
-def scheduler_page(
-    request: Request,
-    user: str = Depends(
-        require_auth
-    ),
-):
-
-    return templates.TemplateResponse(
-        request,
-        "scheduler.html",
-        {
-            "config":
-                scheduler.config
-        },
-    )
-
-
 @app.post(
     "/scheduler/save"
 )
@@ -2925,7 +2879,7 @@ async def save_scheduler_config(
     invalidate_status_cache()
 
     return RedirectResponse(
-        url="/",
+        url="/settings?tab=scheduler&message=saved",
         status_code=303,
     )
 
@@ -3079,7 +3033,7 @@ def git_history_page(
             status_code=404,
         )
 
-        commits = []
+    commits = []
     notes = {}
     available = git_available()
     initialized = storage.is_initialized() if available else False
@@ -4143,35 +4097,6 @@ def _collect_maintenance_stats() -> list:
 
     return rows
 
-
-@app.get("/retention", response_class=HTMLResponse)
-def retention_page(
-    request: Request,
-    user: str = Depends(require_auth),
-):
-    config = load_json(CONFIG_FILE, {})
-    retention = config.get("retention") or {}
-
-    stats = _collect_maintenance_stats()
-
-    total_versions = sum(r["total"] for r in stats)
-    total_marked = sum(r["marked"] for r in stats)
-
-    return templates.TemplateResponse(
-        request,
-        "retention.html",
-        {
-            "retention": retention,
-            "stats": stats,
-            "total_versions": total_versions,
-            "total_marked": total_marked,
-            "message": request.query_params.get("message", ""),
-            "msg_count": request.query_params.get("count", "0"),
-            "msg_devices": request.query_params.get("devices", "0"),
-        },
-    )
-
-
 @app.post("/retention/save")
 async def retention_save(
     user: str = Depends(require_auth),
@@ -4208,7 +4133,7 @@ async def retention_save(
     )
 
     return RedirectResponse(
-        "/retention?message=saved",
+        "/settings?tab=retention&message=saved",
         status_code=303,
     )
 
@@ -4226,13 +4151,13 @@ def maintenance_prune_all(
 
     if not retention:
         return RedirectResponse(
-            "/retention?message=no_config",
+            "/settings?tab=retention&message=no_config",
             status_code=303,
         )
 
     if not git_available():
         return RedirectResponse(
-            "/retention?message=no_git",
+            "/settings?tab=retention&message=no_git",
             status_code=303,
         )
 
@@ -4264,7 +4189,7 @@ def maintenance_prune_all(
     )
 
     return RedirectResponse(
-        f"/retention?message=pruned"
+        f"/settings?tab=retention&message=pruned"
         f"&count={total_marked}"
         f"&devices={devices_processed}",
         status_code=303,
@@ -4280,7 +4205,7 @@ def maintenance_sweep_all(
     """
     if not git_available():
         return RedirectResponse(
-            "/retention?message=no_git",
+            "/settings?tab=retention&message=no_git",
             status_code=303,
         )
 
@@ -4321,7 +4246,7 @@ def maintenance_sweep_all(
     )
 
     return RedirectResponse(
-        f"/retention?message=swept"
+        f"/settings?tab=retention&message=swept"
         f"&count={total_removed}"
         f"&devices={devices_processed}",
         status_code=303,
@@ -4335,7 +4260,7 @@ def maintenance_unmark_all(
     """Снимает все пометки удаления на всех устройствах."""
     if not git_available():
         return RedirectResponse(
-            "/retention?message=no_git",
+            "/settings?tab=retention&message=no_git",
             status_code=303,
         )
 
@@ -4362,7 +4287,7 @@ def maintenance_unmark_all(
     )
 
     return RedirectResponse(
-        f"/retention?message=unmarked&count={total_removed}",
+        f"/settings?tab=retention&message=unmarked&count={total_removed}",
         status_code=303,
     )
 
@@ -4370,23 +4295,6 @@ def maintenance_unmark_all(
 # =========================================================
 # STORAGE SETTINGS PAGE
 # =========================================================
-
-@app.get("/storage-settings", response_class=HTMLResponse)
-def storage_settings_page(
-    request: Request,
-    user: str = Depends(require_auth),
-):
-    return templates.TemplateResponse(
-        request,
-        "storage_settings.html",
-        {
-            "rclone_path": rclone_mod.get_rclone_path(),
-            "rclone_available": rclone_mod.is_available(),
-            "rclone_version": rclone_mod.get_version(),
-            "message": request.query_params.get("message", ""),
-        },
-    )
-
 
 @app.post("/storage-settings/save")
 async def storage_settings_save(
@@ -4409,7 +4317,7 @@ async def storage_settings_save(
     )
 
     return RedirectResponse(
-        "/storage-settings?message=saved",
+        "/settings?tab=storage&message=saved",
         status_code=303,
     )
 
@@ -4717,6 +4625,119 @@ async def delete_device(
         )
 
     return RedirectResponse(url="/", status_code=303)
+
+# =========================================================
+# SETTINGS
+# =========================================================
+
+@app.get("/settings", response_class=HTMLResponse)
+def settings_page(
+    request: Request,
+    tab: str = "general",
+    message: str = "",
+    user: str = Depends(require_auth),
+):
+    """
+    Единая страница настроек с табами:
+        general   — общие параметры (config.json)
+        scheduler — планировщик
+        retention — очистка истории
+        storage   — хранилища (rclone)
+        service   — управление службой
+    """
+    if tab not in ("general", "scheduler", "retention", "storage", "service"):
+        tab = "general"
+
+    context: dict = {
+        "active_tab": tab,
+        "message": message,
+    }
+
+    if tab == "general":
+        context["config"] = load_json(CONFIG_FILE, {})
+
+    elif tab == "scheduler":
+        context["config"] = scheduler.config
+
+    elif tab == "retention":
+        app_config = load_json(CONFIG_FILE, {})
+        retention = app_config.get("retention") or {}
+        stats = _collect_maintenance_stats()
+        context["retention"] = retention
+        context["stats"] = stats
+        context["total_versions"] = sum(r["total"] for r in stats)
+        context["total_marked"] = sum(r["marked"] for r in stats)
+        context["msg_count"] = request.query_params.get("count", "0")
+        context["msg_devices"] = request.query_params.get("devices", "0")
+
+    elif tab == "storage":
+        context["rclone_path"] = rclone_mod.get_rclone_path()
+        context["rclone_available"] = rclone_mod.is_available()
+        context["rclone_version"] = rclone_mod.get_version()
+
+    elif tab == "service":
+        context["service"] = get_status()
+
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        context,
+    )
+
+
+@app.post("/settings/general/save")
+async def settings_general_save(
+    request: Request,
+    user: str = Depends(require_auth),
+):
+    form = await request.form()
+
+    host = (form.get("host") or "").strip() or "127.0.0.1"
+    try:
+        port = int(form.get("port") or "8080")
+        if not (1 <= port <= 65535):
+            raise ValueError()
+    except (TypeError, ValueError):
+        port = 8080
+
+    open_browser = form.get("open_browser") == "true"
+
+    try:
+        max_parallel = int(form.get("max_parallel_backups") or "5")
+        max_parallel = max(1, min(20, max_parallel))
+    except (TypeError, ValueError):
+        max_parallel = 5
+
+    try:
+        timeout = int(form.get("backup_timeout_seconds") or "300")
+        timeout = max(30, timeout)
+    except (TypeError, ValueError):
+        timeout = 300
+
+    # Загружаем существующий config, чтобы не потерять retention и пр.
+    config = load_json(CONFIG_FILE, {})
+    config["host"] = host
+    config["port"] = port
+    config["open_browser"] = open_browser
+    config["max_parallel_backups"] = max_parallel
+    config["backup_timeout_seconds"] = timeout
+
+    try:
+        save_json(CONFIG_FILE, config)
+    except Exception as exc:
+        logging.error("settings: не удалось сохранить config.json: %s", exc, exc_info=True)
+        raise HTTPException(500, "Не удалось сохранить настройки")
+
+    logging.info(
+        "⚙ Общие настройки обновлены: host=%s, port=%d, "
+        "parallel=%d, timeout=%d (от %s)",
+        host, port, max_parallel, timeout, user,
+    )
+
+    return RedirectResponse(
+        url="/settings?tab=general&message=saved",
+        status_code=303,
+    )
 
 # =========================================================
 # RUN DIRECTLY

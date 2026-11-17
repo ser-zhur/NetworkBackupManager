@@ -228,7 +228,7 @@ def run(
     if binary is None:
         raise RuntimeError(
             "rclone не найден. Укажите путь к бинарнику "
-            "в настройках хранилища (/storage-settings)."
+            "в настройках хранилища (/settings?tab=storage)."
         )
 
     return subprocess.run(

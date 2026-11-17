@@ -1,0 +1,102 @@
+{% if message == 'saved' %}
+<div class="mb-4 px-4 py-3 rounded-lg text-sm
+            bg-emerald-50 dark:bg-emerald-950/40
+            border border-emerald-200 dark:border-emerald-900
+            text-emerald-800 dark:text-emerald-300
+            flex items-center gap-2">
+    <span class="text-lg">✓</span>
+    <span>Настройки сохранены.</span>
+</div>
+{% endif %}
+
+<form method="POST" action="/settings/general/save" class="space-y-5">
+
+    <!-- Сеть и запуск -->
+    <section class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm p-6 space-y-4">
+        <h3 class="text-sm font-semibold text-gray-700 dark:text-slate-200 flex items-center gap-2">
+            🌐 Сеть и запуск
+        </h3>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Host:</label>
+                <input type="text" name="host" required
+                       value="{{ config.get('host', '127.0.0.1') }}"
+                       class="w-full rounded-lg px-3 py-2 text-sm font-mono
+                              bg-gray-50 dark:bg-slate-950
+                              border border-gray-200 dark:border-slate-800
+                              focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Port:</label>
+                <input type="number" name="port" required min="1" max="65535"
+                       value="{{ config.get('port', 8080) }}"
+                       class="w-full rounded-lg px-3 py-2 text-sm font-mono
+                              bg-gray-50 dark:bg-slate-950
+                              border border-gray-200 dark:border-slate-800
+                              focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+            </div>
+        </div>
+
+        <label class="flex items-center gap-3 pt-1">
+            <input type="checkbox" name="open_browser" value="true"
+                   {% if config.get('open_browser', True) %}checked{% endif %}
+                   class="text-brand-600 focus:ring-brand-500">
+            <span class="text-sm text-gray-700 dark:text-slate-300">
+                Открывать браузер при старте
+            </span>
+        </label>
+
+        <div class="px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-950/40
+                    border border-amber-200 dark:border-amber-900
+                    text-xs text-amber-800 dark:text-amber-200">
+            ⚠ Изменения host / port вступят в силу только после перезапуска службы.
+        </div>
+    </section>
+
+    <!-- Параметры бэкапов -->
+    <section class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm p-6 space-y-4">
+        <h3 class="text-sm font-semibold text-gray-700 dark:text-slate-200 flex items-center gap-2">
+            💾 Параметры бэкапов
+        </h3>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
+                    Параллельных потоков:
+                </label>
+                <input type="number" name="max_parallel_backups" required min="1" max="20"
+                       value="{{ config.get('max_parallel_backups', 5) }}"
+                       class="w-full rounded-lg px-3 py-2 text-sm font-mono
+                              bg-gray-50 dark:bg-slate-950
+                              border border-gray-200 dark:border-slate-800
+                              focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+                <p class="mt-1 text-[11px] text-gray-500 dark:text-slate-400">
+                    Сколько устройств бэкапить одновременно (1–20).
+                </p>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
+                    Таймаут одного бэкапа (сек):
+                </label>
+                <input type="number" name="backup_timeout_seconds" required min="30"
+                       value="{{ config.get('backup_timeout_seconds', 300) }}"
+                       class="w-full rounded-lg px-3 py-2 text-sm font-mono
+                              bg-gray-50 dark:bg-slate-950
+                              border border-gray-200 dark:border-slate-800
+                              focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+                <p class="mt-1 text-[11px] text-gray-500 dark:text-slate-400">
+                    Максимальное время на одно устройство, прежде чем считать его «зависшим».
+                </p>
+            </div>
+        </div>
+    </section>
+
+    <div class="flex justify-end gap-3 pt-2">
+        <button type="submit"
+                class="px-6 py-2.5 rounded-lg text-sm font-medium
+                       bg-brand-600 hover:bg-brand-700 text-white shadow-sm transition">
+            Сохранить
+        </button>
+    </div>
+</form>
