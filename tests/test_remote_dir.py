@@ -106,10 +106,11 @@ def test_git_not_checked(backends):
     assert backends.get("git").target_key({}, host="x") is None
 
 
-def test_new_device_defaults_use_host(backends):
-    defaults = backends.defaults_for_new_router()
-    assert defaults["ftp"]["remote_dir"] == "/network_backups/{host}"
-    assert defaults["webdav"]["remote_dir"] == "/network_backups/{host}"
+def test_default_folder_template_uses_host(backends):
+    # Шаблон папки по умолчанию (общие настройки хранилищ)
+    for bid in ("ftp", "webdav"):
+        field = next(f for f in backends.get(bid).fields if f.name == "remote_dir")
+        assert field.default == "/network_backups/{host}"
 
 
 # =========================================================
@@ -187,49 +188,50 @@ def test_webdav_push_uses_expanded_dir(backends, tmp_path, monkeypatch):
 # Сохранение устройства с конфликтующим каталогом
 # =========================================================
 
-def test_save_router_rejects_conflicting_dir(monkeypatch):
+def test_save_router_rejects_conflicting_dir(monkeypatch, tmp_path):
+    """
+    Папка — из общего шаблона. Шаблон без {host} сводит два
+    устройства в одну папку → второе не сохраняется.
+    """
     pytest.importorskip("httpx2", reason="нужен httpx2 для TestClient")
     from fastapi.testclient import TestClient
     import web.server as s
+    from core.storage import global_config
 
-    if not s.plugin_manager or "mikrotik" not in s.plugin_manager._plugins:
-        pytest.skip("плагин mikrotik не загружен")
-    if s.storage_manager is None or s.storage_manager.get("ftp") is None:
-        pytest.skip("FTP backend не загружен")
+    if not s.plugin_manager or s.storage_manager is None             or s.storage_manager.get("ftp") is None:
+        pytest.skip("нет PluginManager или FTP backend")
 
-    # Реальный routers.json не пишем
+    template = {"value": "/nbm_shared"}
+    monkeypatch.setattr(global_config, "load_global", lambda: {
+        "ftp": {"host": "ftp.nbm-test.invalid", "port": 21,
+                "user": "u", "remote_dir": template["value"]},
+    })
+    routers = []
+    monkeypatch.setattr(s.plugin_manager, "_plugins", {
+        "mikrotik": {"func": None, "routers": routers, "dir": str(tmp_path)},
+    })
     monkeypatch.setattr(s.plugin_manager, "save_routers", lambda t: None)
     s.app.dependency_overrides[s.require_auth] = lambda: "test"
-
-    routers = s.plugin_manager._plugins["mikrotik"]["routers"]
-    before = len(routers)
     client = TestClient(s.app)
 
-    def post(ip, remote_dir):
-        return client.post(
-            "/save-router",
-            data={
-                "device_type": "mikrotik",
-                "ip": ip,
-                "backup_path": f"Backups/_nbm_test_{ip}",
-                "storage_ftp_enabled": "true",
-                "storage_ftp_host": "ftp.nbm-test.invalid",
-                "storage_ftp_port": "21",
-                "storage_ftp_remote_dir": remote_dir,
-            },
-            follow_redirects=False,
-        )
+    def post(ip):
+        return client.post("/save-router", data={
+            "device_type": "mikrotik",
+            "ip": ip,
+            "backup_path": str(tmp_path / ip),
+            "storage_ftp_enabled": "true",
+        }, follow_redirects=False)
 
     try:
-        assert post("192.0.2.1", "/nbm_shared").status_code == 303
-        r = post("192.0.2.2", "/nbm_shared/")
+        assert post("192.0.2.1").status_code == 303
+        r = post("192.0.2.2")
         assert r.status_code == 400
         assert "192.0.2.1" in r.json()["detail"]
-        assert len(routers) == before + 1          # второе не добавлено
+        assert len(routers) == 1                      # второе не добавлено
 
-        # С подстановкой {host} — каталоги разные, сохраняется
-        assert post("192.0.2.3", "/nbm_shared/{host}").status_code == 303
-        assert len(routers) == before + 2
+        # Шаблон с {host} — папки разные, сохраняется
+        template["value"] = "/nbm_shared/{host}"
+        assert post("192.0.2.3").status_code == 303
+        assert len(routers) == 2
     finally:
-        del routers[before:]
         s.app.dependency_overrides.clear()

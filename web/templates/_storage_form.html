@@ -1,53 +1,66 @@
 {# ========================================================= #}
-{# PARTIAL: секция настроек хранилищ                          #}
+{# PARTIAL: хранилища устройства (add / edit)                 #}
+{#                                                            #}
+{# Только включение. Сервер, логин, пароль и шаблон папки —   #}
+{# общие для всех устройств: Настройки → Хранилища.            #}
 {#                                                            #}
 {# Ожидает в контексте:                                       #}
-{#   storage_backends — список backend'ов                     #}
-{#   storage_mode     — 'edit' | 'add'                        #}
-{#                                                            #}
-{# В режиме edit:                                             #}
-{#   router, device_type, index                               #}
-{# В режиме add:                                              #}
-{#   default_storage                                          #}
+{#   device_storages — список из _device_storage_view():      #}
+{#       {backend, configured, enabled, folder}               #}
 {# ========================================================= #}
 
-{% set _mode = storage_mode|default('edit') %}
+<section class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm p-6 space-y-4">
+    <div class="flex items-start justify-between gap-4">
+        <h3 class="text-sm font-semibold text-gray-700 dark:text-slate-200 flex items-center gap-2">
+            ☁ Хранилища
+        </h3>
+        <a href="/settings?tab=storage"
+           class="text-xs font-medium text-brand-600 dark:text-brand-400 hover:underline shrink-0">
+            ⚙ Настройки хранилищ
+        </a>
+    </div>
 
-{% for backend in storage_backends %}
+    <div class="divide-y divide-gray-100 dark:divide-slate-800">
+    {% for s in device_storages %}
+        {% set b = s.backend %}
+        <div class="py-3 first:pt-0 last:pb-0 flex items-start justify-between gap-4"
+             data-backend-id="{{ b.id }}">
+            <div class="min-w-0">
+                <div class="text-sm font-medium text-gray-800 dark:text-slate-200 flex items-center gap-2">
+                    {{ b.icon }} {{ b.name }}
+                </div>
 
-    {% if _mode == 'edit' %}
-        {% set cfg = (router.storage or {}).get(backend.id, {}) %}
-    {% else %}
-        {% set cfg = (default_storage or {}).get(backend.id, {}) %}
-    {% endif %}
-
-    <section class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm p-6 space-y-4"
-             data-backend-id="{{ backend.id }}">
-
-        <div class="flex items-start justify-between gap-4">
-            <div>
-                <h3 class="text-sm font-semibold text-gray-700 dark:text-slate-200 flex items-center gap-2">
-                    {{ backend.icon }} {{ backend.name }}
-                </h3>
-                {% if backend.description %}
-                    <p class="text-xs text-gray-500 dark:text-slate-400 mt-1">
-                        {{ backend.description }}
+                {% if b.always_enabled %}
+                    <p class="mt-0.5 text-xs text-gray-500 dark:text-slate-400">
+                        {{ b.description }}
+                    </p>
+                {% elif not s.configured %}
+                    <p class="mt-0.5 text-xs text-amber-700 dark:text-amber-400">
+                        Не настроено —
+                        <a href="/settings?tab=storage" class="underline">укажите сервер в настройках</a>.
+                    </p>
+                {% elif s.folder %}
+                    <p class="mt-0.5 text-xs text-gray-500 dark:text-slate-400 truncate">
+                        Папка: <span class="font-mono">{{ s.folder }}</span>
                     </p>
                 {% endif %}
             </div>
 
-            {% if backend.always_enabled %}
+            {% if b.always_enabled %}
                 <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium
                              bg-emerald-100 dark:bg-emerald-900/60
                              text-emerald-700 dark:text-emerald-300 shrink-0">
                     ● Всегда включено
                 </span>
             {% else %}
-                 <label class="relative inline-flex items-center cursor-pointer shrink-0">
+                <label class="relative inline-flex items-center shrink-0
+                              {{ 'cursor-pointer' if s.configured else 'cursor-not-allowed opacity-50' }}"
+                       {% if not s.configured %}title="Сначала настройте хранилище: Настройки → Хранилища"{% endif %}>
                     <input type="checkbox"
-                           name="storage_{{ backend.id }}_enabled"
+                           name="storage_{{ b.id }}_enabled"
                            value="true"
-                           {% if cfg.get('enabled') %}checked{% endif %}
+                           {% if s.enabled %}checked{% endif %}
+                           {% if not s.configured %}disabled{% endif %}
                            class="sr-only peer">
                     <div class="w-11 h-6 bg-gray-200 dark:bg-slate-700 rounded-full
                                 peer-checked:bg-brand-600 transition
@@ -57,111 +70,6 @@
                 </label>
             {% endif %}
         </div>
-
-        {% if backend.fields %}
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
-            {% for field in backend.fields %}
-                {% set val = cfg.get(field.name, field.default) %}
-
-                {% if field.type == 'select' %}
-                    <div class="md:col-span-2">
-                        <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
-                            {{ field.label }}{% if field.required %} *{% endif %}
-                        </label>
-                        <select name="storage_{{ backend.id }}_{{ field.name }}"
-                                class="w-full rounded-lg px-3 py-2 text-sm
-                                       bg-gray-50 dark:bg-slate-950
-                                       border border-gray-200 dark:border-slate-800
-                                       focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
-                            {% for v, label in (field.choices or []) %}
-                                <option value="{{ v }}" {% if val == v %}selected{% endif %}>{{ label }}</option>
-                            {% endfor %}
-                        </select>
-                        {% if field.help %}
-                            <p class="mt-1 text-[11px] text-gray-500 dark:text-slate-400">{{ field.help }}</p>
-                        {% endif %}
-                    </div>
-
-                {% elif field.type == 'bool' %}
-                    <label class="flex items-center gap-3 md:col-span-2">
-                        <input type="checkbox"
-                               name="storage_{{ backend.id }}_{{ field.name }}"
-                               value="true"
-                               {% if val %}checked{% endif %}
-                               class="text-brand-600 focus:ring-brand-500">
-                        <span class="text-sm text-gray-700 dark:text-slate-300">{{ field.label }}</span>
-                    </label>
-
-                {% elif field.type == 'password' %}
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
-                            {{ field.label }}{% if field.required %} *{% endif %}
-                        </label>
-                        <input type="password"
-                               name="storage_{{ backend.id }}_{{ field.name }}"
-                               value=""
-                               placeholder="{% if _mode == 'edit' and val %}Оставьте пустым, чтобы не менять{% else %}{{ field.placeholder }}{% endif %}"
-                               {% if field.required %}data-required="1"{% endif %}
-                               class="w-full rounded-lg px-3 py-2 text-sm
-                                      bg-gray-50 dark:bg-slate-950
-                                      border border-gray-200 dark:border-slate-800
-                                      placeholder-gray-400 dark:placeholder-slate-500
-                                      focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
-                    </div>
-
-                {% elif field.type == 'number' %}
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
-                            {{ field.label }}{% if field.required %} *{% endif %}
-                        </label>
-                        <input type="number"
-                               name="storage_{{ backend.id }}_{{ field.name }}"
-                               value="{{ val }}"
-                               placeholder="{{ field.placeholder }}"
-                               {% if field.required %}data-required="1"{% endif %}
-                               class="w-full rounded-lg px-3 py-2 text-sm font-mono
-                                      bg-gray-50 dark:bg-slate-950
-                                      border border-gray-200 dark:border-slate-800
-                                      placeholder-gray-400 dark:placeholder-slate-500
-                                      focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
-                    </div>
-
-                {% else %}
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
-                            {{ field.label }}{% if field.required %} *{% endif %}
-                        </label>
-                        <input type="text"
-                               name="storage_{{ backend.id }}_{{ field.name }}"
-                               value="{{ val }}"
-                               placeholder="{{ field.placeholder }}"
-                               {% if field.required %}data-required="1"{% endif %}
-                               class="w-full rounded-lg px-3 py-2 text-sm font-mono
-                                      bg-gray-50 dark:bg-slate-950
-                                      border border-gray-200 dark:border-slate-800
-                                      placeholder-gray-400 dark:placeholder-slate-500
-                                      focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
-                    </div>
-                {% endif %}
-            {% endfor %}
-        </div>
-
-        <div class="flex flex-wrap items-center gap-3 pt-2">
-            <button type="button"
-                    {% if _mode == 'edit' %}
-                        onclick="testStorage('{{ backend.id }}', '{{ device_type }}', {{ index }})"
-                    {% else %}
-                        onclick="testStorage('{{ backend.id }}', '', -1)"
-                    {% endif %}
-                    class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
-                           bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
-                           border border-gray-200 dark:border-slate-700 transition">
-                🔌 Проверить соединение
-            </button>
-            <span id="storage-test-{{ backend.id }}"
-                  class="text-xs text-gray-500 dark:text-slate-400"></span>
-        </div>
-        {% endif %}
-    </section>
-
-{% endfor %}
+    {% endfor %}
+    </div>
+</section>

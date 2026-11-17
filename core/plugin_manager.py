@@ -25,6 +25,7 @@ from core.context import (
     resolve_backup_path,
 )
 from core.storage import PushContext
+from core.storage import global_config
 from core.storage.base import identity_normalize
 from concurrent.futures import (
     ThreadPoolExecutor,
@@ -309,7 +310,9 @@ class PluginManager:
             )
             return        
 
-        storage_cfg = router.get("storage") or {}
+        # Общие настройки хранилищ (config.json) — одни на все
+        # устройства; у устройства — только включено/выключено.
+        storages = global_config.load_global()
 
         # Достаём нормализатор, объявленный плагином
         # (для MikroTik — удаляет первую строку с timestamp
@@ -340,7 +343,7 @@ class PluginManager:
                 continue
             cfg = self._decrypt_backend_config(
                 backend,
-                storage_cfg.get(backend.id) or {},
+                global_config.effective_config(router, backend, storages),
             )
             try:
                 result = backend.push(cfg, ctx)
@@ -365,9 +368,20 @@ class PluginManager:
         for backend in backends:
             if backend.is_authority:
                 continue
+
+            if not global_config.is_configured(backend, storages):
+                from core.storage.base import PushResult
+                result = PushResult.failure(
+                    "Хранилище не настроено "
+                    "(Настройки → Хранилища)"
+                )
+                results[backend.id] = result
+                self._log_storage_result(backend.id, result)
+                continue
+
             cfg = self._decrypt_backend_config(
                 backend,
-                storage_cfg.get(backend.id) or {},
+                global_config.effective_config(router, backend, storages),
             )
 
             # mode=changes_only и git сказал «не изменилось» — skip
@@ -483,15 +497,18 @@ class PluginManager:
             result["message"] = "История git пуста"
             return result
 
+        storages = global_config.load_global()
         backends = [
             b for b in self.storage_manager.enabled_for(router)
             if not b.is_authority
+            and global_config.is_configured(b, storages)
         ]
         if not backends:
-            result["message"] = "Нет включённых хранилищ (кроме git)"
+            result["message"] = (
+                "Нет включённых и настроенных хранилищ (кроме git)"
+            )
             return result
 
-        storage_cfg = router.get("storage") or {}
         device_host = (
             router.get("host")
             or router.get("ip")
@@ -562,7 +579,9 @@ class PluginManager:
                 for backend in backends:
                     cfg = self._decrypt_backend_config(
                         backend,
-                        storage_cfg.get(backend.id) or {},
+                        global_config.effective_config(
+                            router, backend, storages,
+                        ),
                     )
                     # Форсируем push — не даём _should_skip_for_changes
                     # отбросить версию из-за mode=changes_only.

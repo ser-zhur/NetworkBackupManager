@@ -1,0 +1,125 @@
+{# ========================================================= #}
+{# PARTIAL: общие настройки хранилищ (Настройки → Хранилища)  #}
+{#                                                            #}
+{# Одни на все устройства. У устройства — только ползунок     #}
+{# «включено» (add / edit).                                   #}
+{#                                                            #}
+{# Ожидает в контексте:                                       #}
+{#   storage_backends — [{backend, configured, devices}]      #}
+{#   storages         — {backend_id: {поле: значение}}        #}
+{# ========================================================= #}
+
+<form method="POST" action="/settings/storages/save" class="space-y-5">
+
+{% for item in storage_backends %}
+    {% set backend = item.backend %}
+    {% set cfg = storages.get(backend.id) or {} %}
+
+    <section class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm p-6 space-y-4"
+             data-backend-id="{{ backend.id }}">
+
+        <div class="flex items-start justify-between gap-4">
+            <div>
+                <h3 class="text-sm font-semibold text-gray-700 dark:text-slate-200 flex items-center gap-2">
+                    {{ backend.icon }} {{ backend.name }}
+                </h3>
+                {% if backend.description %}
+                    <p class="text-xs text-gray-500 dark:text-slate-400 mt-1">{{ backend.description }}</p>
+                {% endif %}
+            </div>
+            {% if item.configured %}
+                <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium shrink-0
+                             bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300"
+                      title="Включено у устройств: {{ item.devices }}">
+                    ✓ Настроено · устройств: {{ item.devices }}
+                </span>
+            {% else %}
+                <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium shrink-0
+                             bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-400">
+                    Не настроено
+                </span>
+            {% endif %}
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {% for field in backend.fields %}
+            {% set val = cfg.get(field.name, field.default) %}
+            {% set fname = "storage_" ~ backend.id ~ "_" ~ field.name %}
+
+            {% if field.type == 'select' %}
+                <div class="md:col-span-2">
+                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">{{ field.label }}</label>
+                    <select name="{{ fname }}"
+                            class="w-full rounded-lg px-3 py-2 text-sm
+                                   bg-gray-50 dark:bg-slate-950
+                                   border border-gray-200 dark:border-slate-800
+                                   focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+                        {% for v, label in (field.choices or []) %}
+                            <option value="{{ v }}" {% if val == v %}selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                    {% if field.help %}<p class="mt-1 text-[11px] text-gray-500 dark:text-slate-400">{{ field.help }}</p>{% endif %}
+                </div>
+
+            {% elif field.type == 'bool' %}
+                <label class="flex items-center gap-3 md:col-span-2">
+                    <input type="checkbox" name="{{ fname }}" value="true"
+                           {% if val %}checked{% endif %}
+                           class="text-brand-600 focus:ring-brand-500">
+                    <span class="text-sm text-gray-700 dark:text-slate-300">{{ field.label }}</span>
+                </label>
+
+            {% else %}
+                <div class="{{ 'md:col-span-2' if field.name == backend.remote_dir_field else '' }}">
+                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
+                        {% if field.name == backend.remote_dir_field %}Шаблон папки на сервере{% else %}{{ field.label }}{% endif %}{% if field.required %} *{% endif %}
+                    </label>
+                    <input type="{{ 'password' if field.type == 'password' else ('number' if field.type == 'number' else 'text') }}"
+                           name="{{ fname }}"
+                           value="{{ '' if field.type == 'password' else val }}"
+                           placeholder="{% if field.type == 'password' and val %}Сохранён — оставьте пустым, чтобы не менять{% else %}{{ field.placeholder }}{% endif %}"
+                           class="w-full rounded-lg px-3 py-2 text-sm {{ '' if field.type == 'password' else 'font-mono' }}
+                                  bg-gray-50 dark:bg-slate-950
+                                  border border-gray-200 dark:border-slate-800
+                                  placeholder-gray-400 dark:placeholder-slate-500
+                                  focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+                    {% if field.name == backend.remote_dir_field %}
+                        <p class="mt-1 text-[11px] text-gray-500 dark:text-slate-400">
+                            Одна папка-шаблон для всех устройств. Подстановки:
+                            <code class="font-mono">{host}</code> — адрес,
+                            <code class="font-mono">{name}</code> — название,
+                            <code class="font-mono">{type}</code> — тип устройства.
+                            У каждого устройства должна получаться своя папка — например,
+                            <code class="font-mono">/{host}</code> или <code class="font-mono">/{host}_{name}</code>.
+                        </p>
+                    {% elif field.help %}
+                        <p class="mt-1 text-[11px] text-gray-500 dark:text-slate-400">{{ field.help }}</p>
+                    {% endif %}
+                </div>
+            {% endif %}
+        {% endfor %}
+        </div>
+
+        <div class="flex flex-wrap items-center gap-3">
+            <button type="button"
+                    onclick="testStorage('{{ backend.id }}', '', -1)"
+                    class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+                           bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                           border border-gray-200 dark:border-slate-700 transition">
+                🔌 Проверить соединение
+            </button>
+            <span id="storage-test-{{ backend.id }}" class="text-xs text-gray-500 dark:text-slate-400"></span>
+        </div>
+    </section>
+{% endfor %}
+
+    <div class="flex justify-end">
+        <button type="submit"
+                class="px-6 py-2.5 rounded-lg text-sm font-medium
+                       bg-brand-600 hover:bg-brand-700 text-white shadow-sm transition">
+            Сохранить хранилища
+        </button>
+    </div>
+</form>
+
+{% include "_storage_scripts.html" %}

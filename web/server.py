@@ -103,6 +103,8 @@ from core.git_storage import (
 )
 
 from core.plugin_manager import is_device_disabled
+from core.storage import global_config
+from core.storage.base import expand_remote_dir
 
 from core.maintenance import (
     apply_retention,
@@ -269,6 +271,20 @@ async def lifespan(
     )
 
     invalidate_status_cache()
+
+    # Однократный перенос настроек хранилищ из устройств в
+    # общие (config.json). Идемпотентен; копия routers.json —
+    # routers.json.bak-<дата> рядом с оригиналом.
+    #
+    # Здесь, а не при импорте модуля: импорт (тесты, утилиты)
+    # не должен менять рабочие данные.
+    try:
+        global_config.migrate(plugin_manager, storage_manager)
+    except Exception as exc:
+        logging.error(
+            "storage: перенос настроек хранилищ не удался: %s",
+            exc, exc_info=True,
+        )
 
     scheduler.start()
 
@@ -841,30 +857,29 @@ def _build_storage_rows(router: dict, device_state: dict) -> list:
 # STORAGE FORM HELPERS
 # =========================================================
 
-def _parse_storage_form(form, old_storage: dict) -> dict:
-    """
-    Разбирает поля формы storage_<backend>_<field>
-    и формирует секцию storage для routers.json.
-
-    Пароли при сохранении шифруются. Если поле-пароль
-    пришло пустым — берётся старое значение из old_storage.
-    """
+def _external_backends() -> list:
+    """Внешние хранилища (всё, кроме git)."""
     if storage_manager is None:
-        return {}
+        return []
+    return [
+        b for b in storage_manager.all()
+        if not b.is_authority and not b.always_enabled
+    ]
 
-    old_storage = old_storage if isinstance(old_storage, dict) else {}
+
+def _parse_global_storage_form(form, old_storages: dict) -> dict:
+    """
+    Общие настройки хранилищ (Настройки → Хранилища):
+    поля storage_<backend>_<field> → {backend_id: {...}}.
+
+    Пароли шифруются. Пустое поле-пароль — оставить старый.
+    """
+    old_storages = old_storages if isinstance(old_storages, dict) else {}
     result: dict = {}
 
-    for backend in storage_manager.all():
-        enabled_key = f"storage_{backend.id}_enabled"
-        enabled = form.get(enabled_key) == "true"
-
-        # always_enabled (git) — игнорируем значение из формы
-        if backend.always_enabled:
-            enabled = True
-
-        cfg: dict = {"enabled": enabled}
-        old_cfg = old_storage.get(backend.id) or {}
+    for backend in _external_backends():
+        cfg: dict = {}
+        old_cfg = old_storages.get(backend.id) or {}
 
         for field in backend.fields:
             key = f"storage_{backend.id}_{field.name}"
@@ -890,7 +905,7 @@ def _parse_storage_form(form, old_storage: dict) -> dict:
                     cfg[field.name] = old_cfg.get(field.name, "")
 
             else:
-                raw = form.get(key, "")
+                raw = (form.get(key, "") or "").strip()
                 if raw == "" and field.default != "":
                     cfg[field.name] = field.default
                 else:
@@ -901,43 +916,63 @@ def _parse_storage_form(form, old_storage: dict) -> dict:
     return result
 
 
-def _check_storage_conflicts(
+def _parse_storage_form(form, old_storage: dict) -> dict:
+    """
+    Хранилища устройства (add/edit): только ползунки.
+
+    storage_<backend>_enabled → {backend_id: {"enabled": bool}}.
+    git включён всегда. Ненастроенное хранилище включить
+    нельзя — ползунок в форме заблокирован, а здесь защита
+    от прямого запроса.
+    """
+    if storage_manager is None:
+        return {}
+
+    storages = global_config.load_global()
+    result: dict = {}
+
+    for backend in storage_manager.all():
+        if backend.always_enabled or backend.is_authority:
+            enabled = True
+        else:
+            enabled = (
+                form.get(f"storage_{backend.id}_enabled") == "true"
+                and global_config.is_configured(backend, storages)
+            )
+        result[backend.id] = {"enabled": enabled}
+
+    return result
+
+
+def _device_host(r: dict) -> str:
+    return r.get("host") or r.get("ip") or r.get("address") or ""
+
+
+def _find_storage_conflict(
+    storages: dict,
     device_type: str,
     router: dict,
     exclude: dict | None = None,
-) -> None:
+) -> str | None:
     """
-    HTTP 400, если включённое внешнее хранилище устройства
-    пишет в тот же каталог того же сервера, что и другое
-    устройство: имена файлов фиксированные (config.rsc, ...),
-    и устройства перезаписывали бы друг друга.
+    Текст ошибки, если включённое внешнее хранилище
+    устройства пишет в ту же папку того же сервера, что и
+    другое устройство (имена файлов фиксированные —
+    config.rsc и т.п. — устройства перезаписывали бы друг
+    друга). None — пересечений нет.
 
-    exclude — старая запись редактируемого устройства
-    (с собой не сравниваем).
+    exclude — старая запись редактируемого устройства.
     """
     if storage_manager is None or not plugin_manager:
-        return
+        return None
 
-    def _enabled_cfg(r: dict, backend) -> dict | None:
-        cfg = (r.get("storage") or {}).get(backend.id)
-        if not isinstance(cfg, dict) or not cfg.get("enabled"):
-            return None
-        return cfg
-
-    def _host(r: dict) -> str:
-        return r.get("host") or r.get("ip") or r.get("address") or ""
-
-    for backend in storage_manager.all():
-        if backend.is_authority:
+    for backend in _external_backends():
+        if not global_config.is_enabled_for(router, backend):
             continue
-
-        cfg = _enabled_cfg(router, backend)
-        if cfg is None:
-            continue
-
+        cfg = global_config.effective_config(router, backend, storages)
         key = backend.target_key(
             cfg,
-            host=_host(router),
+            host=_device_host(router),
             name=router.get("name") or "",
             device_type=device_type,
         )
@@ -948,39 +983,103 @@ def _check_storage_conflicts(
             for other in plugin_data.get("routers", []):
                 if other is exclude or other is router:
                     continue
-                other_cfg = _enabled_cfg(other, backend)
-                if other_cfg is None:
+                if not global_config.is_enabled_for(other, backend):
                     continue
                 other_key = backend.target_key(
-                    other_cfg,
-                    host=_host(other),
+                    global_config.effective_config(other, backend, storages),
+                    host=_device_host(other),
                     name=other.get("name") or "",
                     device_type=other_type,
                 )
                 if other_key == key:
-                    other_label = other.get("name") or _host(other)
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            f"{backend.name}: каталог «{key[2]}» на этом "
-                            f"сервере уже использует устройство "
-                            f"«{other_label}». Файлы перезаписывали бы "
-                            f"друг друга. Укажите другой каталог, "
-                            f"например с подстановкой {{host}}."
-                        ),
+                    me = router.get("name") or _device_host(router)
+                    them = other.get("name") or _device_host(other)
+                    return (
+                        f"{backend.name}: устройства «{me}» и «{them}» "
+                        f"попадают в одну папку «{key[2]}» — файлы "
+                        f"перезаписывали бы друг друга. Добавьте в "
+                        f"шаблон папки подстановку {{host}} "
+                        f"(Настройки → Хранилища)."
                     )
+    return None
 
 
-def _storage_backends_for_template():
+def _check_storage_conflicts(
+    device_type: str,
+    router: dict,
+    exclude: dict | None = None,
+) -> None:
+    """HTTP 400 при пересечении папок (см. _find_storage_conflict)."""
+    message = _find_storage_conflict(
+        global_config.load_global(), device_type, router, exclude,
+    )
+    if message:
+        raise HTTPException(status_code=400, detail=message)
+
+
+def _find_any_storage_conflict(storages: dict) -> str | None:
+    """Пересечения папок между ЛЮБЫМИ устройствами при данных
+    общих настройках — проверка перед их сохранением."""
+    if not plugin_manager:
+        return None
+    for device_type, plugin_data in plugin_manager._plugins.items():
+        for router in plugin_data.get("routers", []):
+            message = _find_storage_conflict(storages, device_type, router)
+            if message:
+                return message
+    return None
+
+
+def _device_storage_view(
+    device_type: str,
+    router: dict | None,
+) -> list[dict]:
+    """
+    Хранилища для формы устройства (add/edit): ползунок,
+    настроено ли, итоговая папка этого устройства.
+
+    router=None — форма добавления: включены по умолчанию
+    все настроенные хранилища, папка — шаблон.
+    """
     if storage_manager is None:
         return []
-    return storage_manager.all()
+
+    storages = global_config.load_global()
+    defaults = storage_manager.defaults_for_new_router(storages)
+    rows = []
+
+    for backend in storage_manager.all():
+        configured = global_config.is_configured(backend, storages)
+        if router is None:
+            enabled = bool(defaults.get(backend.id, {}).get("enabled"))
+        else:
+            enabled = global_config.is_enabled_for(router, backend)
+
+        dir_field = getattr(backend, "remote_dir_field", None)
+        template = (
+            (storages.get(backend.id) or {}).get(dir_field, "")
+            if dir_field else ""
+        )
+        if router is not None and template:
+            folder = expand_remote_dir(
+                template,
+                host=_device_host(router),
+                name=router.get("name") or "",
+                device_type=device_type,
+            )
+        else:
+            folder = template
+
+        rows.append({
+            "backend": backend,
+            "configured": configured,
+            "enabled": enabled and configured,
+            "folder": folder,
+        })
+
+    return rows
 
 
-def _storage_defaults_for_template():
-    if storage_manager is None:
-        return {}
-    return storage_manager.defaults_for_new_router()
 
 
 # =========================================================
@@ -2027,14 +2126,10 @@ async def api_storage_test(
     except Exception:
         data = {}
 
-    old_cfg: dict = {}
-    if device_type and index >= 0:
-        try:
-            routers = plugin_manager._plugins[device_type].get("routers", [])
-            if 0 <= index < len(routers):
-                old_cfg = (routers[index].get("storage") or {}).get(backend_id) or {}
-        except Exception:
-            old_cfg = {}
+    # Пустой пароль в форме = сохранённый в общих настройках.
+    # device_type/index больше не нужны (настройки общие),
+    # параметры оставлены для совместимости.
+    old_cfg: dict = global_config.load_global().get(backend_id) or {}
 
     cfg: dict = {}
     for field in backend.fields:
@@ -2533,11 +2628,8 @@ def add_router_page(
             "plugins":
                 plugins_list,
 
-            "storage_backends":
-                _storage_backends_for_template(),
-
-            "default_storage":
-                _storage_defaults_for_template(),
+            "device_storages":
+                _device_storage_view("", None),
 
             "all_existing_tags":
                 _all_existing_tags(),
@@ -3996,8 +4088,8 @@ def edit_router(
             "router":
                 router,
 
-            "storage_backends":
-                _storage_backends_for_template(),
+            "device_storages":
+                _device_storage_view(device_type, router),
 
             "all_existing_tags":
                 _all_existing_tags(),
@@ -4496,6 +4588,59 @@ def maintenance_unmark_all(
 # STORAGE SETTINGS PAGE
 # =========================================================
 
+@app.post("/settings/storages/save")
+async def settings_storages_save(
+    request: Request,
+    user: str = Depends(require_auth),
+):
+    """
+    Общие настройки хранилищ (сервер, логин, пароль, шаблон
+    папки) — одни на все устройства.
+
+    Перед сохранением: шаблон папки не должен сводить два
+    устройства в одну папку (иначе их файлы перезаписывали
+    бы друг друга).
+    """
+    from urllib.parse import quote
+
+    form = await request.form()
+    old = global_config.load_global()
+    new = _parse_global_storage_form(form, old)
+
+    # Хранилища, которых нет среди загруженных backend'ов,
+    # не теряем
+    for bid, cfg in old.items():
+        new.setdefault(bid, cfg)
+
+    conflict = _find_any_storage_conflict(new)
+    if conflict:
+        logging.warning("storages: не сохранено — %s", conflict)
+        return RedirectResponse(
+            f"/settings?tab=storage&error={quote(conflict)}",
+            status_code=303,
+        )
+
+    try:
+        global_config.save_global(new)
+    except Exception as exc:
+        logging.error(
+            "storages: не удалось сохранить config.json: %s",
+            exc, exc_info=True,
+        )
+        raise HTTPException(500, "Не удалось сохранить настройки")
+
+    logging.info(
+        "⚙ Общие настройки хранилищ обновлены: %s (запрос от %s)",
+        {bid: c.get("remote_dir") for bid, c in new.items()},
+        user,
+    )
+
+    return RedirectResponse(
+        "/settings?tab=storage&message=storages_saved",
+        status_code=303,
+    )
+
+
 @app.post("/storage-settings/save")
 async def storage_settings_save(
     user: str = Depends(require_auth),
@@ -4982,6 +5127,23 @@ def settings_page(
         context["rclone_path"] = rclone_mod.get_rclone_path()
         context["rclone_available"] = rclone_mod.is_available()
         context["rclone_version"] = rclone_mod.get_version()
+
+        storages = global_config.load_global()
+        context["storages"] = storages
+        context["storage_backends"] = [
+            {
+                "backend": b,
+                "configured": global_config.is_configured(b, storages),
+                "devices": sum(
+                    1
+                    for pd in (plugin_manager._plugins.values() if plugin_manager else [])
+                    for r in pd.get("routers", [])
+                    if global_config.is_enabled_for(r, b)
+                ),
+            }
+            for b in _external_backends()
+        ]
+        context["error"] = request.query_params.get("error", "")
 
     return templates.TemplateResponse(
         request,

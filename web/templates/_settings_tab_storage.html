@@ -1,4 +1,4 @@
-{% if message == 'saved' %}
+{% if message in ('saved', 'storages_saved') %}
 <div class="mb-4 px-4 py-3 rounded-lg text-sm
             bg-emerald-50 dark:bg-emerald-950/40
             border border-emerald-200 dark:border-emerald-900
@@ -6,6 +6,26 @@
     Настройки сохранены.
 </div>
 {% endif %}
+
+{% if error %}
+<div class="mb-4 px-4 py-3 rounded-lg text-sm
+            bg-rose-50 dark:bg-rose-950/40
+            border border-rose-200 dark:border-rose-900
+            text-rose-800 dark:text-rose-300">
+    ✗ Не сохранено: {{ error }}
+</div>
+{% endif %}
+
+<div class="p-4 rounded-xl border border-gray-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+    <p class="text-xs text-gray-600 dark:text-slate-400">
+        Хранилища общие для всех устройств: сервер, логин, пароль и шаблон папки
+        задаются здесь. У устройства (добавление / редактирование) хранилище
+        только включается или выключается.
+    </p>
+</div>
+
+{% include "_storage_global_form.html" %}
+
 
 <section class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm p-6 space-y-4">
     <div class="flex items-start justify-between gap-4">

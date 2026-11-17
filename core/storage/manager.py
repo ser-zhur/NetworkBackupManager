@@ -206,16 +206,27 @@ class StorageManager:
         result.sort(key=lambda b: (not b.is_authority, b.id))
         return result
     
-    def defaults_for_new_router(self) -> dict:
-        storage: dict = {}
-        for backend in self._backends.values():
-            enabled = backend.always_enabled or backend.is_authority
-            cfg = {"enabled": enabled}
-            for f in backend.fields:
-                if f.default != "":
-                    cfg[f.name] = f.default
-            storage[backend.id] = cfg
-        return storage
+    def defaults_for_new_router(self, storages: dict | None = None) -> dict:
+        """
+        Хранилища нового устройства: включены все, у которых
+        заполнены общие настройки (Настройки → Хранилища).
+        Сами настройки у устройства не хранятся.
+        """
+        from core.storage.global_config import is_configured, load_global
+
+        if storages is None:
+            storages = load_global()
+
+        return {
+            backend.id: {
+                "enabled": (
+                    backend.always_enabled
+                    or backend.is_authority
+                    or is_configured(backend, storages)
+                ),
+            }
+            for backend in self._backends.values()
+        }
 
 
 # =========================================================
