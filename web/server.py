@@ -74,6 +74,8 @@ from core.service_installer import (
 
 from core.context import (
     BASE_DIR,
+    BACKUPS_DIR,
+    DATA_DIR,
     LOGS_DIR,
     WEB_DIR,
     PLUGINS_DIR,
@@ -1297,17 +1299,14 @@ def _build_device_payload(
         or ""
     )
 
-    ssh_key_local = bool(
-        _key_name and not Path(_key_name).is_absolute()
-    )
+    _key_path = _local_key_path(device_type, _key_name)
+    ssh_key_local = _key_path is not None
     ssh_key_path = ""
     ssh_key_shared = False
     ssh_key_shared_with: list[str] = []
 
     if ssh_key_local:
-        ssh_key_path = str(
-            (BASE_DIR / "plugins" / device_type / _key_name).resolve()
-        )
+        ssh_key_path = str(_key_path)
 
         # Проверяем, используют ли другие устройства
         # этого типа тот же ключ.
@@ -4389,9 +4388,63 @@ async def storage_settings_save(
 # DELETE DEVICE
 # =========================================================
 
-def _is_safe_to_delete(path: Path) -> tuple[bool, str]:
+def _protected_dirs() -> list[Path]:
     """
-    Страховка от случайного удаления системных каталогов.
+    Каталоги, которые нельзя удалить ни сами, ни вместе
+    с родителем: само приложение, его данные и общая папка
+    бэкапов, домашний каталог, системные каталоги.
+    """
+    dirs = [
+        BASE_DIR,
+        DATA_DIR,
+        LOGS_DIR,
+        PLUGINS_DIR,
+        WEB_DIR,
+        BACKUPS_DIR,
+        BASE_DIR / "storages",
+        BASE_DIR / "core",
+        BASE_DIR / "bin",
+        BASE_DIR / "venv",
+        Path("C:/Windows"),
+        Path("C:/Program Files"),
+        Path("C:/Program Files (x86)"),
+        Path("/etc"),
+        Path("/usr"),
+        Path("/var"),
+        Path("/opt"),
+        Path("/home"),
+    ]
+    try:
+        dirs.append(Path.home())
+    except Exception:
+        pass
+
+    result = []
+    for d in dirs:
+        try:
+            result.append(d.resolve())
+        except OSError:
+            pass
+    return result
+
+
+def _is_safe_to_delete(
+    path: Path,
+    exclude_router: dict | None = None,
+) -> tuple[bool, str]:
+    """
+    Страховка перед rmtree каталога бэкапов устройства.
+
+    Нельзя удалить:
+      • корень файловой системы;
+      • защищённый каталог (_protected_dirs) или любой его
+        РОДИТЕЛЬ — иначе удалились бы и они;
+      • каталог, который использует другое устройство, его
+        родитель или подкаталог — удалились бы чужие бэкапы.
+
+    exclude_router — удаляемое устройство (с собой не
+    сравниваем; на момент вызова оно уже может быть убрано
+    из списка).
 
     Возвращает (safe, reason).
     """
@@ -4406,41 +4459,79 @@ def _is_safe_to_delete(path: Path) -> tuple[bool, str]:
     except OSError as exc:
         return False, f"не удалось разрешить путь: {exc}"
 
-    # Список «нельзя трогать»
-    forbidden = {
-        Path("/"),
-        Path("/etc"),
-        Path("/home"),
-        Path("/var"),
-        Path("/usr"),
-        Path("/opt"),
-        Path("C:/"),
-        Path("C:/Windows"),
-        Path("C:/Program Files"),
-        Path("C:/Program Files (x86)"),
-    }
-
-    if resolved in forbidden:
-        return False, f"запрещённый путь: {resolved}"
-
-    # Не удалять родительские каталоги проекта
-    base = BASE_DIR.resolve()
-    if resolved == base:
-        return False, "корень приложения"
-
-    # HOME пользователя
-    try:
-        home = Path.home().resolve()
-        if resolved == home:
-            return False, "домашний каталог пользователя"
-    except Exception:
-        pass
-
-    # Корень файловой системы
     if resolved.parent == resolved:
         return False, f"корень файловой системы: {resolved}"
 
+    for protected in _protected_dirs():
+        if resolved == protected:
+            return False, f"защищённый каталог: {resolved}"
+        if protected.is_relative_to(resolved):
+            return False, (
+                f"каталог содержит защищённый каталог "
+                f"{protected}"
+            )
+
+    if plugin_manager:
+        for other_type, plugin_data in plugin_manager._plugins.items():
+            for other in plugin_data.get("routers", []):
+                if other is exclude_router:
+                    continue
+                raw = other.get("backup_path")
+                if not raw:
+                    continue
+                try:
+                    other_path = resolve_backup_path(raw)
+                except OSError:
+                    continue
+                if (
+                    other_path == resolved
+                    or other_path.is_relative_to(resolved)
+                    or resolved.is_relative_to(other_path)
+                ):
+                    label = (
+                        other.get("name")
+                        or other.get("host")
+                        or other_type
+                    )
+                    return False, (
+                        f"каталог пересекается с бэкапами "
+                        f"устройства «{label}» ({other_path})"
+                    )
+
     return True, ""
+
+
+def _local_key_path(device_type: str, key_name: str) -> Path | None:
+    """
+    Абсолютный путь к локальному SSH-ключу устройства или
+    None, если удалять его нельзя.
+
+    Ключ «локальный» — относительное имя внутри каталога
+    плагина. Путь с '../' или указывающий на код/конфиг
+    плагина (*.py, *.json) — не ключ: None.
+    """
+    if not key_name or Path(key_name).is_absolute():
+        return None
+
+    plugin = (
+        plugin_manager._plugins.get(device_type)
+        if plugin_manager else None
+    )
+    plugin_dir = Path(
+        (plugin or {}).get("dir") or (PLUGINS_DIR / device_type)
+    ).resolve()
+
+    try:
+        key_path = (plugin_dir / key_name).resolve()
+    except OSError:
+        return None
+
+    if not key_path.is_relative_to(plugin_dir) or key_path == plugin_dir:
+        return None
+    if key_path.suffix.lower() in (".py", ".json", ".pyc"):
+        return None
+
+    return key_path
 
 
 @app.post("/delete-device/{device_type}/{index}")
@@ -4537,8 +4628,10 @@ async def delete_device(
     key_delete_blocked_reason = ""
 
     if remove_key and key_name:
-        if Path(key_name).is_absolute():
-            key_delete_blocked_reason = "абсолютный путь"
+        if _local_key_path(device_type, key_name) is None:
+            key_delete_blocked_reason = (
+                "ключ вне каталога плагина"
+            )
 
         else:
             # Проверяем использование другими устройствами
@@ -4565,9 +4658,9 @@ async def delete_device(
                     + ", ".join(shared_with)
                 )
             else:
-                key_to_delete = (
-                    BASE_DIR / "plugins" / device_type / key_name
-                ).resolve()
+                key_to_delete = _local_key_path(
+                    device_type, key_name,
+                )
 
     # ---- 2. Удалить запись из routers.json ----
 
@@ -4625,7 +4718,9 @@ async def delete_device(
     backup_removed = False
     backup_error = ""
     if backup_path:
-        safe, reason = _is_safe_to_delete(backup_path)
+        safe, reason = _is_safe_to_delete(
+            backup_path, exclude_router=router,
+        )
         if not safe:
             backup_error = reason
             logging.error(
