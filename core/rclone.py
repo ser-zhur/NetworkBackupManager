@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -144,8 +145,11 @@ def obscure(password: str) -> str | None:
         return None
 
     try:
+        # Пароль — через stdin ("-"), а не аргументом: аргументы
+        # процесса видны другим пользователям (диспетчер задач).
         result = subprocess.run(
-            [binary, "obscure", password],
+            [binary, "obscure", "-"],
+            input=password,
             capture_output=True,
             text=True,
             timeout=10,
@@ -165,47 +169,147 @@ def obscure(password: str) -> str | None:
 
 
 # =========================================================
-# ВРЕМЕННЫЙ КОНФИГ
+# ОПИСАНИЕ ТИПОВ ХРАНИЛИЩ (rclone config providers)
 # =========================================================
+#
+# rclone сам описывает все поддерживаемые хранилища:
+# параметры, подсказки, обязательность, пароли, варианты.
+# По этому описанию строится форма в веб-интерфейсе — без
+# ручного кода под каждый тип. Кэш — по пути и времени
+# изменения бинарника (обновили rclone → перечитаем).
 
-def build_temp_config(
-    remote_name: str,
-    remote_config: dict,
-) -> tuple[dict, Path]:
+_providers_cache: dict = {}
+
+
+def providers() -> list[dict]:
     """
-    Создаёт временный rclone.conf с единственным remote.
+    Список типов хранилищ rclone ([] — rclone недоступен).
 
-    Возвращает (env, config_path). env — копия os.environ
-    с RCLONE_CONFIG, указывающим на файл.
-
-    Вызывающий обязан удалить config_path после работы.
-    Пользовательский rclone.conf не затрагивается.
+    Каждый: {"Name": "webdav", "Description": ...,
+             "Options": [{"Name", "Help", "Required",
+                          "IsPassword", "Advanced", ...}]}
     """
-    lines = [f"[{remote_name}]"]
-    for key, value in remote_config.items():
-        # rclone config: "key = value". \n в значениях
-        # не встречается (url/user/obscured-pass безопасны).
-        lines.append(f"{key} = {value}")
+    binary = resolve_binary()
+    if binary is None:
+        return []
 
-    fd, path = tempfile.mkstemp(
-        suffix=".conf",
-        prefix="nbm_rclone_",
-        text=True,
-    )
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n")
-    except Exception:
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
-        raise
+        key = (binary, os.path.getmtime(binary))
+    except OSError:
+        key = (binary, 0)
+    if key in _providers_cache:
+        return _providers_cache[key]
 
+    try:
+        result = subprocess.run(
+            [binary, "config", "providers"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            encoding="utf-8",
+            errors="replace",
+            env=_isolated_env(),
+        )
+        data = json.loads(result.stdout or "[]")
+    except Exception as exc:
+        logger.error("rclone config providers: %s", exc)
+        return []
+
+    if not isinstance(data, list):
+        return []
+
+    _providers_cache.clear()
+    _providers_cache[key] = data
+    return data
+
+
+def provider(type_name: str) -> dict | None:
+    """Описание одного типа хранилища (или None)."""
+    for p in providers():
+        if p.get("Name") == type_name:
+            return p
+    return None
+
+
+# =========================================================
+# ХРАНИЛИЩЕ ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ
+# =========================================================
+#
+# rclone берёт удалённое хранилище из переменных:
+#     RCLONE_CONFIG_NBM_TYPE=webdav
+#     RCLONE_CONFIG_NBM_URL=https://...
+#     RCLONE_CONFIG_NBM_PASS=<obscured>
+# и адресуется как "NBM:путь". Файл конфига не нужен —
+# пароль не попадает на диск, пользовательский rclone.conf
+# не затрагивается (RCLONE_CONFIG → пустое устройство).
+
+REMOTE_NAME = "NBM"
+
+
+def _isolated_env() -> dict:
     env = os.environ.copy()
-    env["RCLONE_CONFIG"] = path
+    # Убираем чужие RCLONE_CONFIG_* (например, из окружения
+    # пользователя), чтобы они не подмешались к нашему.
+    for k in list(env):
+        if k.upper().startswith("RCLONE_CONFIG_"):
+            del env[k]
+    env["RCLONE_CONFIG"] = _empty_config_path()
+    return env
 
-    return env, Path(path)
+
+def _empty_config_path() -> str:
+    """
+    Пустой файл конфига rclone: пользовательский rclone.conf
+    не читается, предупреждения «config not found» нет.
+
+    Не os.devnull: на Windows rclone отвергает «nul» как
+    зарезервированное имя устройства.
+    """
+    path = Path(tempfile.gettempdir()) / "nbm_rclone_empty.conf"
+    try:
+        if not path.exists() or path.stat().st_size:
+            path.write_text("", encoding="utf-8")
+    except OSError as exc:
+        logger.warning("rclone: пустой конфиг %s: %s", path, exc)
+    return str(path)
+
+
+def remote_env(
+    type_name: str,
+    options: dict,
+    password_options: set[str] | frozenset[str] = frozenset(),
+) -> dict:
+    """
+    Окружение для запуска rclone с хранилищем REMOTE_NAME.
+
+    options — параметры в открытом виде (пароли уже
+    расшифрованы нашим ключом). Параметры из
+    password_options rclone требует «obscured» — делаем
+    здесь. Пустые значения не передаются (берётся умолчание
+    rclone).
+
+    RuntimeError — если не удалось obscure пароль.
+    """
+    env = _isolated_env()
+    prefix = f"RCLONE_CONFIG_{REMOTE_NAME}_"
+    env[prefix + "TYPE"] = type_name
+
+    for name, value in (options or {}).items():
+        if value is None or value == "":
+            continue
+        if isinstance(value, bool):
+            value = "true" if value else "false"
+        value = str(value)
+        if name in password_options:
+            obscured = obscure(value)
+            if obscured is None:
+                raise RuntimeError(
+                    f"rclone не смог зашифровать параметр «{name}»"
+                )
+            value = obscured
+        env[prefix + name.upper()] = value
+
+    return env
 
 
 # =========================================================
@@ -228,7 +332,7 @@ def run(
     if binary is None:
         raise RuntimeError(
             "rclone не найден. Укажите путь к бинарнику "
-            "в настройках хранилища (/settings?tab=storage)."
+            "в настройках (/settings?tab=storage)."
         )
 
     return subprocess.run(

@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    {% include "_base_head.html" %}
+    <title>{{ 'Хранилище' if remote_id else 'Новое хранилище' }} — Network Backup Manager</title>
+</head>
+<body class="bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-slate-100 transition-colors min-h-screen">
+
+{% with header_subtitle = "Хранилища" %}
+    {% include "_header.html" %}
+{% endwith %}
+
+{# ========================================================= #}
+{# Форма хранилища rclone. Параметры — из описания rclone    #}
+{# (rclone config providers): обязательные отмечены,         #}
+{# расширенные — под «Дополнительно», варианты — списком.     #}
+{# ========================================================= #}
+
+{% macro option_field(o) %}
+<div class="rclone-option {{ 'md:col-span-2' if o.kind in ('bool', 'select') or o.wide else '' }}"
+     {% if o.providers %}data-provider="{{ o.providers }}"{% endif %}>
+    {% if o.kind == 'bool' %}
+        <input type="hidden" name="bool_{{ o.name }}" value="1">
+        <label class="flex items-start gap-3 cursor-pointer">
+            <input type="checkbox" name="opt_{{ o.name }}" value="true"
+                   {% if o.checked %}checked{% endif %}
+                   class="mt-0.5 text-brand-600 focus:ring-brand-500">
+            <span>
+                <span class="block text-sm font-medium text-gray-700 dark:text-slate-300 font-mono">{{ o.name }}</span>
+                {% if o.help_first %}<span class="block text-[11px] text-gray-500 dark:text-slate-400">{{ o.help_first }}</span>{% endif %}
+            </span>
+        </label>
+    {% else %}
+        <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
+            <span class="font-mono">{{ o.name }}</span>{% if o.required %} <span class="text-rose-600">*</span>{% endif %}
+        </label>
+
+        {% if o.kind == 'select' %}
+            <select name="opt_{{ o.name }}" {% if o.name == 'provider' %}id="rclone-provider"{% endif %}
+                    class="w-full rounded-lg px-3 py-2 text-sm
+                           bg-gray-50 dark:bg-slate-950
+                           border border-gray-200 dark:border-slate-800
+                           focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+                {% if not o.required %}<option value="">— по умолчанию{% if o.default %} ({{ o.default }}){% endif %} —</option>{% endif %}
+                {% for ex in o.examples %}
+                    <option value="{{ ex.value }}" {% if ex.value == o.value %}selected{% endif %}
+                            {% if ex.providers %}data-provider="{{ ex.providers }}"{% endif %}>
+                        {{ ex.value }}{% if ex.help %} — {{ ex.help }}{% endif %}
+                    </option>
+                {% endfor %}
+            </select>
+        {% else %}
+            <input type="{{ 'password' if o.kind == 'password' else 'text' }}"
+                   name="opt_{{ o.name }}"
+                   value="{{ '' if o.kind == 'password' else (o.value or '') }}"
+                   placeholder="{% if o.kind == 'password' and o.saved %}Сохранён — оставьте пустым, чтобы не менять{% elif o.default %}{{ o.default }}{% endif %}"
+                   {% if o.required and not (o.kind == 'password' and o.saved) %}required{% endif %}
+                   {% if o.examples %}list="ex-{{ o.name }}"{% endif %}
+                   autocomplete="{{ 'new-password' if o.kind == 'password' else 'off' }}"
+                   class="w-full rounded-lg px-3 py-2 text-sm {{ '' if o.kind == 'password' else 'font-mono' }}
+                          bg-gray-50 dark:bg-slate-950
+                          border border-gray-200 dark:border-slate-800
+                          placeholder-gray-400 dark:placeholder-slate-500
+                          focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+            {% if o.examples %}
+                <datalist id="ex-{{ o.name }}">
+                    {% for ex in o.examples %}<option value="{{ ex.value }}" {% if ex.providers %}data-provider="{{ ex.providers }}"{% endif %}>{{ ex.help }}</option>{% endfor %}
+                </datalist>
+            {% endif %}
+        {% endif %}
+
+        {% if o.help_first %}
+            <p class="mt-1 text-[11px] text-gray-500 dark:text-slate-400" title="{{ o.help_full }}">{{ o.help_first }}</p>
+        {% endif %}
+    {% endif %}
+</div>
+{% endmacro %}
+
+<main class="max-w-3xl mx-auto px-5 py-8">
+
+    <div class="flex items-center justify-between mb-6 gap-4">
+        <div class="min-w-0">
+            <h1 class="text-2xl font-bold flex items-center gap-2">
+                {{ icon }} {{ 'Хранилище' if remote_id else 'Новое хранилище' }}
+            </h1>
+            <p class="text-sm text-gray-500 dark:text-slate-400 mt-1">
+                Тип rclone: <span class="font-mono">{{ type_name }}</span>
+                {% if type_description %} — <span title="{{ type_description }}">{{ type_description | truncate(120) }}</span>{% endif %}
+            </p>
+        </div>
+        <a href="/settings?tab=storage"
+           class="shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+                  bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                  border border-gray-200 dark:border-slate-700 transition">
+            ← К хранилищам
+        </a>
+    </div>
+
+    {% if error %}
+    <div class="mb-5 px-4 py-3 rounded-lg text-sm
+                bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900
+                text-rose-800 dark:text-rose-300">
+        ✗ Не сохранено: {{ error }}
+    </div>
+    {% endif %}
+
+    <form id="remote-form" method="POST" action="/settings/storage/save" class="space-y-5">
+        <input type="hidden" name="id" value="{{ remote_id }}">
+        <input type="hidden" name="type" value="{{ type_name }}">
+
+        <!-- Основное -->
+        <section class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm p-6 space-y-4">
+            <h3 class="text-sm font-semibold text-gray-700 dark:text-slate-200">Основное</h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Название <span class="text-rose-600">*</span></label>
+                    <input type="text" name="name" required maxlength="80" value="{{ name }}"
+                           placeholder="Например: Nextcloud офис"
+                           class="w-full rounded-lg px-3 py-2 text-sm bg-gray-50 dark:bg-slate-950
+                                  border border-gray-200 dark:border-slate-800
+                                  focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Режим</label>
+                    <select name="mode"
+                            class="w-full rounded-lg px-3 py-2 text-sm bg-gray-50 dark:bg-slate-950
+                                   border border-gray-200 dark:border-slate-800
+                                   focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+                        <option value="changes_only" {% if mode != 'all' %}selected{% endif %}>Только изменённые</option>
+                        <option value="all" {% if mode == 'all' %}selected{% endif %}>Все бэкапы</option>
+                    </select>
+                </div>
+                <div class="md:col-span-2">
+                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Базовая папка на хранилище</label>
+                    <input type="text" name="base_dir" value="{{ base_dir }}" placeholder="/"
+                           class="w-full rounded-lg px-3 py-2 text-sm font-mono bg-gray-50 dark:bg-slate-950
+                                  border border-gray-200 dark:border-slate-800
+                                  focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+                    <p class="mt-1 text-[11px] text-gray-500 dark:text-slate-400">
+                        Внутри создаётся папка каждого устройства с тем же именем, что и его
+                        локальная папка бэкапов: <code class="font-mono">{{ (base_dir or '/').rstrip('/') }}/192.0.2.1_Office</code>.
+                        {% if type_name == 's3' %}Для S3 первая часть пути — имя бакета.{% endif %}
+                        {% if type_name == 'smb' %}Для SMB первая часть пути — имя общей папки (шары).{% endif %}
+                    </p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Подключение -->
+        <section class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm p-6 space-y-4">
+            <h3 class="text-sm font-semibold text-gray-700 dark:text-slate-200">Подключение</h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {% for o in basic_options %}{{ option_field(o) }}{% endfor %}
+            </div>
+
+            {% if advanced_options %}
+            <details class="pt-2" {% if advanced_open %}open{% endif %}>
+                <summary class="cursor-pointer text-sm font-medium text-brand-600 dark:text-brand-400 select-none">
+                    Дополнительные параметры ({{ advanced_options | length }})
+                </summary>
+                <p class="mt-2 mb-3 text-[11px] text-gray-500 dark:text-slate-400">
+                    Обычно не нужны. Пустое поле — значение rclone по умолчанию.
+                </p>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {% for o in advanced_options %}{{ option_field(o) }}{% endfor %}
+                </div>
+            </details>
+            {% endif %}
+
+            <div class="flex flex-wrap items-center gap-3 pt-2">
+                <button type="button" id="remote-test-btn"
+                        class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+                               bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                               border border-gray-200 dark:border-slate-700 transition">
+                    🔌 Проверить соединение
+                </button>
+                <span id="remote-test-result" class="text-xs text-gray-500 dark:text-slate-400"></span>
+            </div>
+        </section>
+
+        <div class="flex justify-end gap-3">
+            <a href="/settings?tab=storage"
+               class="px-5 py-2.5 rounded-lg text-sm font-medium
+                      bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                      border border-gray-200 dark:border-slate-700 transition">Отмена</a>
+            <button type="submit"
+                    class="px-6 py-2.5 rounded-lg text-sm font-medium
+                           bg-brand-600 hover:bg-brand-700 text-white shadow-sm transition">
+                Сохранить
+            </button>
+        </div>
+    </form>
+</main>
+
+<script>
+(function () {
+    'use strict';
+
+    // ---- Параметры, относящиеся к выбранному провайдеру (S3) ----
+    // data-provider="AWS,Minio" — только для них;
+    // "!AWS,Minio" — для всех, кроме них.
+    function matches(spec, value) {
+        if (!spec) return true;
+        const neg = spec.startsWith('!');
+        const list = (neg ? spec.slice(1) : spec).split(',').map(s => s.trim());
+        const hit = list.includes(value);
+        return neg ? !hit : hit;
+    }
+
+    function applyProvider() {
+        const sel = document.getElementById('rclone-provider');
+        if (!sel) return;
+        const value = sel.value;
+        document.querySelectorAll('.rclone-option[data-provider]').forEach(el => {
+            el.style.display = matches(el.dataset.provider, value) ? '' : 'none';
+        });
+        document.querySelectorAll('option[data-provider]').forEach(opt => {
+            if (opt.closest('#rclone-provider')) return;
+            const ok = matches(opt.dataset.provider, value);
+            opt.hidden = !ok;
+            opt.disabled = !ok;
+        });
+    }
+
+    const providerSel = document.getElementById('rclone-provider');
+    if (providerSel) {
+        providerSel.addEventListener('change', applyProvider);
+        applyProvider();
+    }
+
+    // ---- Проверка соединения с введёнными параметрами ----
+    const form = document.getElementById('remote-form');
+    const btn = document.getElementById('remote-test-btn');
+    const out = document.getElementById('remote-test-result');
+
+    btn.addEventListener('click', async () => {
+        const options = {};
+        form.querySelectorAll('[name^="opt_"]').forEach(el => {
+            const wrap = el.closest('.rclone-option');
+            if (wrap && wrap.style.display === 'none') return;
+            const name = el.name.slice(4);
+            options[name] = el.type === 'checkbox' ? el.checked : el.value;
+        });
+        const payload = {
+            id: form.elements.id.value,
+            type: form.elements.type.value,
+            base_dir: form.elements.base_dir.value,
+            options: options,
+        };
+
+        btn.disabled = true;
+        out.textContent = 'Проверка…';
+        out.className = 'text-xs text-gray-500 dark:text-slate-400';
+        try {
+            const res = await fetch('/api/remotes/test', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload),
+            });
+            const data = await res.json();
+            out.textContent = (data.ok ? '✓ ' : '✗ ') + data.message;
+            out.className = 'text-xs font-medium ' + (data.ok
+                ? 'text-emerald-600 dark:text-emerald-400'
+                : 'text-rose-600 dark:text-rose-400');
+        } catch (e) {
+            out.textContent = '✗ ' + e.message;
+            out.className = 'text-xs font-medium text-rose-600 dark:text-rose-400';
+        } finally {
+            btn.disabled = false;
+        }
+    });
+})();
+</script>
+</body>
+</html>

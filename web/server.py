@@ -877,55 +877,6 @@ def _external_backends() -> list:
     ]
 
 
-def _parse_global_storage_form(form, old_storages: dict) -> dict:
-    """
-    Общие настройки хранилищ (Настройки → Хранилища):
-    поля storage_<backend>_<field> → {backend_id: {...}}.
-
-    Пароли шифруются. Пустое поле-пароль — оставить старый.
-    """
-    old_storages = old_storages if isinstance(old_storages, dict) else {}
-    result: dict = {}
-
-    for backend in _external_backends():
-        cfg: dict = {}
-        old_cfg = old_storages.get(backend.id) or {}
-
-        for field in backend.fields:
-            key = f"storage_{backend.id}_{field.name}"
-
-            if field.type == "bool":
-                cfg[field.name] = form.get(key) == "true"
-
-            elif field.type == "number":
-                raw = form.get(key, "")
-                if raw == "" or raw is None:
-                    cfg[field.name] = field.default
-                else:
-                    try:
-                        cfg[field.name] = int(raw)
-                    except (TypeError, ValueError):
-                        cfg[field.name] = field.default
-
-            elif field.type == "password":
-                raw = form.get(key, "")
-                if raw:
-                    cfg[field.name] = storage.encrypt(raw)
-                else:
-                    cfg[field.name] = old_cfg.get(field.name, "")
-
-            else:
-                raw = (form.get(key, "") or "").strip()
-                if raw == "" and field.default != "":
-                    cfg[field.name] = field.default
-                else:
-                    cfg[field.name] = raw
-
-        result[backend.id] = cfg
-
-    return result
-
-
 def _parse_storage_form(form, old_storage: dict) -> dict:
     """
     Хранилища устройства (add/edit): только ползунки.
@@ -2234,63 +2185,388 @@ def api_backup_status(user: str = Depends(require_auth)):
         "syncing": get_sync_status()["devices"],
     }
 # =========================================================
-# API: TEST STORAGE BACKEND
+# ХРАНИЛИЩА RCLONE (Настройки → Хранилища)
 # =========================================================
+#
+# Хранилище — запись в config.json → remotes. Форма строится
+# из описания rclone (rclone config providers): параметры,
+# подсказки, обязательность, пароли, варианты.
 
-@app.post("/api/storage/test/{backend_id}")
-async def api_storage_test(
-    backend_id: str,
+_POPULAR_REMOTE_TYPES = [
+    ("webdav", "WebDAV", "Nextcloud, ownCloud, SharePoint, Яндекс.Диск по WebDAV"),
+    ("ftp", "FTP / FTPS", "FTP-сервер, в том числе с TLS"),
+    ("sftp", "SFTP", "Сервер по SSH"),
+    ("s3", "S3 / MinIO", "Amazon S3 и совместимые: MinIO, Ceph, Cloudflare R2, Wasabi…"),
+    ("onedrive", "OneDrive", "Microsoft OneDrive / SharePoint"),
+    ("drive", "Google Drive", "Google Диск"),
+    ("smb", "SMB", "Сетевая папка Windows / Samba / NAS"),
+    ("local", "Локальная папка", "Папка на этом компьютере или подключённый диск"),
+]
+
+
+# «Обёртки» над другими хранилищами и хранилище в памяти —
+# для бэкапов бессмысленны, в выборе типа не показываем.
+_META_REMOTE_TYPES = frozenset({
+    "alias", "archive", "cache", "chunker", "combine", "compress",
+    "crypt", "hasher", "memory", "union",
+})
+
+
+def _is_oauth_type(info: dict) -> bool:
+    """Тип требует входа через браузер (OAuth) — следующий этап."""
+    return any(o.get("Name") == "token" for o in info.get("Options", []))
+
+
+def _remote_type_card(info: dict, title: str = "", description: str = "") -> dict:
+    from core.storage.rclone_remote import _ICONS
+    name = info.get("Name", "")
+    return {
+        "name": name,
+        "title": title or name,
+        "description": description or info.get("Description", ""),
+        "icon": _ICONS.get(name, "🗄"),
+        "oauth": _is_oauth_type(info),
+    }
+
+
+def _remote_form_options(info: dict, remote: dict | None, submitted=None) -> list[dict]:
+    """
+    Параметры типа для формы. submitted — значения из
+    отправленной формы (при ошибке форма перерисовывается
+    с ними, а не с сохранёнными).
+    """
+    saved = (remote or {}).get("options") or {}
+    result = []
+    for o in info.get("Options", []):
+        if o.get("Hide"):
+            continue
+        name = o.get("Name")
+        if not name or name == "token":   # OAuth — следующий этап
+            continue
+
+        help_full = (o.get("Help") or "").strip()
+        help_first = help_full.splitlines()[0] if help_full else ""
+        examples = [
+            {
+                "value": str(ex.get("Value", "")),
+                "help": (ex.get("Help") or "").splitlines()[0] if ex.get("Help") else "",
+                "providers": ex.get("Provider") or "",
+            }
+            for ex in (o.get("Examples") or [])
+        ]
+        if o.get("Type") == "bool":
+            kind = "bool"
+        elif o.get("IsPassword"):
+            kind = "password"
+        elif examples and (o.get("Exclusive") or name == "provider"):
+            # provider (S3 и др.) — всегда список: от него
+            # зависит, какие параметры показывать.
+            kind = "select"
+        else:
+            kind = "text"
+
+        if submitted is not None:
+            value = submitted.get(f"opt_{name}")
+            checked = submitted.get(f"opt_{name}") == "true"
+        else:
+            value = saved.get(name)
+            if kind == "bool":
+                checked = (
+                    value if isinstance(value, bool)
+                    else str(value).lower() == "true" if value is not None
+                    else bool(o.get("Default"))
+                )
+            else:
+                checked = False
+
+        result.append({
+            "name": name,
+            "kind": kind,
+            "required": bool(o.get("Required")),
+            "advanced": bool(o.get("Advanced")),
+            "help_first": help_first,
+            "help_full": help_full,
+            "default": o.get("DefaultStr") or "",
+            "examples": examples,
+            "providers": o.get("Provider") or "",
+            "value": "" if value is None or kind == "bool" else str(value),
+            "checked": checked,
+            "saved": bool(saved.get(name)) if kind == "password" else False,
+            "wide": name in ("url", "endpoint", "host"),
+        })
+    return result
+
+
+def _remote_edit_context(info, remote, *, type_name, error="", submitted=None) -> dict:
+    from core.storage.rclone_remote import _ICONS
+    options = _remote_form_options(info, remote, submitted)
+    src = submitted if submitted is not None else (remote or {})
+    return {
+        "remote_id": (remote or {}).get("id", ""),
+        "type_name": type_name,
+        "type_description": info.get("Description", ""),
+        "icon": _ICONS.get(type_name, "🗄"),
+        "name": src.get("name") or (remote or {}).get("name") or "",
+        "base_dir": src.get("base_dir") if src.get("base_dir") is not None else "/",
+        "mode": src.get("mode") or "changes_only",
+        "basic_options": [o for o in options if not o["advanced"]],
+        "advanced_options": [o for o in options if o["advanced"]],
+        "advanced_open": bool(error) and any(
+            o["advanced"] and o["required"] for o in options
+        ),
+        "error": error,
+    }
+
+
+@app.get("/settings/storage/new", response_class=HTMLResponse)
+def remote_new_page(request: Request, user: str = Depends(require_auth)):
+    infos = {p.get("Name"): p for p in rclone_mod.providers()}
+    popular = [
+        _remote_type_card(infos[n], title, desc)
+        for n, title, desc in _POPULAR_REMOTE_TYPES if n in infos
+    ]
+    all_types = sorted(
+        (
+            _remote_type_card(p) for p in infos.values()
+            if not p.get("Hide") and p.get("Name") not in _META_REMOTE_TYPES
+        ),
+        key=lambda t: t["name"],
+    )
+    return templates.TemplateResponse(request, "storage_new.html", {
+        "popular": popular,
+        "all_types": all_types,
+        "rclone_version": rclone_mod.get_version() if infos else "",
+    })
+
+
+@app.get("/settings/storage/edit", response_class=HTMLResponse)
+def remote_edit_page(
     request: Request,
-    device_type: str = "",
-    index: int = -1,
+    id: str = "",
+    type: str = "",
     user: str = Depends(require_auth),
 ):
-    if storage_manager is None:
-        raise HTTPException(404, "StorageManager недоступен")
+    remote = global_config.load_global().get(id) if id else None
+    if id and remote is None:
+        raise HTTPException(404, "Хранилище не найдено")
+    type_name = remote["type"] if remote else type
+    info = rclone_mod.provider(type_name)
+    if info is None:
+        raise HTTPException(404, f"Тип rclone «{type_name}» не найден (rclone недоступен?)")
+    if remote is None and _is_oauth_type(info):
+        raise HTTPException(400, "Этот тип требует входа через браузер — будет на следующем этапе")
+    return templates.TemplateResponse(
+        request, "storage_edit.html",
+        _remote_edit_context(info, remote, type_name=type_name),
+    )
 
-    backend = storage_manager.get(backend_id)
-    if backend is None:
-        raise HTTPException(404, f"Backend '{backend_id}' не найден")
+
+def _options_from_form(info: dict, form, old_options: dict) -> tuple[dict, list[str]]:
+    """
+    Параметры хранилища из формы.
+
+    Пароли шифруются; пустое поле-пароль = прежний. Флажок
+    сохраняется, только если отличается от умолчания rclone.
+    Возвращает (options, незаполненные обязательные).
+    """
+    options: dict = {}
+    missing: list[str] = []
+    for o in info.get("Options", []):
+        name = o.get("Name")
+        if not name or o.get("Hide"):
+            continue
+        if name == "token":
+            if old_options.get("token"):
+                options["token"] = old_options["token"]
+            continue
+
+        key = f"opt_{name}"
+        if o.get("Type") == "bool":
+            if f"bool_{name}" not in form:
+                if name in old_options:
+                    options[name] = old_options[name]
+                continue
+            value = form.get(key) == "true"
+            if value != bool(o.get("Default")):
+                options[name] = value
+        elif o.get("IsPassword"):
+            raw = form.get(key) or ""
+            if raw:
+                options[name] = storage.encrypt(raw)
+            elif old_options.get(name):
+                options[name] = old_options[name]
+        else:
+            raw = (form.get(key) or "").strip()
+            if raw:
+                options[name] = raw
+
+        if o.get("Required") and str(options.get(name, "")).strip() == "":
+            missing.append(name)
+    return options, missing
+
+
+@app.post("/settings/storage/save", response_class=HTMLResponse)
+async def remote_save(request: Request, user: str = Depends(require_auth)):
+    form = await request.form()
+    rid = (form.get("id") or "").strip()
+    type_name = (form.get("type") or "").strip()
+
+    info = rclone_mod.provider(type_name)
+    if info is None:
+        raise HTTPException(400, f"Тип rclone «{type_name}» не найден")
+
+    remotes = global_config.load_remotes()
+    by_id = {r["id"]: r for r in remotes}
+    old = by_id.get(rid) if rid else None
+    if rid and old is None:
+        raise HTTPException(404, "Хранилище не найдено")
+
+    old_options = (old or {}).get("options") or {} if (old or {}).get("type") == type_name else {}
+    options, missing = _options_from_form(info, form, old_options)
+
+    name = (form.get("name") or "").strip()[:80]
+    base_dir = (form.get("base_dir") or "").strip() or "/"
+    mode = form.get("mode") if form.get("mode") in ("changes_only", "all") else "changes_only"
+
+    def fail(message: str):
+        submitted = {k: form.get(k) for k in form.keys()}
+        submitted.update({"name": name, "base_dir": base_dir, "mode": mode})
+        return templates.TemplateResponse(
+            request, "storage_edit.html",
+            _remote_edit_context(info, old, type_name=type_name,
+                                 error=message, submitted=submitted),
+            status_code=400,
+        )
+
+    if not name:
+        return fail("укажите название")
+    if missing:
+        return fail("не заполнены обязательные параметры: " + ", ".join(missing))
+
+    remote = {
+        "id": rid or global_config.new_remote_id(name, set(by_id) | {"git"}),
+        "name": name,
+        "type": type_name,
+        "options": options,
+        "base_dir": base_dir,
+        "mode": mode,
+    }
+    new_list = (
+        [remote if r["id"] == rid else r for r in remotes] if old
+        else remotes + [remote]
+    )
+
+    # Сохраняем и проверяем пересечения папок; при конфликте —
+    # возвращаем прежний список.
+    global_config.save_remotes(new_list)
+    if storage_manager is not None:
+        storage_manager.reload_remotes()
+    conflict = _find_any_storage_conflict(global_config.load_global())
+    if conflict:
+        global_config.save_remotes(remotes)
+        if storage_manager is not None:
+            storage_manager.reload_remotes()
+        return fail(conflict)
+
+    logging.info(
+        "⚙ Хранилище %s «%s» (%s, базовая папка %s) %s (запрос от %s)",
+        remote["id"], name, type_name, base_dir,
+        "изменено" if old else "добавлено", user,
+    )
+    return RedirectResponse("/settings?tab=storage&message=remote_saved", status_code=303)
+
+
+@app.post("/settings/storage/{rid}/delete")
+def remote_delete(rid: str, user: str = Depends(require_auth)):
+    """
+    Удаляет хранилище из настроек и отключает его у всех
+    устройств. Файлы на самом хранилище не трогаются.
+    """
+    remotes = global_config.load_remotes()
+    remote = next((r for r in remotes if r["id"] == rid), None)
+    if remote is None:
+        raise HTTPException(404, "Хранилище не найдено")
+
+    global_config.save_remotes([r for r in remotes if r["id"] != rid])
+
+    devices = 0
+    if plugin_manager:
+        with plugin_manager.routers_lock:
+            for device_type, pd in plugin_manager._plugins.items():
+                changed = False
+                for router in pd.get("routers", []):
+                    st = router.get("storage")
+                    if isinstance(st, dict) and rid in st:
+                        del st[rid]
+                        changed = True
+                        devices += 1
+                if changed:
+                    try:
+                        plugin_manager.save_routers(device_type)
+                    except Exception as exc:
+                        logging.error(
+                            "хранилище %s: не удалось обновить routers.json (%s): %s",
+                            rid, device_type, exc,
+                        )
+
+    if storage_manager is not None:
+        storage_manager.reload_remotes()
+
+    logging.info(
+        "🗑 Хранилище %s «%s» удалено, отключено у %d устройств (запрос от %s)",
+        rid, remote.get("name"), devices, user,
+    )
+    return RedirectResponse("/settings?tab=storage&message=remote_deleted", status_code=303)
+
+
+@app.post("/api/remotes/test")
+async def api_remote_test(request: Request, user: str = Depends(require_auth)):
+    """
+    Проверка соединения.
+
+    {"id": ..., "saved": true} — сохранённое хранилище как есть;
+    иначе — параметры из формы ({"type", "options", "base_dir"}),
+    пустой пароль = сохранённый.
+    """
+    from core.storage.rclone_remote import RcloneRemote
 
     try:
         data = await request.json()
     except Exception:
         data = {}
 
-    # Пустой пароль в форме = сохранённый в общих настройках.
-    # device_type/index больше не нужны (настройки общие),
-    # параметры оставлены для совместимости.
-    old_cfg: dict = global_config.load_global().get(backend_id) or {}
+    saved = global_config.load_global().get(data.get("id") or "")
 
-    cfg: dict = {}
-    for field in backend.fields:
-        value = data.get(field.name, "")
-
-        if field.type == "password":
-            if value:
-                cfg[field.name] = value
-            else:
-                enc = old_cfg.get(field.name, "")
-                cfg[field.name] = storage.decrypt(enc) if enc else ""
-        elif field.type == "number":
-            try:
-                cfg[field.name] = int(value) if value != "" else field.default
-            except (TypeError, ValueError):
-                cfg[field.name] = field.default
-        elif field.type == "bool":
-            cfg[field.name] = bool(value)
-        else:
-            cfg[field.name] = value if value != "" else field.default
+    if data.get("saved"):
+        if saved is None:
+            return {"ok": False, "message": "Хранилище не найдено"}
+        cfg = dict(saved)
+    else:
+        type_name = data.get("type") or ""
+        info = rclone_mod.provider(type_name)
+        if info is None:
+            return {"ok": False, "message": f"Тип rclone «{type_name}» не найден"}
+        old_options = (saved or {}).get("options") or {} if (saved or {}).get("type") == type_name else {}
+        passwords = {o["Name"] for o in info.get("Options", []) if o.get("IsPassword")}
+        options = {}
+        for name, value in (data.get("options") or {}).items():
+            if name in passwords:
+                if value:
+                    options[name] = storage.encrypt(str(value))
+                elif old_options.get(name):
+                    options[name] = old_options[name]
+            elif value not in ("", None):
+                options[name] = value
+        if old_options.get("token"):
+            options["token"] = old_options["token"]
+        cfg = {"type": type_name, "options": options, "base_dir": data.get("base_dir") or "/"}
 
     try:
-        result = backend.test(cfg)
+        result = RcloneRemote({"id": cfg.get("id") or "test", "type": cfg["type"],
+                               "name": cfg.get("name") or "test"}).test(cfg)
     except Exception as exc:
-        logging.error(
-            "storage test [%s]: исключение: %s",
-            backend_id, exc, exc_info=True,
-        )
+        logging.error("remote test: %s", exc, exc_info=True)
         return {"ok": False, "message": f"Исключение: {exc}"}
-
     return {"ok": result.ok, "message": result.message}
 
 
@@ -4746,59 +5022,6 @@ def sync_all_endpoint(
     )
 
 
-@app.post("/settings/storages/save")
-async def settings_storages_save(
-    request: Request,
-    user: str = Depends(require_auth),
-):
-    """
-    Общие настройки хранилищ (сервер, логин, пароль, шаблон
-    папки) — одни на все устройства.
-
-    Перед сохранением: шаблон папки не должен сводить два
-    устройства в одну папку (иначе их файлы перезаписывали
-    бы друг друга).
-    """
-    from urllib.parse import quote
-
-    form = await request.form()
-    old = global_config.load_global()
-    new = _parse_global_storage_form(form, old)
-
-    # Хранилища, которых нет среди загруженных backend'ов,
-    # не теряем
-    for bid, cfg in old.items():
-        new.setdefault(bid, cfg)
-
-    conflict = _find_any_storage_conflict(new)
-    if conflict:
-        logging.warning("storages: не сохранено — %s", conflict)
-        return RedirectResponse(
-            f"/settings?tab=storage&error={quote(conflict)}",
-            status_code=303,
-        )
-
-    try:
-        global_config.save_global(new)
-    except Exception as exc:
-        logging.error(
-            "storages: не удалось сохранить config.json: %s",
-            exc, exc_info=True,
-        )
-        raise HTTPException(500, "Не удалось сохранить настройки")
-
-    logging.info(
-        "⚙ Общие настройки хранилищ обновлены: %s (запрос от %s)",
-        {bid: c.get("remote_dir") for bid, c in new.items()},
-        user,
-    )
-
-    return RedirectResponse(
-        "/settings?tab=storage&message=storages_saved",
-        status_code=303,
-    )
-
-
 @app.post("/storage-settings/save")
 async def storage_settings_save(
     user: str = Depends(require_auth),
@@ -5287,10 +5510,10 @@ def settings_page(
         context["rclone_version"] = rclone_mod.get_version()
 
         storages = global_config.load_global()
-        context["storages"] = storages
-        context["storage_backends"] = [
+        context["remotes"] = [
             {
                 "backend": b,
+                "remote": storages.get(b.id) or {},
                 "configured": global_config.is_configured(b, storages),
                 "devices": sum(
                     1

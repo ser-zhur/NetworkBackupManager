@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    {% include "_base_head.html" %}
+    <title>Новое хранилище — Network Backup Manager</title>
+</head>
+<body class="bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-slate-100 transition-colors min-h-screen">
+
+{% with header_subtitle = "Хранилища" %}
+    {% include "_header.html" %}
+{% endwith %}
+
+<main class="max-w-4xl mx-auto px-5 py-8">
+
+    <div class="flex items-center justify-between mb-6 gap-4">
+        <div>
+            <h1 class="text-2xl font-bold">☁ Новое хранилище</h1>
+            <p class="text-sm text-gray-500 dark:text-slate-400 mt-1">
+                Выберите тип. Подключение выполняет rclone
+                {%- if rclone_version %} ({{ rclone_version }}){% endif %}.
+            </p>
+        </div>
+        <a href="/settings?tab=storage"
+           class="shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+                  bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                  border border-gray-200 dark:border-slate-700 transition">
+            ← К хранилищам
+        </a>
+    </div>
+
+    {% if not all_types %}
+    <div class="px-4 py-3 rounded-lg text-sm bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-rose-800 dark:text-rose-300">
+        rclone не найден. Укажите путь к нему на вкладке «Хранилища».
+    </div>
+    {% else %}
+
+    {% macro type_card(t) %}
+        {% if t.oauth %}
+        <div class="block p-4 rounded-xl border border-gray-200 dark:border-slate-800 bg-gray-50 dark:bg-slate-900/50 opacity-60"
+             title="Нужен вход через браузер — будет добавлен на следующем этапе">
+        {% else %}
+        <a href="/settings/storage/edit?type={{ t.name }}"
+           class="block p-4 rounded-xl border border-gray-200 dark:border-slate-800 bg-white dark:bg-slate-900
+                  hover:border-brand-400 dark:hover:border-brand-600 hover:shadow-sm transition">
+        {% endif %}
+            <div class="flex items-center justify-between gap-2">
+                <span class="text-sm font-semibold">{{ t.icon }} {{ t.title }}</span>
+                <span class="text-[10px] font-mono text-gray-400 dark:text-slate-500">{{ t.name }}</span>
+            </div>
+            <p class="mt-1 text-xs text-gray-500 dark:text-slate-400">{{ t.description }}</p>
+            {% if t.oauth %}
+                <p class="mt-1 text-[11px] text-amber-700 dark:text-amber-400">Вход через браузер — на следующем этапе</p>
+            {% endif %}
+        {% if t.oauth %}</div>{% else %}</a>{% endif %}
+    {% endmacro %}
+
+    <h2 class="text-sm font-semibold text-gray-700 dark:text-slate-200 mb-3">Популярные</h2>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-8">
+        {% for t in popular %}{{ type_card(t) }}{% endfor %}
+    </div>
+
+    <div class="flex items-center justify-between gap-3 mb-3">
+        <h2 class="text-sm font-semibold text-gray-700 dark:text-slate-200">Все типы ({{ all_types | length }})</h2>
+        <input type="search" id="type-search" placeholder="Поиск: s3, yandex, mega…"
+               class="w-64 max-w-full rounded-lg px-3 py-1.5 text-sm bg-white dark:bg-slate-900
+                      border border-gray-200 dark:border-slate-800
+                      focus:outline-none focus:ring-2 focus:ring-brand-500 transition">
+    </div>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3" id="all-types">
+        {% for t in all_types %}
+            <div class="type-item" data-search="{{ (t.name ~ ' ' ~ t.title ~ ' ' ~ t.description) | lower }}">
+                {{ type_card(t) }}
+            </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+</main>
+
+<script>
+(function () {
+    const input = document.getElementById('type-search');
+    if (!input) return;
+    input.addEventListener('input', () => {
+        const q = input.value.trim().toLowerCase();
+        document.querySelectorAll('.type-item').forEach(el => {
+            el.style.display = !q || el.dataset.search.includes(q) ? '' : 'none';
+        });
+    });
+})();
+</script>
+</body>
+</html>

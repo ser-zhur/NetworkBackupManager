@@ -1,9 +1,9 @@
-{% if message in ('saved', 'storages_saved') %}
+{% if message in ('saved', 'storages_saved', 'remote_saved', 'remote_deleted') %}
 <div class="mb-4 px-4 py-3 rounded-lg text-sm
             bg-emerald-50 dark:bg-emerald-950/40
             border border-emerald-200 dark:border-emerald-900
             text-emerald-800 dark:text-emerald-300">
-    Настройки сохранены.
+    {% if message == 'remote_deleted' %}Хранилище удалено.{% else %}Настройки сохранены.{% endif %}
 </div>
 {% endif %}
 
@@ -33,16 +33,94 @@
 </div>
 {% endif %}
 
-<div class="p-4 rounded-xl border border-gray-200 dark:border-slate-800 bg-white dark:bg-slate-900">
-    <p class="text-xs text-gray-600 dark:text-slate-400">
-        Хранилища общие для всех устройств: сервер, логин, пароль и базовая
-        папка задаются здесь. Папка каждого устройства на хранилище называется
-        так же, как его локальная папка бэкапов. У устройства (добавление /
-        редактирование) хранилище только включается или выключается.
-    </p>
-</div>
+<section class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm p-6 space-y-4">
+    <div class="flex flex-wrap items-start justify-between gap-4">
+        <div class="min-w-0">
+            <h3 class="text-sm font-semibold text-gray-700 dark:text-slate-200">☁ Внешние хранилища</h3>
+            <p class="mt-1 text-xs text-gray-500 dark:text-slate-400">
+                Подключение — через rclone: WebDAV, FTP, SFTP, S3/MinIO и ещё десятки типов.
+                Хранилища общие для всех устройств; у устройства (добавление /
+                редактирование) хранилище только включается. Папка устройства на
+                хранилище = базовая папка + имя его локальной папки бэкапов.
+            </p>
+        </div>
+        <a href="/settings/storage/new"
+           class="shrink-0 inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+                  bg-brand-600 hover:bg-brand-700 text-white shadow-sm transition
+                  {{ 'pointer-events-none opacity-60' if not rclone_available else '' }}">
+            + Добавить хранилище
+        </a>
+    </div>
 
-{% include "_storage_global_form.html" %}
+    {% if not remotes %}
+        <p class="text-sm text-gray-500 dark:text-slate-400 italic">Хранилищ пока нет.</p>
+    {% else %}
+    <div class="divide-y divide-gray-100 dark:divide-slate-800">
+        {% for item in remotes %}
+            {% set b = item.backend %}
+            {% set r = item.remote %}
+            <div class="py-3 first:pt-0 last:pb-0 flex flex-wrap items-center justify-between gap-3">
+                <div class="min-w-0">
+                    <div class="text-sm font-medium flex items-center gap-2">
+                        {{ b.icon }} {{ b.name }}
+                        <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-gray-100 dark:bg-slate-800 text-gray-500 dark:text-slate-400">{{ r.type }}</span>
+                        {% if not item.configured %}
+                            <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/60 text-amber-700 dark:text-amber-300">не заполнены обязательные параметры</span>
+                        {% endif %}
+                    </div>
+                    <div class="mt-0.5 text-xs text-gray-500 dark:text-slate-400">
+                        Базовая папка: <span class="font-mono">{{ r.base_dir or '/' }}</span>
+                        · {{ 'все бэкапы' if r.mode == 'all' else 'только изменённые' }}
+                        · включено у устройств: {{ item.devices }}
+                    </div>
+                    <div class="mt-0.5 text-xs" id="remote-test-{{ b.id }}"></div>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                    <button type="button" onclick="testRemote('{{ b.id }}')"
+                            class="px-3 py-1.5 rounded-lg text-xs font-medium
+                                   bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                                   border border-gray-200 dark:border-slate-700 transition">🔌 Проверить</button>
+                    <a href="/settings/storage/edit?id={{ b.id }}"
+                       class="px-3 py-1.5 rounded-lg text-xs font-medium
+                              bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                              border border-gray-200 dark:border-slate-700 transition">⚙ Изменить</a>
+                    <form method="POST" action="/settings/storage/{{ b.id }}/delete" class="inline"
+                          onsubmit="return confirm('Удалить хранилище «{{ b.name }}»?{% if item.devices %} Оно включено у {{ item.devices }} устройств — у них оно отключится.{% endif %} Файлы на самом хранилище не удаляются.');">
+                        <button type="submit"
+                                class="px-3 py-1.5 rounded-lg text-xs font-medium
+                                       text-rose-700 dark:text-rose-300
+                                       bg-white dark:bg-slate-800 hover:bg-rose-50 dark:hover:bg-rose-950/40
+                                       border border-gray-200 dark:border-slate-700 transition">🗑</button>
+                    </form>
+                </div>
+            </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+</section>
+
+<script>
+async function testRemote(id) {
+    const out = document.getElementById('remote-test-' + id);
+    out.textContent = 'Проверка…';
+    out.className = 'mt-0.5 text-xs text-gray-500 dark:text-slate-400';
+    try {
+        const res = await fetch('/api/remotes/test', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({id: id, saved: true}),
+        });
+        const data = await res.json();
+        out.textContent = (data.ok ? '✓ ' : '✗ ') + data.message;
+        out.className = 'mt-0.5 text-xs font-medium ' + (data.ok
+            ? 'text-emerald-600 dark:text-emerald-400'
+            : 'text-rose-600 dark:text-rose-400');
+    } catch (e) {
+        out.textContent = '✗ ' + e.message;
+        out.className = 'mt-0.5 text-xs font-medium text-rose-600 dark:text-rose-400';
+    }
+}
+</script>
 
 <section class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm p-6">
     <div class="flex flex-wrap items-center justify-between gap-4">
@@ -81,7 +159,7 @@
         <div>
             <h2 class="text-sm font-semibold flex items-center gap-2">⚙ Бинарник rclone</h2>
             <p class="mt-1 text-xs text-gray-500 dark:text-slate-400">
-                Используется WebDAV-хранилищем. В будущем — для S3, SMB, Dropbox, Google Drive, OneDrive, FTPS.
+                Через rclone работают все внешние хранилища.
             </p>
         </div>
         {% if rclone_available %}
@@ -136,8 +214,8 @@
 <div class="p-4 rounded-xl border border-gray-200 dark:border-slate-800 bg-white dark:bg-slate-900">
     <h3 class="text-sm font-semibold mb-2">💡 Как это работает</h3>
     <ul class="text-xs text-gray-600 dark:text-slate-400 space-y-1.5 list-disc list-inside">
-        <li>Storage-backend'ы (WebDAV и будущие) используют rclone как транспорт.</li>
-        <li>Для каждого push создаётся временный конфиг — пользовательский <code class="font-mono">rclone.conf</code> не затрагивается.</li>
-        <li>Пароли хранятся в зашифрованном виде и передаются в rclone через <code class="font-mono">rclone obscure</code>.</li>
+        <li>Все внешние хранилища работают через rclone; параметры формы — из описания самого rclone, поэтому новые типы и параметры появляются вместе с обновлением rclone.</li>
+        <li>Настройки передаются rclone через переменные окружения — на диск ничего не пишется, пользовательский <code class="font-mono">rclone.conf</code> не затрагивается.</li>
+        <li>Пароли хранятся зашифрованными (<code class="font-mono">secret.key</code>); rclone получает их через <code class="font-mono">rclone obscure</code> (по stdin).</li>
     </ul>
 </div>

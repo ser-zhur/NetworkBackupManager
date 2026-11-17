@@ -99,11 +99,48 @@ class StorageManager:
                 names,
             )
 
+        self.reload_remotes()
+
         logger.info(
             "storage: загружено %d backend'ов: %s",
             len(self._backends),
             ", ".join(self._backends.keys()) or "—",
         )
+
+    # -----------------------------------------------------
+    # ХРАНИЛИЩА RCLONE (config.json → remotes)
+    # -----------------------------------------------------
+
+    def reload_remotes(self) -> None:
+        """
+        Перечитать хранилища rclone из config.json.
+
+        Файловые backend'ы (git) остаются; хранилища rclone
+        идут после них в порядке из настроек. Вызывать после
+        изменения списка хранилищ.
+        """
+        from core.storage.global_config import load_remotes
+        from core.storage.rclone_remote import RcloneRemote
+
+        file_backends = {
+            bid: b for bid, b in self._backends.items()
+            if not isinstance(b, RcloneRemote)
+        }
+        self._backends = dict(file_backends)
+
+        for remote in load_remotes():
+            rid = str(remote["id"])
+            if rid in file_backends:
+                msg = f"хранилище «{rid}»: id занят встроенным backend'ом"
+                self._errors.append(msg)
+                logger.error("storage: %s", msg)
+                continue
+            try:
+                self._backends[rid] = RcloneRemote(remote)
+            except Exception as exc:
+                msg = f"хранилище «{rid}»: {exc}"
+                self._errors.append(msg)
+                logger.error("storage: %s", msg, exc_info=True)
 
     def _load_file(self, path: Path) -> None:
         """Загрузить один файл и вытащить все backend'ы."""

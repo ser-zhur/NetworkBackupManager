@@ -23,15 +23,16 @@ s = pytest.importorskip("web.server")
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
-    if s.plugin_manager is None or s.storage_manager is None \
-            or s.storage_manager.get("webdav") is None:
-        pytest.skip("нет PluginManager / WebDAV")
+    if s.plugin_manager is None or s.storage_manager is None:
+        pytest.skip("нет PluginManager / StorageManager")
 
+    # Хранилище rclone (тип local — настроено без параметров)
     cfg = tmp_path / "config.json"
-    cfg.write_text(json.dumps({"storages": {
-        "webdav": {"url": "https://dav.test", "user": "u", "remote_dir": "/{host}"},
-    }}), encoding="utf-8")
+    cfg.write_text(json.dumps({"remotes": [
+        {"id": "webdav", "name": "Т", "type": "local", "options": {}, "base_dir": "/"},
+    ]}), encoding="utf-8")
     monkeypatch.setattr(global_config, "CONFIG_FILE", cfg)
+    s.storage_manager.reload_remotes()
 
     routers = [
         {"host": "10.0.0.1", "storage": {"webdav": {"enabled": True}}},
@@ -62,6 +63,8 @@ def env(tmp_path, monkeypatch):
         backup_state.finish_device(d)
     with s._sync_all_lock:
         s._sync_all_running = False
+    monkeypatch.undo()
+    s.storage_manager.reload_remotes()
 
 
 def test_targets_only_devices_with_enabled_storage(env):
