@@ -1,12 +1,34 @@
+# ---- Рабочие каталоги ----
 logs/
 Backups/
 temp/
-dist/
 venv/
+
+# ---- Сборка ----
+dist/
 build/
 *.rar
 *.zip
+
+# ---- Python-кэш ----
+__pycache__/
+*.pyc
+
+# ---- Секреты и данные (пароли, ключи, конфиги устройств) ----
 *.key
-*.log
 *.json
+data/
+
+# ---- Выгрузки конфигов роутеров ----
+*.backup
+*.rsc
+
+# ---- Логи, временные и отладочные файлы ----
+*.log
 *.tmp
+dir.txt
+nulcurl
+ftp_debug.txt
+test_ftp_debug.py
+tests2.py
+teststore.py
