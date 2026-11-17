@@ -1112,12 +1112,20 @@ def _build_device_payload(
     b_path_abs = _resolve_backup_path(b_path)
 
     # ---- История из git ----
+    # Карточке нужны только последние 3 коммита (git_recent)
+    # и точное общее число версий. Раньше читалось 200
+    # коммитов и считалась длина списка — после 200 версий
+    # счётчик «застревал», а каждый коммит ещё и разбирался
+    # (список файлов). get_commit_count обходит историю без
+    # разбора деревьев.
     git_commits = []
+    git_total = 0
     if git_available():
         try:
             gs = GitStorage(b_path_abs)
             if gs.is_initialized():
-                git_commits = gs.get_history(limit=200)
+                git_commits = gs.get_history(limit=3)
+                git_total = gs.get_commit_count(include_marked=False)
 
                 # Заметки хранятся отдельно от коммитов
                 # (в .git/nbm_notes.json). Подмешиваем их
@@ -1151,7 +1159,7 @@ def _build_device_payload(
             last_date = (last.get("time") or "")[:10]
             age_days = None
 
-        backup_count = len(git_commits)
+        backup_count = git_total
     else:
         last_date = None
         age_days = None
@@ -1368,7 +1376,7 @@ def _build_device_payload(
             or "id_rsa.key"
         ),
         "git_enabled": git_enabled,
-        "git_total": len(git_commits),
+        "git_total": git_total,
         "git_recent": git_recent,
         "storage_rows": storage_rows,
 
