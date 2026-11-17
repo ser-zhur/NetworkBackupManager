@@ -520,25 +520,29 @@ class PluginManager:
         for b in backends:
             result["backends"][b.id] = {"ok": 0, "err": 0, "skip": 0}
 
-        for commit in commits:
-            sha = commit["sha"]
-            short = commit["short"]
-            filenames = commit.get("files") or []
-            if not filenames:
-                continue
+        # Все версии — в одну временную папку и одной выгрузкой
+        # на хранилище (а не запуском rclone на каждую версию:
+        # на облаках это в разы меньше запросов).
+        with _tmp.TemporaryDirectory(prefix="nbm_sync_") as tmpdir:
+            versioned: dict = {}
 
-            try:
-                ts = commit.get("ts") or 0
-                time_part = _dt.fromtimestamp(ts).strftime(
-                    "%Y-%m-%d_%H%M%S"
-                )
-            except Exception:
-                time_part = short
+            for commit in commits:
+                sha = commit["sha"]
+                short = commit["short"]
+                filenames = commit.get("files") or []
+                if not filenames:
+                    continue
 
-            prefix = f"{time_part}_{short}"
+                try:
+                    ts = commit.get("ts") or 0
+                    time_part = _dt.fromtimestamp(ts).strftime(
+                        "%Y-%m-%d_%H%M%S"
+                    )
+                except Exception:
+                    time_part = short
 
-            with _tmp.TemporaryDirectory(prefix="nbm_sync_") as tmpdir:
-                versioned: dict = {}
+                prefix = f"{time_part}_{short}"
+                added = 0
 
                 for fname in filenames:
                     data = gs.get_file_at(sha, fname)
@@ -560,54 +564,60 @@ class PluginManager:
                         continue
 
                     versioned[new_name] = p
+                    added += 1
 
-                if not versioned:
+                if added:
+                    result["commits"] += 1
+
+            if not versioned:
+                result["ok"] = True
+                result["message"] = "Нет файлов для выгрузки"
+                return result
+
+            ctx = PushContext(
+                device_id=device_id,
+                device_host=device_host,
+                device_type=device_type,
+                backup_path=backup_path,
+                files=versioned,
+                changed=True,
+                run_time=_dt.now(),
+                normalize=identity_normalize,
+                device_name=router.get("name") or "",
+            )
+
+            for backend in backends:
+                cfg = self._decrypt_backend_config(
+                    backend,
+                    global_config.effective_config(
+                        router, backend, storages,
+                    ),
+                )
+                # Форсируем push — не даём _should_skip_for_changes
+                # отбросить выгрузку из-за mode=changes_only.
+                cfg["mode"] = "all"
+
+                stats = result["backends"][backend.id]
+                try:
+                    r = backend.push(cfg, ctx)
+                except Exception as exc:
+                    stats["err"] += 1
+                    result["errors"].append(f"{backend.id}: {exc}")
                     continue
 
-                ctx = PushContext(
-                    device_id=device_id,
-                    device_host=device_host,
-                    device_type=device_type,
-                    backup_path=backup_path,
-                    files=versioned,
-                    changed=True,
-                    run_time=_dt.now(),
-                    normalize=identity_normalize,
-                    device_name=router.get("name") or "",
+                details = r.details or {}
+                if details.get("skipped"):
+                    stats["skip"] += 1
+                    continue
+                uploaded = details.get(
+                    "uploaded", len(versioned) if r.ok else 0,
                 )
-
-                for backend in backends:
-                    cfg = self._decrypt_backend_config(
-                        backend,
-                        global_config.effective_config(
-                            router, backend, storages,
-                        ),
-                    )
-                    # Форсируем push — не даём _should_skip_for_changes
-                    # отбросить версию из-за mode=changes_only.
-                    cfg["mode"] = "all"
-
-                    try:
-                        r = backend.push(cfg, ctx)
-                    except Exception as exc:
-                        result["backends"][backend.id]["err"] += 1
-                        result["errors"].append(
-                            f"{backend.id}/{short}: {exc}"
-                        )
-                        continue
-
-                    if (r.details or {}).get("skipped"):
-                        result["backends"][backend.id]["skip"] += 1
-                    elif r.ok:
-                        result["backends"][backend.id]["ok"] += 1
-                        result["files"] += len(versioned)
-                    else:
-                        result["backends"][backend.id]["err"] += 1
-                        result["errors"].append(
-                            f"{backend.id}/{short}: {r.message}"
-                        )
-
-                result["commits"] += 1
+                result["files"] += uploaded
+                if r.ok and not details.get("failed"):
+                    stats["ok"] += 1
+                else:
+                    stats["err"] += 1
+                    result["errors"].append(f"{backend.id}: {r.message}")
 
         total_ok = sum(
             b["ok"] for b in result["backends"].values()
@@ -619,9 +629,10 @@ class PluginManager:
         result["ok"] = True
         result["message"] = (
             f"Версий: {result['commits']}, "
-            f"выгрузок: {total_ok}, "
-            f"ошибок: {total_err}, "
-            f"файлов загружено: {result['files']}"
+            f"файлов: {len(versioned)}, "
+            f"хранилищ без ошибок: {total_ok} из {len(backends)}"
+            + (f", с ошибками: {total_err}" if total_err else "")
+            + f", файлов загружено: {result['files']}"
         )
 
         return result

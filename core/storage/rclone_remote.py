@@ -343,13 +343,35 @@ class RcloneRemote(StorageBackend):
         type_name = config.get("type") or self.type
         base_dir = config.get("base_dir") or ""
         remote_dir = rclone_path(type_name, base_dir, ctx.remote_dir(base_dir))
+        dest = f"{rclone_mod.REMOTE_NAME}:{remote_dir}"
+        options = config.get("options") or {}
 
-        uploaded = 0
-        errors: list[str] = []
+        # Файлы с тем же именем, что и на хранилище, из одной
+        # локальной папки — одним запуском rclone (на облаках
+        # каждый запуск заново ищет путь до папки — это лишние
+        # запросы и упор в лимиты). Остальные — по одному.
+        groups: dict[Path, list[str]] = {}
+        singles: list[tuple[str, Path]] = []
         for name, local_path in ctx.files.items():
             if not local_path.is_file():
                 continue
-            target = f"{rclone_mod.REMOTE_NAME}:{remote_dir}/{name}" if remote_dir                 else f"{rclone_mod.REMOTE_NAME}:{name}"
+            if name == local_path.name:
+                groups.setdefault(local_path.parent, []).append(name)
+            else:
+                singles.append((name, local_path))
+
+        uploaded = 0
+        errors: list[str] = []
+        for parent, names in groups.items():
+            if len(names) == 1:
+                singles.append((names[0], parent / names[0]))
+                continue
+            done, errs = self._copy_batch(parent, names, dest, type_name, options, env)
+            uploaded += done
+            errors += errs
+
+        for name, local_path in singles:
+            target = f"{dest}/{name}" if remote_dir else f"{dest}{name}"
             try:
                 r = rclone_mod.run(
                     ["copyto", *_flags(_PUSH_FLAGS, type_name), str(local_path), target],
@@ -360,11 +382,64 @@ class RcloneRemote(StorageBackend):
                 continue
             if r.returncode != 0:
                 err = r.stderr or r.stdout or ""
-                errors.append(f"{name}: {_last_lines(err)}"
-                              + _hint(err, type_name, config.get("options") or {}))
+                errors.append(f"{name}: {_last_lines(err)}" + _hint(err, type_name, options))
                 continue
             uploaded += 1
 
+        return self._push_result(uploaded, errors, len(ctx.files))
+
+    @staticmethod
+    def _copy_batch(
+        parent: Path, names: list[str], dest: str,
+        type_name: str, options: dict, env: dict,
+    ) -> tuple[int, list[str]]:
+        """
+        `rclone copy --files-from-raw`: несколько файлов одной
+        папки за один запуск. → (загружено, ошибки).
+        Какие файлы не загрузились — по строкам «ERROR : <имя>:»
+        журнала rclone; общая ошибка (нет связи, вход) — все.
+        """
+        fd, list_path = tempfile.mkstemp(prefix="nbm_files_", suffix=".txt")
+        try:
+            with open(fd, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write("\n".join(names) + "\n")
+            try:
+                r = rclone_mod.run(
+                    ["copy", *_flags(_PUSH_FLAGS, type_name),
+                     "-v", "--stats-log-level", "DEBUG",
+                     "--files-from-raw", list_path, str(parent), dest],
+                    env=env, timeout=300 + 20 * len(names),
+                )
+            except Exception as exc:
+                return 0, [f"{len(names)} файлов: {exc}"]
+        finally:
+            try:
+                Path(list_path).unlink()
+            except OSError:
+                pass
+
+        if r.returncode == 0:
+            return len(names), []
+
+        err = r.stderr or r.stdout or ""
+        wanted = set(names)
+        failed: dict[str, str] = {}
+        for line in err.splitlines():
+            m = _FILE_ERROR_RE.match(line.strip())
+            if not m:
+                continue
+            # «b.rsc.27514f6a.partial» — временное имя при загрузке
+            name = _PARTIAL_RE.sub("", m.group(1))
+            if name in wanted and name not in failed:
+                failed[name] = m.group(2).strip()
+        hint = _hint(err, type_name, options)
+        if not failed:
+            return 0, [f"{len(names)} файлов: {_last_lines(err) or 'ошибка rclone'}{hint}"]
+        errors = [f"{n}: {msg[:_MAX_ERROR_LEN]}{hint}" for n, msg in failed.items()]
+        return len(names) - len(failed), errors
+
+    @staticmethod
+    def _push_result(uploaded: int, errors: list[str], total: int) -> PushResult:
         if uploaded == 0 and errors:
             return PushResult.failure("Ни один файл не загружен: " + "; ".join(errors[:2]))
         if uploaded == 0:
@@ -373,17 +448,24 @@ class RcloneRemote(StorageBackend):
             return PushResult(
                 ok=True,
                 message=(
-                    f"Загружено {uploaded} из {len(ctx.files)} файлов; "
+                    f"Загружено {uploaded} из {total} файлов; "
                     f"ошибки: {'; '.join(errors[:2])}"
                 ),
+                details={"uploaded": uploaded, "failed": len(errors)},
             )
-        return PushResult.success(f"Загружено файлов: {uploaded}")
+        return PushResult.success(f"Загружено файлов: {uploaded}", uploaded=uploaded)
 
 
 _LOG_PREFIX_RE = re.compile(
     r"^\d{4}/\d\d/\d\d \d\d:\d\d:\d\d\s+(?:[A-Z]+\s*:\s*)?"
 )
 _MAX_ERROR_LEN = 300
+
+# «2026/11/17 20:00:00 ERROR : file.rsc: Failed to copy: ...»
+_FILE_ERROR_RE = re.compile(
+    r"^\d{4}/\d\d/\d\d \d\d:\d\d:\d\d\s+ERROR\s*:\s*(.+?): (.+)$"
+)
+_PARTIAL_RE = re.compile(r"\.[0-9a-f]{6,}\.partial$")
 
 
 def _last_lines(text: str | None, n: int = 2) -> str:
