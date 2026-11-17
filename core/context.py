@@ -242,9 +242,9 @@ def load_json(path: Path, default=_UNSET) -> dict:
 
     return data
 
-def save_json(path: Path, data: dict) -> None:
+def save_json(path: Path, data: dict | list) -> None:
     """
-    Атомарно записывает JSON-объект в файл.
+    Атомарно записывает JSON (объект или список) в файл.
 
     Особенности:
       • временный файл имеет фиксированное имя <path>.tmp —

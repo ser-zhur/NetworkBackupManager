@@ -823,6 +823,17 @@ def _storage_defaults_for_template():
 # PATH UTILS
 # =========================================================
 
+def _raise_routers_save_error(where: str, exc: Exception):
+    """Лог + HTTP 500 при неудачной записи routers.json."""
+    logging.error(
+        "%s: не удалось сохранить routers.json: %s",
+        where, exc, exc_info=True,
+    )
+    raise HTTPException(
+        500, f"Не удалось сохранить routers.json: {exc}",
+    )
+
+
 def _resolve_backup_path(backup_path) -> Path:
     path = Path(backup_path)
     if not path.is_absolute():
@@ -1493,7 +1504,11 @@ def execute_device_backup_task(
     device_type: str,
     index: int,
     secure_router: dict,
+    original: dict | None = None,
 ):
+    # original — объект роутера из списка в памяти. Нужен,
+    # чтобы служебные поля (ros_version) записать именно
+    # этому устройству, даже если индекс сдвинулся.
     host = (
         secure_router.get("host")
         or secure_router.get("ip")
@@ -1543,6 +1558,7 @@ def execute_device_backup_task(
             try:
                 plugin_manager.persist_router_service_fields(
                     device_type, index, secure_router,
+                    original=original,
                 )
             except Exception as exc:
                 logging.warning(
@@ -2447,55 +2463,17 @@ async def save_router_endpoint(
     if form.get("debug_connection") == "true":
         new_router["debug_connection"] = True
 
-    plugin_data = (
-        plugin_manager
-        ._plugins[
-            device_type
-        ]
-    )
+    routers = plugin_manager._plugins[device_type]["routers"]
 
-    plugin_data[
-        "routers"
-    ].append(
-        new_router
-    )
-
-    target_dir = (
-        BASE_DIR / "plugins"
-    )
-
-    for p_folder in (
-        target_dir.iterdir()
-    ):
-
-        if (
-            p_folder.is_dir()
-            and
-            p_folder.name.lower()
-            == device_type.lower()
-        ):
-
-            json_file = (
-                p_folder
-                / "routers.json"
-            )
-
-            with open(
-                json_file,
-                "w",
-                encoding="utf-8",
-            ) as f:
-
-                json.dump(
-                    plugin_data[
-                        "routers"
-                    ],
-                    f,
-                    ensure_ascii=False,
-                    indent=4,
-                )
-
-            break
+    with plugin_manager.routers_lock:
+        routers.append(new_router)
+        try:
+            plugin_manager.save_routers(device_type)
+        except Exception as exc:
+            # Откат: в памяти не должно остаться устройства,
+            # которого нет в файле.
+            routers.remove(new_router)
+            _raise_routers_save_error("save-router", exc)
 
     logging.info(
         "➕ Добавлено новое устройство "
@@ -2666,6 +2644,7 @@ def run_backup(
         device_type,
         index,
         secure_router,
+        router,
     )
 
     if is_ajax:
@@ -2732,37 +2711,29 @@ def toggle_pin(
     if not (0 <= index < len(routers)):
         raise HTTPException(404, "Устройство не найдено")
 
-    router = routers[index]
-    
-    # 1. Вычисляем новое состояние
-    is_pinned = not bool(router.get("pinned"))
+    with plugin_manager.routers_lock:
+        router = routers[index]
+        was_pinned = bool(router.get("pinned"))
 
-    # 2. Обновляем словарь
-    if is_pinned:
-        router["pinned"] = True
-    else:
-        # Не мусорим в routers.json, если сняли закрепление
-        router.pop("pinned", None)
+        # 1. Вычисляем новое состояние
+        is_pinned = not was_pinned
 
-    # 3. Сохраняем в routers.json
-    target_dir = BASE_DIR / "plugins"
-    saved = False
-    for p_folder in target_dir.iterdir():
-        if p_folder.is_dir() and p_folder.name.lower() == device_type.lower():
-            json_file = p_folder / "routers.json"
-            try:
-                with open(json_file, "w", encoding="utf-8") as f:
-                    json.dump(routers, f, ensure_ascii=False, indent=4)
-                saved = True
-            except OSError as exc:
-                logging.error(
-                    "toggle-pin: не удалось сохранить %s: %s",
-                    json_file, exc,
-                )
-            break
+        # 2. Обновляем словарь
+        if is_pinned:
+            router["pinned"] = True
+        else:
+            # Не мусорим в routers.json, если сняли закрепление
+            router.pop("pinned", None)
 
-    if not saved:
-        raise HTTPException(500, "Не удалось сохранить routers.json")
+        # 3. Сохраняем в routers.json (атомарно)
+        try:
+            plugin_manager.save_routers(device_type)
+        except Exception as exc:
+            if was_pinned:
+                router["pinned"] = True
+            else:
+                router.pop("pinned", None)
+            _raise_routers_save_error("toggle-pin", exc)
 
     # 4. Логируем, используя безопасную переменную is_pinned
     logging.info(
@@ -3949,48 +3920,35 @@ async def update_router(
     if form.get("debug_connection") == "true":
         updated_router["debug_connection"] = True
 
-    routers_list[index] = updated_router
-
-    target_dir = (
-        BASE_DIR / "plugins"
-    )
-
-    _SERVICE_FIELDS = ("ros_version",)
-    for field in _SERVICE_FIELDS:
-        if field in old_router:
-            updated_router[field] = old_router[field]
-
-
-    for p_folder in (
-        target_dir.iterdir()
-    ):
-
-        if (
-            p_folder.is_dir()
-            and
-            p_folder.name.lower()
-            == device_type.lower()
+    with plugin_manager.routers_lock:
+        # Пока разбиралась форма, список мог измениться
+        # (удалили соседнее устройство) — не перезаписываем
+        # чужую запись.
+        if not (
+            0 <= index < len(routers_list)
+            and routers_list[index] is old_router
         ):
-
-            json_file = (
-                p_folder
-                / "routers.json"
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Список устройств изменился. "
+                    "Откройте редактирование заново."
+                ),
             )
 
-            with open(
-                json_file,
-                "w",
-                encoding="utf-8",
-            ) as f:
+        # Служебные поля (ros_version) берём на момент
+        # записи — бэкап мог обновить их, пока шло
+        # редактирование.
+        for field in plugin_manager._SERVICE_FIELDS:
+            if field in old_router:
+                updated_router[field] = old_router[field]
 
-                json.dump(
-                    routers_list,
-                    f,
-                    ensure_ascii=False,
-                    indent=4,
-                )
-
-            break
+        routers_list[index] = updated_router
+        try:
+            plugin_manager.save_routers(device_type)
+        except Exception as exc:
+            routers_list[index] = old_router
+            _raise_routers_save_error("update-router", exc)
 
     logging.info(
         "⚙ Обновлены настройки "
@@ -4382,6 +4340,22 @@ async def delete_device(
     form = await request.form()
     remove_key = form.get("remove_key") == "true"
 
+    if not (0 <= index < len(routers)):
+        raise HTTPException(404, "Устройство не найдено")
+
+    # Нельзя удалять устройство, по которому идёт бэкап или
+    # синхронизация: задача допишет файлы в удалённый каталог
+    # и запишет результат по сдвинувшемуся индексу.
+    if (
+        is_backup_running_for(f"{device_type}/{index}")
+        or is_sync_running_for(f"{device_type}/{index}")
+    ):
+        raise HTTPException(
+            409,
+            "По устройству идёт бэкап или синхронизация. "
+            "Дождитесь окончания и повторите удаление.",
+        )
+
     router = routers[index]
     host = (
         router.get("host")
@@ -4458,41 +4432,22 @@ async def delete_device(
 
     # ---- 2. Удалить запись из routers.json ----
 
-    routers.pop(index)
+    with plugin_manager.routers_lock:
+        # Пока разбиралась форма, список мог измениться —
+        # не удаляем чужую запись.
+        if not (0 <= index < len(routers) and routers[index] is router):
+            raise HTTPException(
+                409,
+                "Список устройств изменился. Обновите страницу.",
+            )
 
-    target_dir = BASE_DIR / "plugins"
-    router_file_written = False
-    for p_folder in target_dir.iterdir():
-        if (
-            p_folder.is_dir()
-            and p_folder.name.lower() == device_type.lower()
-        ):
-            json_file = p_folder / "routers.json"
-            try:
-                with open(json_file, "w", encoding="utf-8") as f:
-                    json.dump(
-                        routers, f,
-                        ensure_ascii=False,
-                        indent=4,
-                    )
-                router_file_written = True
-            except OSError as exc:
-                logging.error(
-                    "delete-device: не удалось записать %s: %s",
-                    json_file, exc,
-                )
-                raise HTTPException(
-                    500, f"Не удалось обновить routers.json: {exc}"
-                )
-            break
-
-    if not router_file_written:
-        # Плагин без routers.json — восстанавливаем запись.
-        routers.insert(index, router)
-        raise HTTPException(
-            500,
-            f"Каталог плагина {device_type} не найден",
-        )
+        routers.pop(index)
+        try:
+            plugin_manager.save_routers(device_type)
+        except Exception as exc:
+            # Откат: устройство остаётся и в памяти, и в файле.
+            routers.insert(index, router)
+            _raise_routers_save_error("delete-device", exc)
 
     # ---- 3. Обновить state.json ----
 

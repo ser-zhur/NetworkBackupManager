@@ -45,6 +45,59 @@ class PluginManager:
         self.storage = SecureStorage(BASE_DIR)
         self.storage_manager = storage_manager
 
+        # Сериализует изменения списков routers в памяти и
+        # запись routers.json. RLock — чтобы код, уже
+        # держащий лок (веб-обработчик), мог вызвать
+        # save_routers() без взаимоблокировки.
+        self.routers_lock = threading.RLock()
+
+    # =====================================================
+    # ROUTERS.JSON
+    # =====================================================
+
+    def save_routers(self, device_type: str) -> None:
+        """
+        Атомарно сохраняет routers.json плагина device_type
+        из текущего списка в памяти.
+
+        • под routers_lock — параллельные записи (веб +
+          потоки бэкапа) не перемешиваются;
+        • через save_json: tmp + fsync + os.replace —
+          сбой посреди записи не оставит обрезанный файл.
+
+        Бросает исключение при ошибке: вызывающий решает,
+        как сообщить пользователю.
+        """
+        with self.routers_lock:
+            plugin = self._plugins.get(device_type)
+            if plugin is None:
+                raise KeyError(f"Плагин не найден: {device_type}")
+
+            plugin_dir = plugin.get("dir")
+            if not plugin_dir:
+                raise FileNotFoundError(
+                    f"Каталог плагина {device_type} не известен"
+                )
+
+            save_json(
+                Path(plugin_dir) / "routers.json",
+                copy.deepcopy(plugin["routers"]),
+            )
+
+    @staticmethod
+    def find_router_index(routers: list, router: dict) -> int | None:
+        """
+        Индекс router в routers по идентичности объекта.
+
+        Индекс устройства может сдвинуться, пока идёт бэкап
+        (удалили соседнее устройство). Поиск по `is` не даёт
+        записать результат не тому роутеру.
+        """
+        for i, r in enumerate(routers):
+            if r is router:
+                return i
+        return None
+
     # =====================================================
     # DISCOVER & LOAD
     # =====================================================
@@ -119,6 +172,9 @@ class PluginManager:
                     "func": module.run_backup,
                     "routers": routers_data,
                     "normalize": normalize_fn,
+                    # Реальный каталог (с исходным регистром
+                    # имени) — для save_routers().
+                    "dir": item_path,
                 }
 
                 logging.info(
@@ -655,52 +711,58 @@ class PluginManager:
         device_type: str,
         index: int,
         source: dict,
+        original: dict | None = None,
     ) -> None:
         """
         Переносит служебные поля из рабочей копии роутера
         (source — тот же dict, что ушёл в плагин) в in-memory
         конфиг и в routers.json.
 
+        original — объект роутера из списка в памяти, для
+        которого запускался бэкап. Если передан, устройство
+        ищется по нему, а не по index: пока шёл бэкап, индекс
+        мог сдвинуться (удалили соседнее устройство) или
+        запись могли пересоздать (отредактировали) — тогда
+        молча пропускаем, чтобы не испортить чужую запись.
+
         Вызывается после успешного бэкапа. No-op, если
         ничего не поменялось.
         """
-        routers = (
-            self._plugins.get(device_type, {}).get("routers", [])
-        )
+        with self.routers_lock:
+            routers = (
+                self._plugins.get(device_type, {}).get("routers", [])
+            )
 
-        if not (0 <= index < len(routers)):
-            return
+            if original is not None:
+                found = self.find_router_index(routers, original)
+                if found is None:
+                    logging.info(
+                        "routers.json: устройство %s/%s изменено "
+                        "или удалено во время бэкапа — служебные "
+                        "поля не сохраняем",
+                        device_type, index,
+                    )
+                    return
+                index = found
 
-        target = routers[index]
+            if not (0 <= index < len(routers)):
+                return
 
-        changed_fields = []
-        for field in self._SERVICE_FIELDS:
-            new_value = source.get(field)
-            old_value = target.get(field)
-            if new_value != old_value:
-                target[field] = new_value
-                changed_fields.append(field)
+            target = routers[index]
 
-        if not changed_fields:
-            return
+            changed_fields = []
+            for field in self._SERVICE_FIELDS:
+                new_value = source.get(field)
+                old_value = target.get(field)
+                if new_value != old_value:
+                    target[field] = new_value
+                    changed_fields.append(field)
 
-        # Сохраняем routers.json для нужного плагина.
-        for p_folder in self.plugins_dir.iterdir():
-            if not p_folder.is_dir():
-                continue
-            if p_folder.name.lower() != device_type.lower():
-                continue
-
-            json_file = p_folder / "routers.json"
+            if not changed_fields:
+                return
 
             try:
-                with open(json_file, "w", encoding="utf-8") as f:
-                    json.dump(
-                        routers,
-                        f,
-                        ensure_ascii=False,
-                        indent=4,
-                    )
+                self.save_routers(device_type)
                 logging.info(
                     "routers.json: обновлены поля %s "
                     "для %s/%s",
@@ -708,12 +770,12 @@ class PluginManager:
                     device_type,
                     index,
                 )
-            except OSError as exc:
+            except Exception as exc:
                 logging.warning(
-                    "Не удалось сохранить %s: %s",
-                    json_file, exc,
+                    "Не удалось сохранить routers.json "
+                    "(%s): %s",
+                    device_type, exc,
                 )
-            return
 
 
     # =====================================================
@@ -822,6 +884,7 @@ class PluginManager:
                         device_type,
                         task["index"],
                         secure_router,
+                        original=router,
                     )
                 except Exception as exc:
                     logging.warning(
