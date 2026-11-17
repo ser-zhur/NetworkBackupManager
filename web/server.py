@@ -116,42 +116,19 @@ setup_logging()
 # BACKUP STATE
 # =========================================================
 #
-# Храним не просто счётчик, а конкретные device_id —
-# чтобы фронтенд мог синхронизировать кнопки «Запустить
-# бэкап» по каждому устройству отдельно.
-#
-# mass_backup_running — идёт общий прогон через /run-now.
-# В этом режиме все устройства считаются занятыми.
-#
-# active_backups — множество device_id одиночных бэкапов
-# (формат "mikrotik/0").
+# Состояние живёт в core.backup_state — общее с
+# планировщиком, чтобы плановый прогон и ручные запуски
+# видели друг друга.
 
-backup_lock = threading.Lock()
-
-active_backups: set[str] = set()
-mass_backup_running: bool = False
-
-
-def is_backup_running() -> bool:
-    """True, если идёт хоть один бэкап (одиночный или массовый)."""
-    with backup_lock:
-        return mass_backup_running or bool(active_backups)
-
-
-def is_backup_running_for(device_id: str) -> bool:
-    """True, если занято конкретное устройство или идёт массовый бэкап."""
-    with backup_lock:
-        return mass_backup_running or device_id in active_backups
-
-
-def get_backup_status() -> dict:
-    """Снимок состояния для /api/backup-status."""
-    with backup_lock:
-        return {
-            "running": mass_backup_running or bool(active_backups),
-            "mass": mass_backup_running,
-            "devices": sorted(active_backups),
-        }
+from core.backup_state import (
+    try_start_mass,
+    finish_mass,
+    try_start_device,
+    finish_device,
+    is_backup_running,
+    is_backup_running_for,
+    get_backup_status,
+)
 
 # =========================================================
 # SYNC STATE (git → storages)
@@ -179,29 +156,7 @@ def sync_started(device_id: str) -> None:
 def sync_finished(device_id: str) -> None:
     with sync_lock:
         active_syncs.discard(device_id)
-        
-def backup_started(device_id: str | None = None):
-    """
-    device_id=None означает массовый бэкап (/run-now).
-    Иначе — одиночный, добавляет конкретный device_id.
-    """
-    global mass_backup_running
 
-    with backup_lock:
-        if device_id is None:
-            mass_backup_running = True
-        else:
-            active_backups.add(device_id)
-
-
-def backup_finished(device_id: str | None = None):
-    global mass_backup_running
-
-    with backup_lock:
-        if device_id is None:
-            mass_backup_running = False
-        else:
-            active_backups.discard(device_id)
 
 # =========================================================
 # CORE
@@ -1545,14 +1500,14 @@ def execute_device_backup_task(
         or f"#{index}"
     )
 
+    # Слот устройства уже занят в run_backup() через
+    # try_start_device(); здесь только освобождаем его
+    # в finally.
     device_id = f"{device_type}/{index}"
-
-    set_device_context(f"{device_type}/{host}")
 
     debug_connection = bool(secure_router.get("debug_connection"))
 
     set_device_context(f"{device_type}/{host}")
-    backup_started(device_id)
 
     if debug_connection:
         set_connection_debug(f"{device_type}/{host}")
@@ -1560,7 +1515,6 @@ def execute_device_backup_task(
             "🐛 Debug подключения включён: %s/%s", device_type, host
         )
 
-    backup_started(device_id)
     try:
         plugin = (
             plugin_manager._plugins.get(device_type)
@@ -1636,13 +1590,12 @@ def execute_device_backup_task(
                 device_type, host,
             )
             clear_connection_debug()
-        backup_finished(device_id)
+        finish_device(device_id)
         clear_device_context()
 
 def execute_all_backups_task():
-
-    backup_started()
-
+    # Слот массового прогона уже занят в run_now_endpoint()
+    # через try_start_mass(); здесь только освобождаем.
     try:
 
         if plugin_manager:
@@ -1671,7 +1624,7 @@ def execute_all_backups_task():
 
     finally:
 
-        backup_finished()
+        finish_mass()
 
 
 # =========================================================
@@ -2696,6 +2649,18 @@ def run_backup(
             ]
         )
 
+    # Атомарно проверяем и занимаем устройство. Проверка
+    # выше (is_backup_running_for) — только быстрый ответ
+    # UI; без этого захвата два запроса подряд могли оба
+    # пройти её до старта фоновой задачи.
+    if not try_start_device(device_id):
+        if is_ajax:
+            return Response(status_code=204)
+        return RedirectResponse(
+            url=f"/logs/device/{device_type}/{index}",
+            status_code=303,
+        )
+
     background_tasks.add_task(
         execute_device_backup_task,
         device_type,
@@ -2726,7 +2691,9 @@ def run_now_endpoint(
     ),
 ):
 
-    if not is_backup_running():
+    # Атомарно: если уже идёт любой бэкап (в т.ч. плановый
+    # из планировщика) — новый массовый прогон не стартует.
+    if try_start_mass():
 
         background_tasks.add_task(
             execute_all_backups_task

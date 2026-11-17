@@ -3,6 +3,7 @@ import logging
 import threading
 from datetime import datetime, timedelta
 
+from core import backup_state
 from core.context import (
     SCHEDULER_FILE,
     load_json,
@@ -26,6 +27,10 @@ class BackupScheduler:
         self._thread = None
         self._stop_event = threading.Event()
         self._job_running = threading.Event()
+
+        # Чтобы «плановый бэкап отложен» писался в лог один
+        # раз за ожидание, а не каждые 30 секунд.
+        self._busy_logged = False
 
         # Защита от retry-storm: если save_config упал,
         # не пытаемся сразу заново. Ждём 5 минут.
@@ -114,7 +119,18 @@ class BackupScheduler:
                             logging.warning(
                                 "⚠ Предыдущее задание ещё выполняется, пропуск."
                             )
+                        elif not backup_state.try_start_mass():
+                            # Идёт ручной бэкап (одиночный или
+                            # «Запустить все»). last_run не трогаем —
+                            # повторим через 30 с, когда освободится.
+                            if not self._busy_logged:
+                                logging.info(
+                                    "⏳ Плановый бэкап отложен: "
+                                    "уже идёт другой бэкап."
+                                )
+                                self._busy_logged = True
                         else:
+                            self._busy_logged = False
                             self._job_running.set()
                             self._last_attempt_ts = datetime.now()
 
@@ -171,6 +187,7 @@ class BackupScheduler:
 
                             finally:
                                 self._job_running.clear()
+                                backup_state.finish_mass()
 
             except Exception as e:
                 logging.error(
