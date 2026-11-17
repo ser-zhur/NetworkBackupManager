@@ -10,7 +10,7 @@
 #   • Kerberos (use_kerberos=true)
 #
 # Требует установленный rclone — путь настраивается
-# на странице /storage-settings.
+# на странице /settings?tab=storage.
 #
 # Нюанс SMB по сравнению с WebDAV: первый сегмент
 # remote_dir — это имя шары. То есть remote_dir
@@ -97,8 +97,10 @@ class SmbStorageBackend(StorageBackend):
             placeholder="backup/mikrotik",
             help=(
                 "Первый сегмент — имя SMB-шары. Пример: "
-                "backup/mikrotik. Подкаталоги создаются "
-                "автоматически."
+                "backup/mikrotik/{host}. Подкаталоги создаются "
+                "автоматически. Подстановки: {host}, {name}, "
+                "{type}. У каждого устройства должен быть "
+                "свой каталог."
             ),
         ),
         StorageField(
@@ -166,16 +168,22 @@ class SmbStorageBackend(StorageBackend):
 
         return cfg
 
+    # Проверка пересечения каталогов между устройствами
+    remote_dir_field = "remote_dir"
+    server_fields = ("host", "port")
+
     @staticmethod
-    def _remote_dir(config: dict) -> str:
+    def _remote_dir(config: dict, ctx: PushContext | None = None) -> str:
         """
         Нормализует путь на шаре.
 
         Первый сегмент — имя шары. Ведущие/хвостовые
         слэши убираем — rclone плохо переносит ":".
         """
-        raw = (config.get("remote_dir") or "").strip()
-        return raw.strip("/")
+        raw = config.get("remote_dir") or ""
+        if ctx is not None:
+            raw = ctx.expand(raw)
+        return raw.strip().strip("/")
 
     # -----------------------------------------------------
     # TEST
@@ -185,7 +193,7 @@ class SmbStorageBackend(StorageBackend):
         if not rclone_mod.is_available():
             return PushResult.failure(
                 "rclone не найден. Укажите путь к бинарнику "
-                "в /storage-settings."
+                "в настройках (/settings?tab=storage)."
             )
 
         remote_cfg = self._build_remote_config(config)
@@ -260,7 +268,7 @@ class SmbStorageBackend(StorageBackend):
         if not rclone_mod.is_available():
             return PushResult.failure(
                 "rclone не найден. Укажите путь к бинарнику "
-                "в /storage-settings."
+                "в настройках (/settings?tab=storage)."
             )
 
         remote_cfg = self._build_remote_config(config)
@@ -271,7 +279,7 @@ class SmbStorageBackend(StorageBackend):
                 "зашифровать пароль."
             )
 
-        remote_dir = self._remote_dir(config)
+        remote_dir = self._remote_dir(config, ctx)
         if not remote_dir:
             return PushResult.failure(
                 "Не указан каталог на сервере "

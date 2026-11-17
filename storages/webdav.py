@@ -8,7 +8,7 @@
 # serve webdav и любой стандартный WebDAV.
 #
 # Требует установленный rclone — путь настраивается
-# на странице /storage-settings.
+# на странице /settings?tab=storage.
 #
 # =========================================================
 
@@ -80,11 +80,13 @@ class WebDavStorageBackend(StorageBackend):
         StorageField(
             name="remote_dir",
             label="Каталог на сервере",
-            default="/network_backups",
-            placeholder="/network_backups",
+            default="/network_backups/{host}",
+            placeholder="/network_backups/{host}",
             help=(
-                "Абсолютный путь от корня WebDAV. "
-                "Будет создан при необходимости."
+                "Абсолютный путь от корня WebDAV, создаётся "
+                "при необходимости. Подстановки: {host}, "
+                "{name}, {type}. У каждого устройства должен "
+                "быть свой каталог."
             ),
         ),
         StorageField(
@@ -138,15 +140,21 @@ class WebDavStorageBackend(StorageBackend):
 
         return cfg
 
+    # Проверка пересечения каталогов между устройствами
+    remote_dir_field = "remote_dir"
+    server_fields = ("url",)
+
     @staticmethod
-    def _remote_dir(config: dict) -> str:
+    def _remote_dir(config: dict, ctx: PushContext | None = None) -> str:
         """
         Нормализует путь на сервере.
 
         rclone плохо переносит ведущий '/' после ':'.
         """
-        raw = (config.get("remote_dir") or "").strip()
-        return raw.strip("/")
+        raw = config.get("remote_dir") or ""
+        if ctx is not None:
+            raw = ctx.expand(raw)
+        return raw.strip().strip("/")
 
     # -----------------------------------------------------
     # TEST
@@ -156,7 +164,7 @@ class WebDavStorageBackend(StorageBackend):
         if not rclone_mod.is_available():
             return PushResult.failure(
                 "rclone не найден. Укажите путь к бинарнику "
-                "в /storage-settings."
+                "в настройках (/settings?tab=storage)."
             )
 
         remote_cfg = self._build_remote_config(config)
@@ -218,7 +226,7 @@ class WebDavStorageBackend(StorageBackend):
         if not rclone_mod.is_available():
             return PushResult.failure(
                 "rclone не найден. Укажите путь к бинарнику "
-                "в /storage-settings."
+                "в настройках (/settings?tab=storage)."
             )
 
         remote_cfg = self._build_remote_config(config)
@@ -229,7 +237,7 @@ class WebDavStorageBackend(StorageBackend):
                 "зашифровать пароль."
             )
 
-        remote_dir = self._remote_dir(config)
+        remote_dir = self._remote_dir(config, ctx)
 
         env = None
         cfg_path = None

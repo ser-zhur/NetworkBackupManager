@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -48,6 +49,71 @@ NormalizeFn = Callable[[str, bytes], bytes]
 def identity_normalize(filename: str, data: bytes) -> bytes:
     """Нормализатор по умолчанию — возвращает данные как есть."""
     return data
+
+
+# =========================================================
+# REMOTE DIR — шаблоны {host}, {name}, {type}
+# =========================================================
+#
+# Каталог на внешнем сервере может содержать подстановки,
+# чтобы у каждого устройства была своя папка:
+#
+#     /network_backups/{host}  →  /network_backups/192.168.88.1
+#
+# Значения очищаются от символов, недопустимых в имени
+# папки (в т.ч. '/'), — подстановка не может «выйти»
+# в соседний каталог.
+#
+# =========================================================
+
+_UNSAFE_SEGMENT_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
+def _safe_segment(value) -> str:
+    text = _UNSAFE_SEGMENT_CHARS.sub("_", str(value or ""))
+    return text.strip().strip(".")
+
+
+class _KeepUnknown(dict):
+    """Неизвестные {placeholder} остаются как есть."""
+
+    def __missing__(self, key):
+        return "{" + key + "}"
+
+
+def expand_remote_dir(
+    raw,
+    *,
+    host: str = "",
+    name: str = "",
+    device_type: str = "",
+) -> str:
+    """
+    Подставляет {host}, {name}, {type} в путь на сервере.
+
+    {name} без названия устройства = {host}. Строка с
+    некорректными фигурными скобками возвращается как есть.
+    """
+    raw = str(raw or "")
+    if "{" not in raw:
+        return raw
+
+    safe_host = _safe_segment(host) or "device"
+    values = _KeepUnknown(
+        host=safe_host,
+        name=_safe_segment(name) or safe_host,
+        type=_safe_segment(device_type),
+    )
+    try:
+        return raw.format_map(values)
+    except Exception:
+        return raw
+
+
+def normalize_remote_dir(path: str) -> str:
+    """'/a//b/' и 'a\\b' → '/a/b' — для сравнения каталогов."""
+    parts = [p for p in str(path or "").replace("\\", "/").split("/") if p]
+    return "/" + "/".join(parts)
 
 
 # =========================================================
@@ -154,6 +220,19 @@ class PushContext:
     # исходные данные без изменений.
     normalize: NormalizeFn = identity_normalize
 
+    # Название устройства из routers.json (для {name}
+    # в remote_dir). Пусто — {name} = {host}.
+    device_name: str = ""
+
+    def expand(self, raw) -> str:
+        """remote_dir с подставленными {host}/{name}/{type}."""
+        return expand_remote_dir(
+            raw,
+            host=self.device_host,
+            name=self.device_name,
+            device_type=self.device_type,
+        )
+
 
 # =========================================================
 # STORAGE BACKEND
@@ -230,6 +309,54 @@ class StorageBackend:
 
     def set_note(self, config: dict, ctx: PushContext, version_id: str, note: str) -> PushResult:
         return PushResult.failure("Комментарии не поддерживаются")
+
+    # =====================================================
+    # Каталог на сервере: защита от пересечений
+    # =====================================================
+    #
+    # remote_dir_field — имя поля с каталогом на сервере.
+    # server_fields    — поля, определяющие «тот же сервер».
+    # Если remote_dir_field пуст — проверка не делается.
+
+    remote_dir_field: str | None = None
+    server_fields: tuple[str, ...] = ()
+
+    def target_key(
+        self,
+        config: dict,
+        *,
+        host: str,
+        name: str = "",
+        device_type: str = "",
+    ) -> tuple | None:
+        """
+        Куда фактически пишет устройство: (сервер, каталог).
+
+        Два устройства с одинаковым ключом перезаписывали бы
+        файлы друг друга (имена файлов фиксированные:
+        config.rsc, config.backup, ...). None — backend
+        не участвует в проверке.
+
+        Сравнение без учёта регистра: на SMB/Windows это
+        один и тот же каталог, а ложное срабатывание на
+        «Dir» и «dir» безопаснее пропущенного.
+        """
+        if not self.remote_dir_field:
+            return None
+
+        server = tuple(
+            str(config.get(f) or "").strip().rstrip("/").lower()
+            for f in self.server_fields
+        )
+        directory = normalize_remote_dir(
+            expand_remote_dir(
+                config.get(self.remote_dir_field) or "",
+                host=host,
+                name=name,
+                device_type=device_type,
+            )
+        ).lower()
+        return (self.id, server, directory)
 
     # =====================================================
     # Утилиты

@@ -869,6 +869,76 @@ def _parse_storage_form(form, old_storage: dict) -> dict:
     return result
 
 
+def _check_storage_conflicts(
+    device_type: str,
+    router: dict,
+    exclude: dict | None = None,
+) -> None:
+    """
+    HTTP 400, если включённое внешнее хранилище устройства
+    пишет в тот же каталог того же сервера, что и другое
+    устройство: имена файлов фиксированные (config.rsc, ...),
+    и устройства перезаписывали бы друг друга.
+
+    exclude — старая запись редактируемого устройства
+    (с собой не сравниваем).
+    """
+    if storage_manager is None or not plugin_manager:
+        return
+
+    def _enabled_cfg(r: dict, backend) -> dict | None:
+        cfg = (r.get("storage") or {}).get(backend.id)
+        if not isinstance(cfg, dict) or not cfg.get("enabled"):
+            return None
+        return cfg
+
+    def _host(r: dict) -> str:
+        return r.get("host") or r.get("ip") or r.get("address") or ""
+
+    for backend in storage_manager.all():
+        if backend.is_authority:
+            continue
+
+        cfg = _enabled_cfg(router, backend)
+        if cfg is None:
+            continue
+
+        key = backend.target_key(
+            cfg,
+            host=_host(router),
+            name=router.get("name") or "",
+            device_type=device_type,
+        )
+        if key is None:
+            continue
+
+        for other_type, plugin_data in plugin_manager._plugins.items():
+            for other in plugin_data.get("routers", []):
+                if other is exclude or other is router:
+                    continue
+                other_cfg = _enabled_cfg(other, backend)
+                if other_cfg is None:
+                    continue
+                other_key = backend.target_key(
+                    other_cfg,
+                    host=_host(other),
+                    name=other.get("name") or "",
+                    device_type=other_type,
+                )
+                if other_key == key:
+                    other_label = other.get("name") or _host(other)
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"{backend.name}: каталог «{key[2]}» на этом "
+                            f"сервере уже использует устройство "
+                            f"«{other_label}». Файлы перезаписывали бы "
+                            f"друг друга. Укажите другой каталог, "
+                            f"например с подстановкой {{host}}."
+                        ),
+                    )
+
+
 def _storage_backends_for_template():
     if storage_manager is None:
         return []
@@ -2529,6 +2599,7 @@ async def save_router_endpoint(
     routers = plugin_manager._plugins[device_type]["routers"]
 
     with plugin_manager.routers_lock:
+        _check_storage_conflicts(device_type, new_router)
         routers.append(new_router)
         try:
             plugin_manager.save_routers(device_type)
@@ -4006,6 +4077,10 @@ async def update_router(
         for field in plugin_manager._SERVICE_FIELDS:
             if field in old_router:
                 updated_router[field] = old_router[field]
+
+        _check_storage_conflicts(
+            device_type, updated_router, exclude=old_router,
+        )
 
         routers_list[index] = updated_router
         try:

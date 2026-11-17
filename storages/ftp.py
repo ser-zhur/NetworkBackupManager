@@ -46,8 +46,13 @@ class FtpStorageBackend(StorageBackend):
         StorageField(
             name="remote_dir",
             label="Каталог на сервере",
-            default="/network_backups",
-            placeholder="/network_backups",
+            default="/network_backups/{host}",
+            placeholder="/network_backups/{host}",
+            help=(
+                "Подстановки: {host} — адрес устройства, "
+                "{name} — название, {type} — тип. У каждого "
+                "устройства должен быть свой каталог."
+            ),
         ),
         StorageField(
             name="user",
@@ -79,6 +84,10 @@ class FtpStorageBackend(StorageBackend):
                  "пропускается, если git не увидел изменений.",
         ),
     ]
+
+    # Проверка пересечения каталогов между устройствами
+    remote_dir_field = "remote_dir"
+    server_fields = ("host", "port")
 
     # -----------------------------------------------------
     # CONNECT
@@ -235,7 +244,7 @@ class FtpStorageBackend(StorageBackend):
         except Exception as exc:
             return PushResult.failure(f"Ошибка подключения: {exc}")
 
-        remote_dir = (config.get("remote_dir") or "/").strip()
+        remote_dir = ctx.expand(config.get("remote_dir") or "/").strip()
 
         try:
             self._ensure_remote_dir(ftp, remote_dir)

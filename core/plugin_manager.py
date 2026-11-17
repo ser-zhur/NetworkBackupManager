@@ -319,6 +319,7 @@ class PluginManager:
             changed=None,
             run_time=datetime.now(),
             normalize=normalize_fn,
+            device_name=router.get("name") or "",
         )
         results = {}
 
@@ -544,6 +545,7 @@ class PluginManager:
                     changed=True,
                     run_time=_dt.now(),
                     normalize=identity_normalize,
+                    device_name=router.get("name") or "",
                 )
 
                 for backend in backends:
