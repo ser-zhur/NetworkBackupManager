@@ -33,6 +33,16 @@ from concurrent.futures import (
 )
 
 
+def is_device_disabled(router: dict) -> bool:
+    """
+    Устройство выведено из эксплуатации (флаг «Отключено»).
+
+    Бэкапы для него не запускаются, автоочистка истории
+    не применяется — история хранится как есть.
+    """
+    return bool(router.get("disabled"))
+
+
 # Lock для атомарного read-modify-write data/state.json.
 # Параллельные бэкапы пишут в один файл — без блокировки
 # возможны потери записей.
@@ -802,6 +812,7 @@ class PluginManager:
             BACKUP_TIMEOUT = 300
 
         tasks = []
+        skipped_disabled = 0
 
         for device_type, data in self._plugins.items():
 
@@ -809,6 +820,9 @@ class PluginManager:
             routers = data["routers"]
 
             for index, router in enumerate(routers):
+                if is_device_disabled(router):
+                    skipped_disabled += 1
+                    continue
                 tasks.append({
                     "device_type": device_type,
                     "index": index,
@@ -817,6 +831,12 @@ class PluginManager:
                 })
 
         total = len(tasks)
+
+        if skipped_disabled:
+            logging.info(
+                "⏸ Пропущено отключённых устройств: %s",
+                skipped_disabled,
+            )
 
         if total == 0:
             logging.warning("⚠ Нет устройств для бэкапа")

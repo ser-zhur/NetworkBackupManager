@@ -172,6 +172,7 @@
                     <button type="button" class="filter-chip" data-filter-status="warn" aria-label="Только просроченные" aria-pressed="false">⚠ <span class="chip-count">(0)</span></button>
                     <button type="button" class="filter-chip" data-filter-status="fail" aria-label="Только с ошибкой" aria-pressed="false">✗ <span class="chip-count">(0)</span></button>
                     <button type="button" class="filter-chip" data-filter-status="none" aria-label="Нет данных" aria-pressed="false">— <span class="chip-count">(0)</span></button>
+                    <button type="button" class="filter-chip" data-filter-status="disabled" aria-label="Только отключённые" title="Отключённые (выведены из эксплуатации)" aria-pressed="false">⏸ <span class="chip-count">(0)</span></button>
                 </div>
 
                 <div class="flex flex-wrap items-center gap-1" id="filter-type"></div>
@@ -223,9 +224,11 @@
                                             data-host="{{ d.host or '' }}"
                                             data-name="{{ d.name or d.host or '' }}"
                                             data-pinned="{{ '1' if d.pinned else '0' }}"
+                                            data-disabled="{{ '1' if d.disabled else '0' }}"
                                             data-last-attempt-age="{{ d.last_attempt_age_days if d.last_attempt_age_days is not none else 999999 }}"
                                             class="device-item group w-full text-left px-4 py-3 border-l-2 transition
                                                     {% if d.overdue %}device-overdue{% endif %}
+                                                    {% if d.disabled %}opacity-60{% endif %}
                                                    {{ 'bg-brand-50/60 dark:bg-brand-950/30 border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-950/40'
                                                       if (selected and selected.id == d.id)
                                                       else 'border-transparent hover:bg-gray-50 dark:hover:bg-slate-800/60' }}">
@@ -286,6 +289,7 @@
                                                 opacity-0 group-hover:opacity-100
                                                 pointer-events-none group-hover:pointer-events-auto
                                                 transition-opacity duration-150">
+                                        {% if not d.disabled %}
                                         <form method="POST"
                                               action="/run-progress/{{ d.type }}/{{ d.index }}"
                                               data-row-run-backup="{{ d.id }}"
@@ -305,6 +309,7 @@
                                                 </span>
                                             </button>
                                         </form>
+                                        {% endif %}
 
                                         <a href="/logs/device/{{ d.type }}/{{ d.index }}"
                                            title="Открыть логи"
@@ -563,8 +568,10 @@ async function refreshBackupStatus() {
         const ping = item.querySelector('.status-dot-ping');
         if (!ping) return;
         const deviceId = item.dataset.deviceId;
+        // Отключённые в массовый прогон не входят
+        const inMass = mass && item.dataset.disabled !== '1';
         const isBusy =
-            mass ||
+            inMass ||
             deviceSet.has(deviceId) ||
             syncingSet.has(deviceId);
         if (isBusy) {
@@ -791,7 +798,7 @@ function applyRelTime() {
 // ============================================================
 
 const SORT_STORAGE_KEY = 'nbm-sort';
-const STATUS_ORDER = { fail: 0, warn: 1, none: 2, ok: 3 };
+const STATUS_ORDER = { fail: 0, warn: 1, none: 2, ok: 3, disabled: 4 };
 
 function getComparator(mode) {
     if (mode === 'name') {
@@ -806,10 +813,10 @@ function getComparator(mode) {
             return bv - av;  // давние — сверху
         };
     }
-    // status: fail → warn → none → ok, внутри — по имени
+    // status: fail → warn → none → ok → disabled, внутри — по имени
     return (a, b) => {
-        const ao = STATUS_ORDER[a.dataset.status] ?? 4;
-        const bo = STATUS_ORDER[b.dataset.status] ?? 4;
+        const ao = STATUS_ORDER[a.dataset.status] ?? 5;
+        const bo = STATUS_ORDER[b.dataset.status] ?? 5;
         if (ao !== bo) return ao - bo;
         return (a.dataset.name || '').localeCompare(
             b.dataset.name || '', 'ru', { numeric: true }
@@ -1099,7 +1106,7 @@ function _updateFooterCounters(visibleCount) {
 }
 
 function _countStatus() {
-    const counts = { ok: 0, warn: 0, fail: 0, none: 0 };
+    const counts = { ok: 0, warn: 0, fail: 0, none: 0, disabled: 0 };
     let total = 0;
     document.querySelectorAll('.device-item').forEach(it => {
         total++;

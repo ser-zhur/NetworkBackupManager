@@ -224,10 +224,15 @@ def post_backup_cleanup(plugin_manager=None) -> dict:
 
     logger.info("🧹 Автоочистка: пометка старых версий...")
 
-    for device_id, _dt, _idx, _router, backup_path in (
+    from core.plugin_manager import is_device_disabled
+
+    for device_id, _dt, _idx, router, backup_path in (
         _iter_devices(plugin_manager)
     ):
         if not backup_path.exists():
+            continue
+        # Отключённое устройство: история хранится как есть
+        if is_device_disabled(router):
             continue
 
         try:

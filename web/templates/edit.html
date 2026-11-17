@@ -32,6 +32,51 @@
 
     <form action="/update-router/{{ device_type }}/{{ index }}" method="POST" class="space-y-5">
 
+        <!-- 0. Статус устройства -->
+        <section class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm p-6">
+            {# Маркер: форма содержит ползунок статуса. Снятый
+               чекбокс браузер не отправляет — без маркера сервер
+               не отличил бы «выключено» от «поля нет в запросе». #}
+            <input type="hidden" name="active_field" value="1">
+
+            <label class="flex items-start justify-between gap-4 cursor-pointer">
+                <input type="checkbox"
+                       name="active"
+                       value="true"
+                       {% if not router.disabled %}checked{% endif %}
+                       class="sr-only peer">
+
+                {# Ползунок выключен — устройство отключено #}
+                <span class="block peer-checked:hidden">
+                    <span class="block text-sm font-semibold text-gray-700 dark:text-slate-200">
+                        ⏸ Устройство отключено (выведено из эксплуатации)
+                    </span>
+                    <span class="block mt-1 text-xs text-gray-500 dark:text-slate-400">
+                        Бэкапы не запускаются — ни по расписанию, ни вручную.
+                        История версий сохраняется: её можно смотреть, скачивать
+                        и сравнивать, а автоматическая очистка к ней не применяется.
+                    </span>
+                </span>
+
+                {# Ползунок включён — устройство работает #}
+                <span class="hidden peer-checked:block">
+                    <span class="block text-sm font-semibold text-gray-700 dark:text-slate-200">
+                        ▶ Устройство активно
+                    </span>
+                    <span class="block mt-1 text-xs text-gray-500 dark:text-slate-400">
+                        Бэкапы выполняются по расписанию и при ручном запуске.
+                    </span>
+                </span>
+
+                <span class="relative shrink-0 w-11 h-6 bg-gray-200 dark:bg-slate-700 rounded-full
+                             peer-checked:bg-brand-600 transition
+                             after:content-[''] after:absolute after:top-0.5 after:left-0.5
+                             after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all
+                             peer-checked:after:translate-x-5"
+                      aria-hidden="true"></span>
+            </label>
+        </section>
+
         <!-- 1. Подключение -->
         <section class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm p-6 space-y-4">
             <h3 class="text-sm font-semibold text-gray-700 dark:text-slate-200 flex items-center gap-2">

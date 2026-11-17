@@ -102,6 +102,8 @@ from core.git_storage import (
     is_available as git_available,
 )
 
+from core.plugin_manager import is_device_disabled
+
 from core.maintenance import (
     apply_retention,
     mark_deleted as maint_mark_deleted,
@@ -412,6 +414,12 @@ def _status_meta(status: str) -> dict:
             "ring": "ring-gray-300/20 dark:ring-slate-600/20",
             "badge": "bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-400",
             "label": "Нет данных",
+        },
+        "disabled": {
+            "dot": "bg-slate-400 dark:bg-slate-500",
+            "ring": "ring-slate-400/15 dark:ring-slate-500/15",
+            "badge": "bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400",
+            "label": "Отключено",
         },
     }.get(status, {
         "dot": "bg-gray-300 dark:bg-slate-600",
@@ -1257,7 +1265,11 @@ def _build_device_payload(
     # отражает, опрашивается ли устройство прямо сейчас.
     # Если state.json пуст (legacy-установки до появления
     # этого поля) — откатываемся на возраст git-коммита.
-    if last_attempt_age_days is not None:
+    if is_device_disabled(router):
+        # Выведено из эксплуатации: давность бэкапа и
+        # прошлые ошибки больше не важны.
+        status = "disabled"
+    elif last_attempt_age_days is not None:
         status = classify_device(
             last_attempt_age_days, last_attempt_ok
         )
@@ -1366,6 +1378,7 @@ def _build_device_payload(
         "id": device_id,
         "type": device_type,
         "index": index,
+        "disabled": is_device_disabled(router),
         "name": router.get("name") or "",
         "tags": _safe_router_tags(router),
         "pinned": bool(router.get("pinned")),
@@ -1531,9 +1544,10 @@ def _build_device_summary(
         last_attempt_age_days = None
         last_attempt_ok = None
 
-    status = classify_device(
-        last_attempt_age_days,
-        last_attempt_ok,
+    disabled = is_device_disabled(router)
+    status = (
+        "disabled" if disabled
+        else classify_device(last_attempt_age_days, last_attempt_ok)
     )
 
     # ---- backup_count ----
@@ -1577,19 +1591,23 @@ def _build_device_summary(
 
         # ---- Доменные индикаторы ----
         # 1. Никогда не было ни одной попытки бэкапа.
+        "disabled": disabled,
+        # Для отключённого устройства предупреждения ниже не
+        # показываем: бэкапы для него намеренно не идут.
         "never_backed_up": (
-            not last_run_str
+            not disabled
+            and not last_run_str
             and backup_count == 0
         ),
         # 2. Сколько включённых backend'ов в ошибке (для ⚠N).
-        "backends_error_count": _count_backend_errors(
-            router, st,
+        "backends_error_count": (
+            0 if disabled else _count_backend_errors(router, st)
         ),
         # 3. Флаг «давно не опрашивалось» — жёлтый фон.
         #    Считаем «давно» = 2× интервал планировщика.
         #    Если планировщик выключен — не подсвечиваем.
-        "overdue": _is_overdue(
-            last_attempt_age_days,
+        "overdue": (
+            not disabled and _is_overdue(last_attempt_age_days)
         ),
     }
 
@@ -2782,6 +2800,21 @@ def run_backup(
     router = (
         plugin["routers"][index]
     )
+
+    # Выведено из эксплуатации — бэкап не запускаем.
+    # Кнопок в интерфейсе нет; это защита от прямого запроса.
+    if is_device_disabled(router):
+        logging.info(
+            "⏸ Бэкап %s не запущен: устройство отключено", device_id,
+        )
+        if is_ajax:
+            return Response(status_code=409)
+        return HTMLResponse(
+            "<h3>Устройство отключено — бэкап не запускается.</h3>"
+            "<p>Снимите отметку «Отключено» на странице "
+            "редактирования.</p><a href='/'>Назад</a>",
+            status_code=409,
+        )
 
     secure_router = copy.deepcopy(
         router
@@ -4115,6 +4148,20 @@ async def update_router(
     if form.get("debug_connection") == "true":
         updated_router["debug_connection"] = True
 
+    # Статус. Форма редактирования шлёт ползунок «active»
+    # (включён = устройство активно) и маркер active_field:
+    # снятый чекбокс браузер не отправляет, и без маркера
+    # запрос без поля молча отключил бы устройство.
+    # Без маркера — прежнее поле "disabled" (или ничего).
+    if form.get("active_field"):
+        disabled = form.get("active") != "true"
+    else:
+        disabled = form.get("disabled") == "true"
+
+    # Не пишем "disabled": false — файл остаётся компактным.
+    if disabled:
+        updated_router["disabled"] = True
+
     with plugin_manager.routers_lock:
         # Пока разбиралась форма, список мог измениться
         # (удалили соседнее устройство) — не перезаписываем
@@ -4148,6 +4195,16 @@ async def update_router(
         except Exception as exc:
             routers_list[index] = old_router
             _raise_routers_save_error("update-router", exc)
+
+    if is_device_disabled(old_router) != is_device_disabled(updated_router):
+        logging.info(
+            "%s Устройство [%s] #%s %s (запрос от %s)",
+            "⏸" if is_device_disabled(updated_router) else "▶",
+            device_type, index,
+            "отключено" if is_device_disabled(updated_router)
+            else "снова включено",
+            user,
+        )
 
     logging.info(
         "⚙ Обновлены настройки "
@@ -4191,6 +4248,7 @@ def _collect_maintenance_stats() -> list:
             "size": "—",
             "repo_exists": backup_path.exists(),
             "has_git": False,
+            "disabled": is_device_disabled(router),
         }
 
         if not row["repo_exists"] or not git_available():
@@ -4289,10 +4347,13 @@ def maintenance_prune_all(
     devices_processed = 0
     errors = 0
 
-    for device_id, _dt, _idx, _router, backup_path in (
+    for device_id, _dt, _idx, router, backup_path in (
         _iter_device_backup_paths()
     ):
         if not backup_path.exists():
+            continue
+        # Отключённое устройство: история хранится как есть
+        if is_device_disabled(router):
             continue
 
         try:
