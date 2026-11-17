@@ -257,6 +257,72 @@ def _isolated_env() -> dict:
     return env
 
 
+def is_oauth_type(type_name: str) -> bool:
+    """Тип с входом через браузер (OAuth): у него есть параметр token."""
+    info = provider(type_name) or {}
+    return any(o.get("Name") == "token" for o in info.get("Options", []))
+
+
+def write_remote_config(
+    path: Path,
+    type_name: str,
+    options: dict,
+    password_options: set[str] | frozenset[str] = frozenset(),
+) -> None:
+    """
+    Файл конфига rclone с одним хранилищем REMOTE_NAME.
+
+    Нужен OAuth-хранилищам: rclone обновляет токен и
+    записывает новый в конфиг — из переменных окружения его
+    не сохранить (а у Microsoft старый токен со временем
+    перестаёт действовать). Пароли — obscured, как ждёт rclone.
+    """
+    lines = [f"[{REMOTE_NAME}]", f"type = {type_name}"]
+    for name, value in (options or {}).items():
+        if value is None or value == "":
+            continue
+        if isinstance(value, bool):
+            value = "true" if value else "false"
+        value = str(value)
+        if "\n" in value or "\r" in value:
+            raise ValueError(f"параметр «{name}» содержит перевод строки")
+        if name in password_options:
+            obscured = obscure(value)
+            if obscured is None:
+                raise RuntimeError(f"rclone не смог зашифровать параметр «{name}»")
+            value = obscured
+        lines.append(f"{name} = {value}")
+
+    path = Path(path)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def read_remote_section(path: Path, name: str = REMOTE_NAME) -> dict:
+    """Параметры хранилища из файла конфига rclone ({} — нет)."""
+    import configparser
+
+    parser = configparser.RawConfigParser(strict=False)
+    try:
+        parser.read(str(path), encoding="utf-8")
+    except configparser.Error as exc:
+        logger.warning("rclone: не удалось прочитать %s: %s", path, exc)
+        return {}
+    if not parser.has_section(name):
+        return {}
+    return dict(parser.items(name))
+
+
+def config_env(config_path: Path) -> dict:
+    """Окружение с указанным файлом конфига (без RCLONE_CONFIG_*)."""
+    env = _isolated_env()
+    env["RCLONE_CONFIG"] = str(config_path)
+    return env
+
+
 def _empty_config_path() -> str:
     """
     Пустой файл конфига rclone: пользовательский rclone.conf

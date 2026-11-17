@@ -29,7 +29,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import re
+import shutil
+import tempfile
+import threading
+from pathlib import Path
 
 from core import rclone as rclone_mod
 from core.storage.base import (
@@ -63,6 +69,21 @@ _TEST_FLAGS = [
     "--retries", "1", "--low-level-retries", "1",
 ]
 
+# Облака с входом (Google Drive, OneDrive, ...) отвечают
+# «слишком много запросов» (403 rateLimitExceeded / 429), особенно
+# через общий ключ rclone. Это не отказ: rclone ждёт и повторяет
+# (low-level retries) — даём ему на это попытки и время.
+_CLOUD_LOW_LEVEL_RETRIES = "10"
+_CLOUD_TEST_TIMEOUT = 150
+
+
+def _flags(base: list[str], type_name: str) -> list[str]:
+    if not rclone_mod.is_oauth_type(type_name):
+        return list(base)
+    flags = list(base)
+    flags[flags.index("--low-level-retries") + 1] = _CLOUD_LOW_LEVEL_RETRIES
+    return flags
+
 
 def _secure_storage():
     from core.context import BASE_DIR
@@ -71,12 +92,27 @@ def _secure_storage():
 
 
 def password_option_names(type_name: str) -> set[str]:
-    """Параметры типа, которые rclone считает паролями."""
+    """Параметры типа, которые rclone считает паролями (obscure)."""
     info = rclone_mod.provider(type_name) or {}
     return {
         o["Name"] for o in info.get("Options", [])
         if o.get("IsPassword")
     }
+
+
+# Секреты, которые rclone паролями не считает (передаются как
+# есть), но храним их всё равно зашифрованными.
+_EXTRA_SECRETS = frozenset({"token", "client_secret"})
+
+
+def secret_option_names(type_name: str) -> set[str]:
+    """Что хранится зашифрованным: пароли rclone + токены OAuth."""
+    info = rclone_mod.provider(type_name) or {}
+    names = {o["Name"] for o in info.get("Options", [])}
+    return password_option_names(type_name) | (names & _EXTRA_SECRETS)
+
+
+_token_lock = threading.Lock()
 
 
 def required_option_names(type_name: str) -> set[str]:
@@ -135,19 +171,23 @@ class RcloneRemote(StorageBackend):
         for name in required_option_names(cfg["type"]):
             if str(options.get(name, "")).strip() == "":
                 return False
+        # OAuth: без входа (токена) хранилище не работает
+        if rclone_mod.is_oauth_type(cfg["type"]) and not options.get("token"):
+            return False
         return True
 
     # -----------------------------------------------------
     # Окружение rclone
     # -----------------------------------------------------
 
-    def _env(self, cfg: dict) -> dict:
+    def _plain_options(self, cfg: dict) -> dict:
+        """Параметры с расшифрованными секретами."""
         type_name = cfg.get("type") or self.type
-        passwords = password_option_names(type_name)
+        secrets_ = secret_option_names(type_name)
         storage = _secure_storage()
         options = {}
         for name, value in (cfg.get("options") or {}).items():
-            if name in passwords and value:
+            if name in secrets_ and value:
                 value = storage.decrypt(value)
                 if not value:
                     raise RuntimeError(
@@ -155,7 +195,63 @@ class RcloneRemote(StorageBackend):
                         f"(ключ secret.key сменился?)"
                     )
             options[name] = value
-        return rclone_mod.remote_env(type_name, options, passwords)
+        return options
+
+    def _env(self, cfg: dict) -> dict:
+        """Окружение для хранилищ без OAuth (всё — переменными)."""
+        type_name = cfg.get("type") or self.type
+        return rclone_mod.remote_env(
+            type_name, self._plain_options(cfg), password_option_names(type_name),
+        )
+
+    @contextlib.contextmanager
+    def _rclone_env(self, cfg: dict):
+        """
+        Окружение на время работы rclone.
+
+        OAuth-хранилище (есть token) — через временный файл
+        конфига: rclone обновляет в нём токен, после работы
+        новый токен сохраняется (зашифрованным) в настройки.
+        Файл удаляется сразу. Остальные — переменными
+        окружения, без файла.
+        """
+        type_name = cfg.get("type") or self.type
+        options = self._plain_options(cfg)
+
+        if not options.get("token"):
+            yield rclone_mod.remote_env(
+                type_name, options, password_option_names(type_name),
+            )
+            return
+
+        tmpdir = Path(tempfile.mkdtemp(prefix="nbm_rclone_"))
+        conf = tmpdir / "rclone.conf"
+        try:
+            rclone_mod.write_remote_config(
+                conf, type_name, options, password_option_names(type_name),
+            )
+            yield rclone_mod.config_env(conf)
+
+            new_token = rclone_mod.read_remote_section(conf).get("token")
+            if new_token and new_token != options.get("token"):
+                self._persist_token(new_token)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def _persist_token(self, token: str) -> None:
+        """Сохранить обновлённый rclone токен в config.json."""
+        from core.storage import global_config
+
+        with _token_lock:
+            remotes = global_config.load_remotes()
+            for r in remotes:
+                if r.get("id") == self.id:
+                    r.setdefault("options", {})["token"] = _secure_storage().encrypt(token)
+                    global_config.save_remotes(remotes)
+                    self.remote = r
+                    logger.info("storage[%s]: токен OAuth обновлён", self.id)
+                    return
+        # Хранилище ещё не сохранено (проверка из формы) — некуда
 
     # -----------------------------------------------------
     # Пересечения папок
@@ -186,42 +282,44 @@ class RcloneRemote(StorageBackend):
                 "rclone не найден (Настройки → Хранилища → путь к rclone)"
             )
         try:
-            env = self._env(config)
+            with self._rclone_env(config) as env:
+                return self._test_with_env(config, env)
         except Exception as exc:
-            return PushResult.failure(str(exc))
+            return PushResult.failure(f"Ошибка: {exc}")
 
+    def _test_with_env(self, config: dict, env: dict) -> PushResult:
         type_name = config.get("type") or self.type
         base_dir = config.get("base_dir") or ""
         base = rclone_path(type_name, base_dir, device_remote_dir(base_dir, folder=""))
         target = f"{rclone_mod.REMOTE_NAME}:{'' if base in ('/', '') else base}"
 
+        cloud = rclone_mod.is_oauth_type(type_name)
+
         def lsf(path):
             return rclone_mod.run(
-                ["lsf", "--max-depth", "1", *_TEST_FLAGS, path],
-                env=env, timeout=40,
+                ["lsf", "--max-depth", "1", *_flags(_TEST_FLAGS, type_name), path],
+                env=env, timeout=_CLOUD_TEST_TIMEOUT if cloud else 40,
             )
 
-        try:
-            r = lsf(target)
-            if r.returncode == 0:
+        r = lsf(target)
+        if r.returncode == 0:
+            return PushResult.success(
+                f"Подключение установлено, базовая папка доступна ({type_name})"
+            )
+        err = (r.stderr or r.stdout or "").strip()
+
+        # Базовой папки ещё нет — проверим сам сервер
+        if base not in ("/", "") and "not found" in err.lower():
+            root = lsf(f"{rclone_mod.REMOTE_NAME}:")
+            if root.returncode == 0:
                 return PushResult.success(
-                    f"Подключение установлено, базовая папка доступна ({type_name})"
+                    "Подключение установлено; базовой папки пока "
+                    "нет — она будет создана при первой выгрузке"
                 )
-            err = (r.stderr or r.stdout or "").strip()
-
-            # Базовой папки ещё нет — проверим сам сервер
-            if base not in ("/", "") and "not found" in err.lower():
-                root = lsf(f"{rclone_mod.REMOTE_NAME}:")
-                if root.returncode == 0:
-                    return PushResult.success(
-                        "Подключение установлено; базовой папки пока "
-                        "нет — она будет создана при первой выгрузке"
-                    )
-            return PushResult.failure(
-                "Ошибка подключения: " + (_last_lines(err) or "неизвестная")
-            )
-        except Exception as exc:
-            return PushResult.failure(f"Ошибка запуска rclone: {exc}")
+        return PushResult.failure(
+            "Ошибка подключения: " + (_last_lines(err) or "неизвестная")
+            + _hint(err, type_name, config.get("options") or {})
+        )
 
     # -----------------------------------------------------
     # PUSH
@@ -236,10 +334,12 @@ class RcloneRemote(StorageBackend):
                 "rclone не найден (Настройки → Хранилища → путь к rclone)"
             )
         try:
-            env = self._env(config)
+            with self._rclone_env(config) as env:
+                return self._push_with_env(config, ctx, env)
         except Exception as exc:
-            return PushResult.failure(str(exc))
+            return PushResult.failure(f"Ошибка: {exc}")
 
+    def _push_with_env(self, config: dict, ctx: PushContext, env: dict) -> PushResult:
         type_name = config.get("type") or self.type
         base_dir = config.get("base_dir") or ""
         remote_dir = rclone_path(type_name, base_dir, ctx.remote_dir(base_dir))
@@ -249,18 +349,19 @@ class RcloneRemote(StorageBackend):
         for name, local_path in ctx.files.items():
             if not local_path.is_file():
                 continue
-            target = f"{rclone_mod.REMOTE_NAME}:{remote_dir}/{name}" if remote_dir \
-                else f"{rclone_mod.REMOTE_NAME}:{name}"
+            target = f"{rclone_mod.REMOTE_NAME}:{remote_dir}/{name}" if remote_dir                 else f"{rclone_mod.REMOTE_NAME}:{name}"
             try:
                 r = rclone_mod.run(
-                    ["copyto", *_PUSH_FLAGS, str(local_path), target],
+                    ["copyto", *_flags(_PUSH_FLAGS, type_name), str(local_path), target],
                     env=env, timeout=300,
                 )
             except Exception as exc:
                 errors.append(f"{name}: {exc}")
                 continue
             if r.returncode != 0:
-                errors.append(f"{name}: {_last_lines(r.stderr or r.stdout)}")
+                err = r.stderr or r.stdout or ""
+                errors.append(f"{name}: {_last_lines(err)}"
+                              + _hint(err, type_name, config.get("options") or {}))
                 continue
             uploaded += 1
 
@@ -279,7 +380,52 @@ class RcloneRemote(StorageBackend):
         return PushResult.success(f"Загружено файлов: {uploaded}")
 
 
+_LOG_PREFIX_RE = re.compile(
+    r"^\d{4}/\d\d/\d\d \d\d:\d\d:\d\d\s+(?:[A-Z]+\s*:\s*)?"
+)
+_MAX_ERROR_LEN = 300
+
+
 def _last_lines(text: str | None, n: int = 2) -> str:
-    """Последние строки вывода rclone — там суть ошибки."""
-    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
-    return " | ".join(lines[-n:])
+    """
+    Суть ошибки из вывода rclone: последние строки журнала без
+    даты и уровня. Многострочные подробности (JSON от Google и
+    т.п.) пропускаем; «Failed to ...: last error was: X» → X.
+    """
+    lines = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line or raw[:1].isspace() or line[0] in '[]{}",' \
+                or line.startswith("Details:"):
+            continue
+        lines.append(_LOG_PREFIX_RE.sub("", line))
+    if not lines:
+        return ""
+
+    last = lines[-1]
+    if "last error was:" in last:
+        picked = [last.split("last error was:", 1)[1].strip()]
+    else:
+        picked = lines[-n:]
+    result = " | ".join(picked)
+    if len(result) > _MAX_ERROR_LEN:
+        result = result[:_MAX_ERROR_LEN - 1] + "…"
+    return result
+
+
+def _hint(err: str, type_name: str, options: dict) -> str:
+    """Пояснение к известным ошибкам облаков."""
+    low = (err or "").lower()
+    if not any(s in low for s in ("ratelimitexceeded", "rate_limit_exceeded",
+                                  "userratelimitexceeded", "quota exceeded",
+                                  "too many requests")):
+        return ""
+    if type_name == "drive" and not options.get("client_id"):
+        return (
+            ". Google ограничил число запросов через общий ключ rclone "
+            "(им пользуются тысячи людей). Повторите позже или создайте "
+            "свой client_id (https://rclone.org/drive/#making-your-own-client-id), "
+            "укажите client_id и client_secret в настройках хранилища "
+            "и войдите заново"
+        )
+    return ". Сервис временно ограничил число запросов — повторите позже"

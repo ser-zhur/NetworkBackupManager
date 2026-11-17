@@ -258,9 +258,9 @@ def _webdav_form(rid="", name="Nextcloud", password="", url="https://dav.test/x"
 def test_new_page_lists_popular_types(web):
     s, c, _ = web
     page = c.get("/settings/storage/new").text
-    for t in ("webdav", "ftp", "sftp", "s3"):
+    for t in ("webdav", "ftp", "sftp", "s3", "onedrive", "drive"):
         assert f"/settings/storage/edit?type={t}" in page
-    assert "Вход через браузер" in page                      # onedrive/drive — позже
+    assert "Вход в учётную запись через браузер" in page     # OAuth-типы помечены
 
 
 def test_edit_page_built_from_rclone_description(web):

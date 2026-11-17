@@ -14,6 +14,7 @@ from pathlib import Path
 from datetime import datetime
 from contextlib import asynccontextmanager
 from core import rclone as rclone_mod
+from core import rclone_oauth
 
 from fastapi import (
     FastAPI,
@@ -2235,7 +2236,10 @@ def _remote_form_options(info: dict, remote: dict | None, submitted=None) -> lis
     отправленной формы (при ошибке форма перерисовывается
     с ними, а не с сохранёнными).
     """
+    from core.storage.rclone_remote import secret_option_names
+
     saved = (remote or {}).get("options") or {}
+    secrets_ = secret_option_names(info.get("Name", ""))
     result = []
     for o in info.get("Options", []):
         if o.get("Hide"):
@@ -2256,7 +2260,7 @@ def _remote_form_options(info: dict, remote: dict | None, submitted=None) -> lis
         ]
         if o.get("Type") == "bool":
             kind = "bool"
-        elif o.get("IsPassword"):
+        elif o.get("IsPassword") or name in secrets_:
             kind = "password"
         elif examples and (o.get("Exclusive") or name == "provider"):
             # provider (S3 и др.) — всегда список: от него
@@ -2315,6 +2319,8 @@ def _remote_edit_context(info, remote, *, type_name, error="", submitted=None) -
             o["advanced"] and o["required"] for o in options
         ),
         "error": error,
+        "is_oauth": rclone_mod.is_oauth_type(type_name),
+        "has_token": bool(((remote or {}).get("options") or {}).get("token")),
     }
 
 
@@ -2353,8 +2359,6 @@ def remote_edit_page(
     info = rclone_mod.provider(type_name)
     if info is None:
         raise HTTPException(404, f"Тип rclone «{type_name}» не найден (rclone недоступен?)")
-    if remote is None and _is_oauth_type(info):
-        raise HTTPException(400, "Этот тип требует входа через браузер — будет на следующем этапе")
     return templates.TemplateResponse(
         request, "storage_edit.html",
         _remote_edit_context(info, remote, type_name=type_name),
@@ -2369,15 +2373,20 @@ def _options_from_form(info: dict, form, old_options: dict) -> tuple[dict, list[
     сохраняется, только если отличается от умолчания rclone.
     Возвращает (options, незаполненные обязательные).
     """
+    from core.storage.rclone_remote import secret_option_names
+
+    secrets_ = secret_option_names(info.get("Name", ""))
     options: dict = {}
     missing: list[str] = []
     for o in info.get("Options", []):
         name = o.get("Name")
-        if not name or o.get("Hide"):
+        if not name:
             continue
-        if name == "token":
-            if old_options.get("token"):
-                options["token"] = old_options["token"]
+        # Параметры, которых нет в форме (скрытые, токен OAuth) —
+        # сохраняем прежние значения: их выставил мастер входа.
+        if o.get("Hide") or name == "token":
+            if name in old_options:
+                options[name] = old_options[name]
             continue
 
         key = f"opt_{name}"
@@ -2389,7 +2398,7 @@ def _options_from_form(info: dict, form, old_options: dict) -> tuple[dict, list[
             value = form.get(key) == "true"
             if value != bool(o.get("Default")):
                 options[name] = value
-        elif o.get("IsPassword"):
+        elif o.get("IsPassword") or name in secrets_:
             raw = form.get(key) or ""
             if raw:
                 options[name] = storage.encrypt(raw)
@@ -2403,6 +2412,22 @@ def _options_from_form(info: dict, form, old_options: dict) -> tuple[dict, list[
         if o.get("Required") and str(options.get(name, "")).strip() == "":
             missing.append(name)
     return options, missing
+
+
+def _merge_oauth_result(type_name: str, options: dict, result: dict) -> None:
+    """
+    Параметры от мастера входа rclone (token, drive_id, ...)
+    → в параметры хранилища. Секреты шифруются. Пароли
+    rclone (obscured в его файле) не берём — они из формы.
+    """
+    from core.storage.rclone_remote import password_option_names, secret_option_names
+
+    passwords = password_option_names(type_name)
+    secrets_ = secret_option_names(type_name)
+    for k, v in (result or {}).items():
+        if k == "type" or k in passwords or v in ("", None):
+            continue
+        options[k] = storage.encrypt(v) if k in secrets_ else v
 
 
 @app.post("/settings/storage/save", response_class=HTMLResponse)
@@ -2442,6 +2467,17 @@ async def remote_save(request: Request, user: str = Depends(require_auth)):
         return fail("укажите название")
     if missing:
         return fail("не заполнены обязательные параметры: " + ", ".join(missing))
+
+    # Результат входа через браузер / токена (OneDrive, Drive, ...)
+    flow = rclone_oauth.get(form.get("oauth_flow") or "")
+    if flow is not None and flow.type_name == type_name and flow.state == "done":
+        _merge_oauth_result(type_name, options, flow.result)
+
+    if rclone_mod.is_oauth_type(type_name) and not options.get("token"):
+        return fail(
+            "нужен вход в учётную запись — нажмите «Войти через браузер» "
+            "или вставьте токен"
+        )
 
     remote = {
         "id": rid or global_config.new_remote_id(name, set(by_id) | {"git"}),
@@ -2519,6 +2555,65 @@ def remote_delete(rid: str, user: str = Depends(require_auth)):
     return RedirectResponse("/settings?tab=storage&message=remote_deleted", status_code=303)
 
 
+@app.post("/api/oauth/start")
+async def api_oauth_start(request: Request, user: str = Depends(require_auth)):
+    """
+    Начать вход (OneDrive, Google Drive, ...).
+
+    {"type", "options": {client_id, ...}, "token": ""} — без
+    token: вход через браузер (ссылка в ответе); с token
+    (вставлен вручную) — сразу мастер rclone.
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    type_name = data.get("type") or ""
+    if not rclone_mod.is_oauth_type(type_name):
+        return {"state": "error", "message": f"Тип «{type_name}» не использует вход через браузер"}
+
+    from core.storage.rclone_remote import password_option_names
+
+    # Пароли rclone в мастер не передаём (в аргументах процесса)
+    passwords = password_option_names(type_name)
+    options = {
+        k: v for k, v in (data.get("options") or {}).items()
+        if k not in passwords and v not in ("", None, False)
+    }
+    flow = rclone_oauth.start(type_name, options, token=(data.get("token") or "").strip())
+    logging.info("oauth[%s]: вход начат (запрос от %s)", type_name, user)
+    return flow.view()
+
+
+@app.get("/api/oauth/{flow_id}")
+def api_oauth_status(flow_id: str, user: str = Depends(require_auth)):
+    flow = rclone_oauth.get(flow_id)
+    if flow is None:
+        return {"state": "error", "message": "Сеанс входа не найден или истёк — начните заново"}
+    return flow.view()
+
+
+@app.post("/api/oauth/{flow_id}/answer")
+async def api_oauth_answer(flow_id: str, request: Request, user: str = Depends(require_auth)):
+    flow = rclone_oauth.get(flow_id)
+    if flow is None:
+        return {"state": "error", "message": "Сеанс входа не найден или истёк — начните заново"}
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    flow.answer(data.get("result", ""))
+    return flow.view()
+
+
+@app.post("/api/oauth/{flow_id}/cancel")
+def api_oauth_cancel(flow_id: str, user: str = Depends(require_auth)):
+    flow = rclone_oauth.get(flow_id)
+    if flow is not None:
+        flow.cancel()
+    return {"state": "error", "message": "Вход отменён"}
+
+
 @app.post("/api/remotes/test")
 async def api_remote_test(request: Request, user: str = Depends(require_auth)):
     """
@@ -2546,8 +2641,10 @@ async def api_remote_test(request: Request, user: str = Depends(require_auth)):
         info = rclone_mod.provider(type_name)
         if info is None:
             return {"ok": False, "message": f"Тип rclone «{type_name}» не найден"}
+        from core.storage.rclone_remote import secret_option_names
+
         old_options = (saved or {}).get("options") or {} if (saved or {}).get("type") == type_name else {}
-        passwords = {o["Name"] for o in info.get("Options", []) if o.get("IsPassword")}
+        passwords = secret_option_names(type_name)
         options = {}
         for name, value in (data.get("options") or {}).items():
             if name in passwords:
@@ -2557,8 +2654,11 @@ async def api_remote_test(request: Request, user: str = Depends(require_auth)):
                     options[name] = old_options[name]
             elif value not in ("", None):
                 options[name] = value
-        if old_options.get("token"):
-            options["token"] = old_options["token"]
+        for k, v in old_options.items():          # скрытые / от мастера
+            options.setdefault(k, v)
+        flow = rclone_oauth.get(data.get("oauth_flow") or "")
+        if flow is not None and flow.type_name == type_name and flow.state == "done":
+            _merge_oauth_result(type_name, options, flow.result)
         cfg = {"type": type_name, "options": options, "base_dir": data.get("base_dir") or "/"}
 
     try:
