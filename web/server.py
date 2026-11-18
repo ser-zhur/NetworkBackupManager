@@ -90,7 +90,7 @@ from core.context import (
 )
 from core.version import APP_NAME, __version__
 from core import devices as device_store
-from core import device_status, events, monitoring
+from core import device_status, events, monitoring, notifications
 
 from core.logger import (
     setup_logging,
@@ -290,6 +290,9 @@ async def lifespan(
     scheduler.start()
     monitoring.mark_started()
 
+    # Уведомления — до app.started, чтобы и оно могло уйти.
+    notifications.dispatcher.start()
+
     events.emit(
         events.APP_STARTED,
         f"{APP_NAME} {__version__} запущен",
@@ -308,6 +311,7 @@ async def lifespan(
 
         invalidate_status_cache()
         scheduler.stop()
+        notifications.dispatcher.stop()
 
 
 # =========================================================
