@@ -27,9 +27,3 @@ data/
 # ---- Логи, временные и отладочные файлы ----
 *.log
 *.tmp
-dir.txt
-nulcurl
-ftp_debug.txt
-test_ftp_debug.py
-tests2.py
-teststore.py
