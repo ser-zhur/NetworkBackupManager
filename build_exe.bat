@@ -259,13 +259,18 @@ if exist "assets\icon.ico" (
     >>"%LOG_FILE%" echo NOTE: assets\icon.ico not found - building without icon.
 )
 
-set VERSION_ARG=
-if exist "assets\version_info.txt" (
-    set VERSION_ARG=--version-file "assets\version_info.txt"
-) else (
-    echo NOTE: assets\version_info.txt not found - building without version info.
-    >>"%LOG_FILE%" echo NOTE: assets\version_info.txt not found - building without version info.
+REM Version: single source core\version.py -> EXE properties + installer
+set APP_VERSION=
+for /f "delims=" %%V in ('python tools\version_info.py "build\version_info.txt"') do set APP_VERSION=%%V
+if not defined APP_VERSION (
+    echo ERROR: tools\version_info.py failed.
+    >>"%LOG_FILE%" echo ERROR: tools\version_info.py failed.
+    pause
+    exit /b 1
 )
+set VERSION_ARG=--version-file "build\version_info.txt"
+echo App version: !APP_VERSION!
+>>"%LOG_FILE%" echo App version: !APP_VERSION!
 
 echo.
 
@@ -555,7 +560,7 @@ echo.
 
 set "ISCC_TEMP=%TEMP%\nbm_iscc_output.txt"
 
-"%ISCC%" "installer.iss" > "%ISCC_TEMP%" 2>&1
+"%ISCC%" /DMyAppVersion=%APP_VERSION% "installer.iss" > "%ISCC_TEMP%" 2>&1
 set "ISCC_EXIT=%ERRORLEVEL%"
 
 type "%ISCC_TEMP%"

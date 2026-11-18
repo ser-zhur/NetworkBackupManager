@@ -142,6 +142,9 @@ from core.service_installer import (
 # -----------------------------------------------------
 
 from core import rclone as rclone_mod
+from core.version import APP_NAME, __version__
+
+logger.info("%s %s", APP_NAME, __version__)
 
 if rclone_mod.is_available():
     logger.info("rclone: %s", rclone_mod.get_version())
@@ -815,6 +818,33 @@ def run_application(skip_service_install: bool = False) -> int:
 # MAIN
 # =========================================================
 
+def print_version() -> None:
+    """
+    --version. EXE собран с --noconsole: своей консоли нет,
+    поэтому пишем в консоль, из которой запустили (cmd,
+    PowerShell). Новая консоль закрылась бы сразу вместе
+    с выводом.
+    """
+    text = f"{APP_NAME} {__version__}"
+
+    if os.name == "nt" and sys.stdout is None:
+        try:
+            # ATTACH_PARENT_PROCESS = -1
+            if ctypes.windll.kernel32.AttachConsole(-1):
+                with open("CONOUT$", "w", encoding="utf-8") as out:
+                    out.write("\n" + text + "\n")
+                return
+        except Exception:
+            pass
+        # Запуск не из консоли (например, ярлык) — своё окно
+        if ensure_console():
+            print(text)
+            input("Нажмите Enter...")
+        return
+
+    print(text)
+
+
 # FIX: список известных CLI-флагов, чтобы предупреждать о неизвестных.
 _KNOWN_FLAGS = {
     "--create-user",
@@ -825,6 +855,7 @@ _KNOWN_FLAGS = {
     "--start-service",
     "--restart-service",
     "--skip-service-install",
+    "--version",
 }
 
 
@@ -847,6 +878,14 @@ def main() -> int:
         for flag in sorted(_KNOWN_FLAGS):
             print(f"  {flag}")
         return 2
+
+    # -----------------------------------------------------
+    # VERSION
+    # -----------------------------------------------------
+
+    if "--version" in args:
+        print_version()
+        return 0
 
     # -----------------------------------------------------
     # CREATE USER

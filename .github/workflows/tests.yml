@@ -1,0 +1,50 @@
+# =========================================================
+# Тесты на Windows и Linux при каждом push и pull request
+# =========================================================
+#
+# Linux пока помечен continue-on-error: приложение ещё не
+# переведено на Linux (служба, пути, регистр имён плагинов —
+# шаг «слой платформы»). Ошибки там видны в отчёте, но не
+# делают весь прогон красным. Убрать после переноса.
+#
+# =========================================================
+
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python: ["3.14"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Version
+        run: python main.py --version
+
+      - name: Tests
+        run: python -m pytest -q

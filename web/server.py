@@ -88,6 +88,7 @@ from core.context import (
     load_json,
     resolve_backup_path,
 )
+from core.version import APP_NAME, __version__
 
 from core.logger import (
     setup_logging,
@@ -309,7 +310,8 @@ async def lifespan(
 # =========================================================
 
 app = FastAPI(
-    title="Network Backup Manager",
+    title=APP_NAME,
+    version=__version__,
     lifespan=lifespan,
     # debug=True отдаёт полный traceback (пути, фрагменты
     # кода и данных) любому клиенту. Ошибки и так пишутся
@@ -482,6 +484,7 @@ def _static_version() -> str:
 
 if templates is not None:
     templates.env.globals["static_version"] = _static_version()
+    templates.env.globals["app_version"] = __version__
     templates.env.globals["status_meta"] = _status_meta
     templates.env.globals["age_label"] = _age_label
     templates.env.globals["age_class"] = _age_class

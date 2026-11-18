@@ -6,7 +6,10 @@
 ; =========================================================
 
 #define MyAppName "Network Backup Manager"
-#define MyAppVersion "1.0.0"
+; Версия приходит из build_exe.bat (core\version.py): ISCC /DMyAppVersion=X.Y.Z
+#ifndef MyAppVersion
+  #define MyAppVersion "0.0.0-dev"
+#endif
 #define MyAppPublisher "Network Backup Manager"
 #define MyAppExeName "NetworkBackupManager.exe"
 #define ServiceName "NetworkBackupManager"
