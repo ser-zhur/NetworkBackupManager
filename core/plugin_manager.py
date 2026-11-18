@@ -10,12 +10,14 @@ import importlib.util
 import json
 import logging
 import threading
+import time
 
 from datetime import datetime
 from pathlib import Path
 
 from core import backup_state
 from core import devices as device_store
+from core import device_status
 from core.secure_storage import get_secure_storage
 from core.context import (
     PLUGINS_DIR,
@@ -852,7 +854,11 @@ class PluginManager:
             if not isinstance(state, dict):
                 state = {}
 
-            entry = {
+            # Дополняем запись, а не заменяем: в ней же
+            # attempt (record_attempt) — исход последней попытки.
+            prev = state.get(device_id)
+            entry = dict(prev) if isinstance(prev, dict) else {}
+            entry.update({
                 "last_run": datetime.now().strftime(
                     "%Y-%m-%d %H:%M:%S"
                 ),
@@ -867,7 +873,7 @@ class PluginManager:
                     }
                     for bid, r in results.items()
                 },
-            }
+            })
 
             if total_commits is not None:
                 entry["total_commits"] = total_commits
@@ -881,6 +887,160 @@ class PluginManager:
                     "storage: не удалось сохранить state.json: %s",
                     exc,
                 )    
+
+    @staticmethod
+    def record_attempt(
+        device_id: str,
+        ok: bool,
+        error: str = "",
+        duration_s: float | None = None,
+    ) -> None:
+        """
+        Исход попытки бэкапа → state.json (attempt): время,
+        ошибка, неудач подряд. Пишется при КАЖДОМ запуске —
+        и удачном, и упавшем (см. core/device_status.py).
+        """
+        with _STATE_LOCK:
+            state = load_json(STATE_FILE, {})
+            if not isinstance(state, dict):
+                state = {}
+            state[device_id] = device_status.record_attempt(
+                state.get(device_id), ok, error, duration_s,
+            )
+            try:
+                save_json(STATE_FILE, state)
+            except Exception as exc:
+                logging.error(
+                    "state: не удалось сохранить исход бэкапа %s: %s",
+                    device_id, exc,
+                )
+
+    # =====================================================
+    # BACKUP ONE DEVICE
+    # =====================================================
+
+    def backup_device(
+        self,
+        device_type: str,
+        router: dict,
+        index: int = -1,
+        original: dict | None = None,
+    ) -> dict:
+        """
+        Бэкап одного устройства — общий для одиночного запуска
+        и массового прогона.
+
+        router   — конфиг устройства (пароль зашифрован; не
+                   меняется: плагин получает копию);
+        original — объект из списка в памяти, если router —
+                   его копия: по нему пишутся служебные поля.
+
+        Слот устройства (core/backup_state) занимает и
+        освобождает вызывающий. Исключения не пробрасываются:
+        исход — в ответе и в state.json.
+
+        Возвращает {"ok", "error", "device_id", "host", "duration_s"}.
+        """
+        from core.logger import (
+            set_device_context,
+            clear_device_context,
+            set_connection_debug,
+            clear_connection_debug,
+            device_log_tag,
+        )
+
+        original = original if original is not None else router
+        device_id = self.router_id(original)
+        host = router.get("host") or router.get("ip") or "Unknown"
+        device_tag = device_log_tag(device_type, router)
+        debug_connection = bool(router.get("debug_connection"))
+
+        set_device_context(device_tag)
+        if debug_connection:
+            set_connection_debug(device_tag)
+            logging.info("🐛 Debug подключения включён: %s", device_tag)
+
+        started = time.monotonic()
+        ok, error = False, ""
+        try:
+            plugin = self._plugins.get(device_type) or {}
+            plugin_func = plugin.get("func")
+            if not plugin_func:
+                raise RuntimeError(f"Плагин {device_type} не загружен")
+
+            secure_router = copy.deepcopy(router)
+            # Плагин получает уже абсолютный путь — сам он
+            # относительные пути не разрешает.
+            secure_router["backup_path"] = str(
+                resolve_backup_path(router["backup_path"])
+            )
+            if secure_router.get("ssh_pass"):
+                secure_router["ssh_pass"] = self.storage.decrypt(
+                    secure_router["ssh_pass"]
+                )
+            device_store.prepare_key_path(device_type, secure_router)
+
+            logging.info("🔄 Старт бэкапа: %s", host)
+
+            created_files = plugin_func(secure_router)
+
+            # [] — «нет изменений», успех. Сломавшийся плагин
+            # обязан бросить исключение; None — нарушение контракта.
+            if created_files is None:
+                raise RuntimeError(
+                    f"Плагин {device_type} вернул None вместо списка"
+                )
+
+            try:
+                self.persist_router_service_fields(
+                    device_type, index, secure_router, original=original,
+                )
+            except Exception as exc:
+                logging.warning(
+                    "Не удалось сохранить служебные поля роутера: %s", exc,
+                )
+
+            try:
+                self._push_to_storages(
+                    device_type=device_type,
+                    index=index,
+                    device_host=host,
+                    router=router,
+                    backup_path=Path(secure_router["backup_path"]),
+                    created_files=created_files,
+                )
+            except Exception as exc:
+                logging.error(
+                    "storage: ошибка диспетчеризации backend'ов: %s",
+                    exc, exc_info=True,
+                )
+
+            ok = True
+            logging.info("✅ Успешно: %s", host)
+
+        except Exception as exc:
+            error = str(exc) or exc.__class__.__name__
+            logging.error("❌ Ошибка бэкапа %s: %s", host, error)
+
+        finally:
+            duration = time.monotonic() - started
+            try:
+                self.record_attempt(device_id, ok, error, duration)
+            finally:
+                if debug_connection:
+                    logging.info(
+                        "🐛 Debug подключения выключен: %s", device_tag,
+                    )
+                    clear_connection_debug()
+                clear_device_context()
+
+        return {
+            "ok": ok,
+            "error": error,
+            "device_id": device_id,
+            "host": host,
+            "duration_s": round(duration, 1),
+        }
 
     # =====================================================
     # SERVICE FIELDS (ros_version и т.п.)
@@ -967,8 +1127,13 @@ class PluginManager:
     # RUN ALL BACKUPS
     # =====================================================
 
-    def run_all_backups(self):
-        """Параллельный запуск бэкапов для всех устройств"""
+    def run_all_backups(self) -> dict:
+        """
+        Параллельный запуск бэкапов для всех устройств.
+
+        Возвращает сводку: started, finished, total, success,
+        failed, timed_out, skipped_disabled.
+        """
 
         # Читаем лимиты из config.json, чтобы настройки из UI работали.
         # Клампим значения, чтобы не сломать систему безумными цифрами
@@ -1013,9 +1178,20 @@ class PluginManager:
                 skipped_disabled,
             )
 
+        summary = {
+            "started": device_status.now_str(),
+            "finished": None,
+            "total": total,
+            "success": 0,
+            "failed": 0,
+            "timed_out": 0,
+            "skipped_disabled": skipped_disabled,
+        }
+
         if total == 0:
             logging.warning("⚠ Нет устройств для бэкапа")
-            return
+            summary["finished"] = device_status.now_str()
+            return summary
 
 
         # Общий wall-clock таймаут на весь прогон.
@@ -1036,96 +1212,16 @@ class PluginManager:
         failed = 0        
 
         def worker(task):
-            # Импорт локальный — чтобы не создавать цикл
-            # на этапе импорта модуля.
-            from core.logger import (
-                set_device_context,
-                clear_device_context,
-                set_connection_debug,
-                clear_connection_debug,
-                device_log_tag,
-            )
-
-            device_type = task["device_type"]
-            plugin_func = task["plugin_func"]
-            router = task["router"]
-
-            ip = router.get("ip", router.get("host", "Unknown"))
-            # Тег — тот же, по которому фильтрует /logs/device
-            device_tag = device_log_tag(device_type, router)
-            debug_connection = bool(router.get("debug_connection"))
-
             # Устройство занято, пока ЭТОТ поток реально
             # работает — даже если прогон уже завершился
             # по общему таймауту (finish_device в finally).
-            device_id = self.router_id(router)
+            device_id = self.router_id(task["router"])
             backup_state.mark_device_running(device_id)
-
-            set_device_context(device_tag)
-            if debug_connection:
-                set_connection_debug(device_tag)
-                logging.info(
-                    "🐛 Debug подключения включён: %s", device_tag
-                )
-
             try:
-                backup_path = resolve_backup_path(router["backup_path"])
-
-                secure_router = copy.deepcopy(router)
-                # Плагин получает уже абсолютный путь — сам
-                # он относительные пути не разрешает.
-                secure_router["backup_path"] = str(backup_path)
-
-                if "ssh_pass" in secure_router:
-                    secure_router["ssh_pass"] = self.storage.decrypt(
-                        secure_router["ssh_pass"]
-                    )
-                device_store.prepare_key_path(device_type, secure_router)
-
-                logging.info("🔄 Старт бэкапа: %s", ip)
-
-                created_files = plugin_func(secure_router)
-
-                try:
-                    self.persist_router_service_fields(
-                        device_type,
-                        task["index"],
-                        secure_router,
-                        original=router,
-                    )
-                except Exception as exc:
-                    logging.warning(
-                        "Не удалось сохранить служебные "
-                        "поля роутера: %s", exc,
-                    )
-
-                try:
-                    self._push_to_storages(
-                        device_type=device_type,
-                        index=task["index"],
-                        device_host=ip,
-                        router=router,
-                        backup_path=Path(backup_path),
-                        created_files=created_files,
-                    )
-                except Exception as exc:
-                    logging.error(
-                        "storage: ошибка диспетчеризации "
-                        "backend'ов: %s",
-                        exc,
-                        exc_info=True,
-                    )
-
-                logging.info("✅ Успешно: %s", ip)
-                return ip
-
+                return self.backup_device(
+                    task["device_type"], task["router"], task["index"],
+                )
             finally:
-                if debug_connection:
-                    logging.info(
-                        "🐛 Debug подключения выключен: %s", device_tag
-                    )
-                    clear_connection_debug()
-                clear_device_context()
                 backup_state.finish_device(device_id)
 
         executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
@@ -1150,15 +1246,18 @@ class PluginManager:
                     )
 
                     try:
-                        future.result()
-                        success += 1
+                        outcome = future.result()
                     except Exception as e:
-                        failed += 1
+                        outcome = {"ok": False}
                         logging.error(
                             "❌ Ошибка бэкапа %s: %s",
                             ip,
                             e,
-                       )
+                        )
+                    if outcome.get("ok"):
+                        success += 1
+                    else:
+                        failed += 1
 
             except FuturesTimeoutError:
                 logging.error(
@@ -1182,6 +1281,10 @@ class PluginManager:
                         "⏰ Таймаут бэкапа: %s — не запускался, снят",
                         ip,
                     )
+                    self.record_attempt(
+                        self.router_id(task["router"]), False,
+                        "Не запускался: истёк общий таймаут прогона",
+                    )
                 else:
                     # Поток уже работает и остановить его нельзя.
                     # Устройство остаётся занятым (см.
@@ -1195,6 +1298,7 @@ class PluginManager:
                     )
 
             failed += len(still_pending)
+            summary["timed_out"] = len(still_pending)
 
         finally:
             # Не ждём зависшие потоки: лучше потерять слот
@@ -1207,6 +1311,11 @@ class PluginManager:
             failed,
             total,
         )
+
+        summary.update(
+            finished=device_status.now_str(), success=success, failed=failed,
+        )
+        return summary
 
 
 # =========================================================

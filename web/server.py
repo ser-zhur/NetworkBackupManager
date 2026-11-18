@@ -89,13 +89,12 @@ from core.context import (
 )
 from core.version import APP_NAME, __version__
 from core import devices as device_store
+from core import device_status
 
 from core.logger import (
     setup_logging,
     set_device_context,
     clear_device_context,
-    set_connection_debug,
-    clear_connection_debug,
     device_log_tag,
 )
 
@@ -1180,29 +1179,7 @@ def _iter_device_backup_paths():
             )
             
             
-def classify_device(age_days, last_attempt_ok) -> str:
-    """
-    ok / warn / fail / none.
-
-    age_days — давность последней УСПЕШНОЙ СИНХРОНИЗАЦИИ
-    (state.json.last_run), а НЕ давность последнего
-    git-коммита.
-
-    Если с устройством успешно связались недавно, но
-    изменений не нашли — коммита нет, однако устройство
-    «Актуально»: оно исправно опрашивается.
-
-    Порог ok — 14 дней (включительно).
-    """
-    if last_attempt_ok is False:
-        return "fail"
-    if age_days is None:
-        return "none"
-    if age_days <= 14:
-        return "ok"
-    if age_days <= 30:
-        return "warn"
-    return "fail"
+classify_device = device_status.classify
 
 
 # =========================================================
@@ -1292,36 +1269,9 @@ def _build_device_payload(
     #           (skipped тоже ok=True: «нет изменений» = успех)
     #   False — хотя бы один backend вернул ok=False
     device_state = _load_device_state(_device_id(device_type, index))
-
-    last_run_str = device_state.get("last_run") or ""
-    backends_state = device_state.get("backends") or {}
-
-    if last_run_str:
-        last_attempt_date = last_run_str
-
-        try:
-            last_attempt_dt = datetime.strptime(
-                last_run_str, "%Y-%m-%d %H:%M:%S"
-            )
-            last_attempt_age_days = (
-                datetime.now() - last_attempt_dt
-            ).days
-        except ValueError:
-            last_attempt_age_days = None
-
-        if backends_state:
-            last_attempt_ok = all(
-                bool(b.get("ok"))
-                for b in backends_state.values()
-            )
-        else:
-            # Бэкенды не задействованы, но попытка была —
-            # считаем её успешной.
-            last_attempt_ok = True
-    else:
-        last_attempt_date = None
-        last_attempt_age_days = None
-        last_attempt_ok = None
+    health = device_status.summarize(
+        device_state, disabled=is_device_disabled(router),
+    )
 
     # Общий размер — вся папка устройства вместе с .git:
     # столько бэкапы реально занимают на диске.
@@ -1334,21 +1284,13 @@ def _build_device_payload(
     latest_size = format_size(latest_bytes) if latest_bytes > 0 else "—"
 
     # ---- Статус ----
-    #
-    # Приоритет — давность последней попытки: именно она
-    # отражает, опрашивается ли устройство прямо сейчас.
-    # Если state.json пуст (legacy-установки до появления
-    # этого поля) — откатываемся на возраст git-коммита.
-    if is_device_disabled(router):
-        # Выведено из эксплуатации: давность бэкапа и
-        # прошлые ошибки больше не важны.
-        status = "disabled"
-    elif last_attempt_age_days is not None:
-        status = classify_device(
-            last_attempt_age_days, last_attempt_ok
-        )
+    # Давность последнего успешного опроса и исход последней
+    # попытки (core/device_status.py). Если опросов ещё не
+    # было (state.json пуст) — по возрасту git-коммита.
+    if health["status"] == "none" and age_days is not None:
+        status = classify_device(age_days, health["last_attempt_ok"])
     else:
-        status = classify_device(age_days, last_attempt_ok)
+        status = health["status"]
 
     ip_addr = (
         router.get("host")
@@ -1465,9 +1407,15 @@ def _build_device_payload(
         "status": status,
         "last_success": last_date,
         "last_success_age_days": age_days,
-        "last_attempt": last_attempt_date,
-        "last_attempt_ok": last_attempt_ok,
-        "last_attempt_age_days": last_attempt_age_days,
+        # Последний успешный опрос (блок «Последняя успешная связь»)
+        "last_contact": health["last_success"],
+        "last_contact_age_days": health["success_age_days"],
+        "last_contact_ok": health["backends_ok"] is not False,
+        # Последняя попытка и её ошибка
+        "last_attempt": health["last_attempt"],
+        "last_attempt_ok": health["last_attempt_ok"],
+        "last_error": health["last_error"],
+        "failures": health["failures"],
         "backup_count": backup_count,
         "max_backups": router.get("max_backups", 7),
         "total_size": total_size,
@@ -1592,37 +1540,9 @@ def _build_device_summary(
     if not isinstance(st, dict):
         st = {}
 
-    # ---- Последняя попытка (state.json) ----
-    last_run_str = st.get("last_run") or ""
-    backends_state = st.get("backends") or {}
-
-    if last_run_str:
-        try:
-            last_attempt_dt = datetime.strptime(
-                last_run_str, "%Y-%m-%d %H:%M:%S"
-            )
-            last_attempt_age_days = (
-                datetime.now() - last_attempt_dt
-            ).days
-        except ValueError:
-            last_attempt_age_days = None
-
-        if backends_state:
-            last_attempt_ok = all(
-                bool(b.get("ok"))
-                for b in backends_state.values()
-            )
-        else:
-            last_attempt_ok = True
-    else:
-        last_attempt_age_days = None
-        last_attempt_ok = None
-
     disabled = is_device_disabled(router)
-    status = (
-        "disabled" if disabled
-        else classify_device(last_attempt_age_days, last_attempt_ok)
-    )
+    health = device_status.summarize(st, disabled=disabled)
+    status = health["status"]
 
     # ---- backup_count ----
     # Источник 1: total_commits из state.json (появится после
@@ -1655,9 +1575,12 @@ def _build_device_summary(
         "tags": _safe_router_tags(router),
         "pinned": bool(router.get("pinned")),       # пригодится в этапе 4
         "status": status,
-        "last_attempt": last_run_str or None,
-        "last_attempt_ok": last_attempt_ok,
-        "last_attempt_age_days": last_attempt_age_days,
+        "last_attempt": health["last_attempt"],
+        "last_attempt_ok": health["last_attempt_ok"],
+        # Для сортировки «по давности связи» — успешный опрос.
+        "last_attempt_age_days": health["success_age_days"],
+        "last_error": health["last_error"],
+        "failures": health["failures"],
         "backup_count": backup_count,
         "max_backups": router.get("max_backups", 7),
         "backup_in_progress": is_backup_running_for(device_id),
@@ -1670,7 +1593,7 @@ def _build_device_summary(
         # показываем: бэкапы для него намеренно не идут.
         "never_backed_up": (
             not disabled
-            and not last_run_str
+            and not health["last_attempt"]
             and backup_count == 0
         ),
         # 2. Сколько включённых backend'ов в ошибке (для ⚠N).
@@ -1681,7 +1604,7 @@ def _build_device_summary(
         #    Считаем «давно» = 2× интервал планировщика.
         #    Если планировщик выключен — не подсвечиваем.
         "overdue": (
-            not disabled and _is_overdue(last_attempt_age_days)
+            not disabled and _is_overdue(health["success_age_days"])
         ),
     }
 
@@ -1904,112 +1827,32 @@ def execute_sync_all_task(user: str) -> dict:
 def execute_device_backup_task(
     device_type: str,
     index: int,
-    secure_router: dict,
+    router: dict,
     original: dict | None = None,
 ):
-    # original — объект роутера из списка в памяти. Нужен,
-    # чтобы служебные поля (ros_version) записать именно
-    # этому устройству, даже если индекс сдвинулся.
-    host = (
-        secure_router.get("host")
-        or secure_router.get("ip")
-        or f"#{index}"
+    """
+    Фоновый одиночный бэкап. Слот устройства уже занят в
+    run_backup() (try_start_device); здесь только освобождаем.
+
+    router   — конфиг устройства (пароль зашифрован);
+    original — объект из списка в памяти, если router — копия.
+    Сам бэкап и запись исхода — plugin_manager.backup_device().
+    """
+    original = original if original is not None else router
+    device_id = (
+        plugin_manager.router_id(original) if plugin_manager
+        else original.get("id", "")
     )
-
-    # Слот устройства уже занят в run_backup() через
-    # try_start_device(); здесь только освобождаем его
-    # в finally.
-    device_id = _device_id(device_type, index)
-
-    debug_connection = bool(secure_router.get("debug_connection"))
-
-    device_tag = device_log_tag(device_type, secure_router)
-    set_device_context(device_tag)
-
-    if debug_connection:
-        set_connection_debug(device_tag)
-        logging.info(
-            "🐛 Debug подключения включён: %s/%s", device_type, host
-        )
-
     try:
-        plugin = (
-            plugin_manager._plugins.get(device_type)
-            if plugin_manager else None
-        )
-
-        if not plugin:
+        if plugin_manager is None:
             return
-
-        backup_func = plugin.get("func")
-        if not backup_func:
-            return
-
-        ip_disp = (
-            secure_router.get("host")
-            or secure_router.get("ip")
+        plugin_manager.backup_device(
+            device_type, router, index, original=original,
         )
-
-        logging.info("🚀 [Фон] Запуск бэкапа: %s", ip_disp)
-
-        created_files = backup_func(secure_router)
-        
-        # Если плагин определил служебные поля (ros_version),
-        # переносим их в in-memory конфиг и devices.json.
-        if plugin_manager is not None:
-            try:
-                plugin_manager.persist_router_service_fields(
-                    device_type, index, secure_router,
-                    original=original,
-                )
-            except Exception as exc:
-                logging.warning(
-                    "Не удалось сохранить служебные поля "
-                    "роутера: %s", exc,
-                )
-
-        # created_files может быть [] — «нет изменений», успех.
-        # Плагин, у которого что-то сломалось, обязан кинуть исключение.
-        if created_files is None:
-            raise RuntimeError(
-                f"Плагин {device_type} вернул None вместо списка"
-            )
-
-        # Push в storage backends (git всегда, остальные — по конфигу).
-        # Пустой список _push_to_storages обработает сам.
-        if hasattr(plugin_manager, "_push_to_storages"):
-            try:
-                plugin_manager._push_to_storages(
-                    device_type=device_type,
-                    index=index,
-                    device_host=ip_disp,
-                    router=secure_router,
-                    backup_path=Path(
-                        secure_router.get("backup_path")
-                    ),
-                    created_files=created_files,
-                )
-            except Exception as exc:
-                logging.error(
-                    "storage: ошибка диспетчеризации: %s",
-                    exc,
-                    exc_info=True,
-                )
-
-        logging.info("✅ [Фон] Бэкап успешно завершен для %s", ip_disp)
-
     except Exception as exc:
         logging.error("❌ [Фон] Ошибка при бэкапе: %s", exc)
-
     finally:
-        if debug_connection:
-            logging.info(
-                "🐛 Debug подключения выключен: %s/%s",
-                device_type, host,
-            )
-            clear_connection_debug()
         finish_device(device_id)
-        clear_device_context()
 
 def execute_all_backups_task():
     # Слот массового прогона уже занят в run_now_endpoint()
@@ -3585,35 +3428,6 @@ def run_backup(
             status_code=409,
         )
 
-    secure_router = copy.deepcopy(
-        router
-    )
-
-    if (
-        "ssh_pass"
-        in secure_router
-        and secure_router[
-            "ssh_pass"
-        ]
-    ):
-        secure_router[
-            "ssh_pass"
-        ] = storage.decrypt(
-            secure_router[
-                "ssh_pass"
-            ]
-        )
-
-    device_store.prepare_key_path(device_type, secure_router)
-
-    # Плагин и git получают абсолютный путь по общему
-    # правилу (относительный — от HOME_DIR), а не разрешают
-    # его каждый по-своему.
-    if secure_router.get("backup_path"):
-        secure_router["backup_path"] = str(
-            resolve_backup_path(secure_router["backup_path"])
-        )
-
     # Атомарно проверяем и занимаем устройство. Проверка
     # выше (is_backup_running_for) — только быстрый ответ
     # UI; без этого захвата два запроса подряд могли оба
@@ -3630,7 +3444,6 @@ def run_backup(
         execute_device_backup_task,
         device_type,
         index,
-        secure_router,
         router,
     )
 
@@ -5016,7 +4829,6 @@ def _collect_maintenance_stats() -> list:
             "device_id": device_id,
             "device_type": device_type,
             "index": idx,
-            "device_id": plugin_manager.router_id(router),
             "name": router.get("name") or "",
             "host": router.get("host") or router.get("ip") or "",
             "total": 0,

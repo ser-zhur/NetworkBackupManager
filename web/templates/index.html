@@ -254,8 +254,9 @@
                                                 <div class="mt-0.5 text-[11px] text-gray-500 dark:text-slate-400 truncate flex items-center gap-1">
                                                     {% if d.last_attempt %}
                                                         <span class="rel-time" data-time="{{ d.last_attempt }}" title="{{ d.last_attempt }}"></span>
-                                                        <span class="font-bold {{ 'text-emerald-600 dark:text-emerald-400' if d.last_attempt_ok else 'text-rose-600 dark:text-rose-400' }}">
-                                                            {{ '✓' if d.last_attempt_ok else '✗' }}
+                                                        <span class="font-bold {{ 'text-emerald-600 dark:text-emerald-400' if d.last_attempt_ok else 'text-rose-600 dark:text-rose-400' }}"
+                                                              {% if d.last_error %}title="{{ d.last_error }}"{% endif %}>
+                                                            {{ '✓' if d.last_attempt_ok else '✗' }}{% if d.failures > 1 %}{{ d.failures }}{% endif %}
                                                         </span>
                                                         <span class="opacity-60">·</span>
                                                         <span>{{ d.backup_count }} коп.</span>

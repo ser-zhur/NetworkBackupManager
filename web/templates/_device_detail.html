@@ -160,14 +160,16 @@
 
     <div class="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 p-4">
         <div class="text-[11px] uppercase tracking-wide font-semibold text-gray-500 dark:text-slate-400">Последняя успешная связь</div>
-        {% if d.last_attempt %}
-            <div class="mt-1.5 font-mono text-sm">{{ d.last_attempt }}</div>
-            <div class="mt-1 text-[11px] font-medium {{ age_class(d.last_attempt_age_days) }}">
-                {{ age_label(d.last_attempt_age_days) }}
-                <span class="ml-1 {{ 'text-emerald-600 dark:text-emerald-400' if d.last_attempt_ok else 'text-rose-600 dark:text-rose-400' }}">
-                    {{ '✓' if d.last_attempt_ok else '✗' }}
+        {% if d.last_contact %}
+            <div class="mt-1.5 font-mono text-sm">{{ d.last_contact }}</div>
+            <div class="mt-1 text-[11px] font-medium {{ age_class(d.last_contact_age_days) }}">
+                {{ age_label(d.last_contact_age_days) }}
+                <span class="ml-1 {{ 'text-emerald-600 dark:text-emerald-400' if d.last_contact_ok else 'text-rose-600 dark:text-rose-400' }}">
+                    {{ '✓' if d.last_contact_ok else '✗' }}
                 </span>
             </div>
+        {% elif d.last_attempt %}
+            <div class="mt-1.5 text-rose-600 dark:text-rose-400 text-sm font-medium">ни разу</div>
         {% else %}
             <div class="mt-1.5 text-gray-400 dark:text-slate-500">—</div>
         {% endif %}
@@ -185,6 +187,20 @@
              title="Общий размер — вместе с историей версий (.git)">последняя версия {{ d.latest_size }}</div>
     </div>
 </div>
+
+{% if d.last_attempt_ok == false and d.last_error and not d.disabled %}
+<!-- LAST ERROR -->
+<div class="rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50 dark:bg-rose-950/40 p-4 text-sm">
+    <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span class="font-semibold text-rose-700 dark:text-rose-300">Последняя попытка не удалась</span>
+        <span class="font-mono text-xs text-rose-600/80 dark:text-rose-300/70">{{ d.last_attempt }}</span>
+        {% if d.failures > 1 %}
+            <span class="text-xs font-medium text-rose-700 dark:text-rose-300">· неудач подряд: {{ d.failures }}</span>
+        {% endif %}
+    </div>
+    <div class="mt-1 font-mono text-xs text-rose-800 dark:text-rose-200 break-words">{{ d.last_error }}</div>
+</div>
+{% endif %}
 
 <!-- STORAGE BACKENDS -->
 {# В карточке показываем только включённые/настроенные backend'ы.
