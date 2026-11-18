@@ -29,6 +29,7 @@ from fastapi.responses import (
     HTMLResponse,
     RedirectResponse,
     FileResponse,
+    JSONResponse,
     Response,
 )
 
@@ -89,7 +90,7 @@ from core.context import (
 )
 from core.version import APP_NAME, __version__
 from core import devices as device_store
-from core import device_status, events
+from core import device_status, events, monitoring
 
 from core.logger import (
     setup_logging,
@@ -287,6 +288,7 @@ async def lifespan(
         )
 
     scheduler.start()
+    monitoring.mark_started()
 
     events.emit(
         events.APP_STARTED,
@@ -596,6 +598,24 @@ def require_auth(
         )
 
     return credentials.username
+
+
+async def require_monitoring(request: Request) -> str:
+    """
+    Чтение состояния (/api/status, /api/events): токен
+    мониторинга (Authorization: Bearer <токен>) или обычный
+    логин/пароль. Токен даёт только чтение — см. core/monitoring.py.
+    """
+    scheme, _, value = request.headers.get("Authorization", "").partition(" ")
+    if scheme.lower() == "bearer":
+        if monitoring.check_token(value.strip()):
+            return "monitoring"
+        raise HTTPException(
+            status_code=401,
+            detail="Неверный токен мониторинга.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return require_auth(await security(request))
 
 
 # =========================================================
@@ -2038,6 +2058,42 @@ def api_device_detail(
 # =========================================================
 # API: SYSTEM INFO
 # =========================================================
+
+@app.get("/api/health")
+def api_health():
+    """
+    Жива ли программа — без пароля (Docker healthcheck,
+    проверка доступности). 200 — да, 503 — планировщик упал
+    или папка данных недоступна для записи.
+    """
+    alive, body = monitoring.health(scheduler)
+    return JSONResponse(body, status_code=200 if alive else 503)
+
+
+@app.get("/api/status")
+def api_status(user: str = Depends(require_monitoring)):
+    """Сводка для мониторинга (Zabbix и т.п.) — см. core/monitoring.py."""
+    return monitoring.status(plugin_manager, scheduler)
+
+
+@app.get("/api/events")
+def api_events(
+    limit: int = 50,
+    after_id: int | None = None,
+    device_id: str | None = None,
+    kind: str | None = None,
+    user: str = Depends(require_monitoring),
+):
+    """Последние события, новые первыми (core/events.py)."""
+    return {
+        "events": events.recent(
+            limit=max(1, min(500, limit)),
+            kinds=(kind,) if kind else None,
+            device_id=device_id,
+            after_id=after_id,
+        ),
+    }
+
 
 @app.get("/api/system/info")
 def api_system_info(user: str = Depends(require_auth)):
@@ -5513,8 +5569,9 @@ def settings_page(
         retention — очистка истории
         storage   — хранилища (rclone)
         service   — управление службой
+        monitoring — мониторинг: токен, адреса API, события
     """
-    if tab not in ("general", "scheduler", "retention", "storage", "service"):
+    if tab not in ("general", "scheduler", "retention", "storage", "service", "monitoring"):
         tab = "general"
 
     # Шапка (_header.html с header_show_status=True) требует
@@ -5578,11 +5635,62 @@ def settings_page(
         context["sync_all_running"] = is_sync_all_running()
         context["sync_all_devices"] = len(_sync_all_targets())
 
+    elif tab == "monitoring":
+        context.update(_monitoring_context(request))
+
     return templates.TemplateResponse(
         request,
         "settings.html",
         context,
     )
+
+
+def _monitoring_context(request: Request, new_token: str = "") -> dict:
+    base = str(request.base_url).rstrip("/")
+    return {
+        "token": monitoring.token_info(),
+        "new_token": new_token,
+        "base_url": base,
+        "health_url": f"{base}/api/health",
+        "status_url": f"{base}/api/status",
+        "events_url": f"{base}/api/events",
+        "zabbix_template_url": "/static/monitoring/zbx_nbm_template.json",
+        "recent_events": events.recent(limit=30),
+        "status": monitoring.status(plugin_manager, scheduler),
+    }
+
+
+@app.post("/settings/monitoring/token", response_class=HTMLResponse)
+def settings_monitoring_token(
+    request: Request,
+    user: str = Depends(require_auth),
+):
+    """
+    Новый токен мониторинга. Показывается один раз — прямо в
+    ответе (не редиректом: токен не должен попасть в адрес
+    страницы и историю браузера).
+    """
+    token = monitoring.generate_token()
+    logging.info("🔑 Создан новый токен мониторинга")
+    context = {
+        "active_tab": "monitoring",
+        "message": "",
+        "service": get_status(),
+        "scheduler_config": scheduler.config,
+        "logs_size": format_size(get_dir_size(LOGS_DIR)),
+        "is_backup_running": is_backup_running(),
+        **_monitoring_context(request, new_token=token),
+    }
+    response = templates.TemplateResponse(request, "settings.html", context)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.post("/settings/monitoring/token/revoke")
+def settings_monitoring_token_revoke(user: str = Depends(require_auth)):
+    monitoring.revoke_token()
+    logging.info("🔑 Токен мониторинга отозван")
+    return RedirectResponse("/settings?tab=monitoring&message=revoked", status_code=303)
 
 
 @app.post("/settings/general/save")

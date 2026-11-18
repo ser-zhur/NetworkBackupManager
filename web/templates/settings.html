@@ -31,6 +31,7 @@
                 ("retention", "🧹 Очистка"),
                 ("storage",   "🗄 Хранилища"),
                 ("service",   "⚙ Служба"),
+                ("monitoring", "📈 Мониторинг"),
             ] %}
             {% for tab_id, tab_label in _tabs %}
                 <a href="/settings?tab={{ tab_id }}"
@@ -60,6 +61,8 @@
             {% include "_settings_tab_storage.html" %}
         {% elif active_tab == "service" %}
             {% include "_settings_tab_service.html" %}
+        {% elif active_tab == "monitoring" %}
+            {% include "_settings_tab_monitoring.html" %}
         {% endif %}
     </div>
 

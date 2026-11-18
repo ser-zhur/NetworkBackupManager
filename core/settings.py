@@ -14,6 +14,8 @@
 #   NBM_ADMIN_USER       логин первого пользователя (если
 #   NBM_ADMIN_PASSWORD   data/auth.json ещё нет)
 #   NBM_RCLONE           путь к rclone (config.json: rclone.binary_path)
+#   NBM_API_TOKEN        токен мониторинга для /api/status (наравне
+#                        с созданным в Настройки → Мониторинг)
 #   NBM_CONTAINER        1 — запуск в контейнере: службой ОС
 #                        управляет не программа (Docker и т.п.)
 #

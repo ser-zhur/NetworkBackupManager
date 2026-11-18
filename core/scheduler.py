@@ -280,6 +280,58 @@ class BackupScheduler:
 
         return False
 
+    # =====================================================
+    # Для мониторинга (core/monitoring.py)
+    # =====================================================
+
+    def is_alive(self) -> bool:
+        """Поток планировщика работает."""
+        return bool(self._thread and self._thread.is_alive())
+
+    def is_job_running(self) -> bool:
+        return self._job_running.is_set()
+
+    def next_run(self, now: datetime | None = None) -> datetime | None:
+        """
+        Когда плановый бэкап должен начаться (по настройкам и
+        last_run). None — автобэкап выключен. Время в прошлом —
+        бэкап уже должен идти (или ждёт освобождения слота).
+        """
+        if not self.config.get("enabled", False):
+            return None
+        now = now or datetime.now()
+
+        last_run = None
+        try:
+            if self.config.get("last_run"):
+                last_run = datetime.strptime(
+                    self.config["last_run"], "%Y-%m-%d %H:%M:%S",
+                )
+        except (TypeError, ValueError):
+            last_run = None
+
+        if self.config.get("mode", "daily") == "interval":
+            try:
+                hours = max(1, int(self.config.get("interval_hours", 24)))
+            except (TypeError, ValueError):
+                hours = 24
+            return last_run + timedelta(hours=hours) if last_run else now
+
+        try:
+            target_time = datetime.strptime(
+                self.config.get("daily_time", "03:00"), "%H:%M",
+            ).time()
+        except (TypeError, ValueError):
+            target_time = datetime.strptime("03:00", "%H:%M").time()
+
+        today = datetime.combine(now.date(), target_time)
+        if now < today:
+            # Как в _should_run: до сегодняшнего времени не запускаем.
+            return today
+        if last_run is None or last_run < today:
+            return today                        # пора (догоняющий запуск)
+        return today + timedelta(days=1)
+
     def get_status_text(self) -> str:
         """Описание статуса для веб-интерфейса"""
 

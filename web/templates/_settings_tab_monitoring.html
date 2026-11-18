@@ -1,0 +1,185 @@
+{# Вкладка «Мониторинг»: состояние, адреса API, токен, Zabbix, события #}
+
+{% set _card = "bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm p-6 space-y-4" %}
+{% set _h3 = "text-sm font-semibold text-gray-700 dark:text-slate-200 flex items-center gap-2" %}
+{% set _code = "block w-full overflow-x-auto rounded-lg px-3 py-2 text-xs font-mono bg-gray-50 dark:bg-slate-950 border border-gray-200 dark:border-slate-800" %}
+{% set _btn = "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition" %}
+
+{% if message == 'revoked' %}
+<div class="px-4 py-3 rounded-lg text-sm bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900 text-emerald-800 dark:text-emerald-300">
+    ✓ Токен отозван: запросы с ним больше не принимаются.
+</div>
+{% endif %}
+
+{% if new_token %}
+<div class="rounded-2xl border-2 border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 p-5 space-y-3">
+    <div class="font-semibold text-amber-900 dark:text-amber-200">🔑 Новый токен мониторинга</div>
+    <p class="text-sm text-amber-900/80 dark:text-amber-200/80">
+        Скопируйте его сейчас — после ухода со страницы он больше не будет показан
+        (хранится только его хэш). Прежний токен перестал действовать.
+    </p>
+    <div class="flex gap-2 items-stretch">
+        <code id="new-token" class="{{ _code }} select-all">{{ new_token }}</code>
+        <button type="button" data-copy="new-token"
+                class="{{ _btn }} shrink-0 bg-amber-600 hover:bg-amber-700 text-white">Копировать</button>
+    </div>
+</div>
+{% endif %}
+
+<!-- Текущее состояние -->
+<section class="{{ _card }}">
+    <h3 class="{{ _h3 }}">📊 Текущее состояние</h3>
+    {% set _badge = {
+        "ok":      ("Всё в порядке", "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-300"),
+        "warning": ("Есть предупреждения", "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300"),
+        "error":   ("Есть проблемы", "bg-rose-100 text-rose-800 dark:bg-rose-900/50 dark:text-rose-300"),
+    }[status.status] %}
+    <div class="flex flex-wrap items-center gap-3 text-sm">
+        <span class="px-2.5 py-1 rounded-full text-xs font-bold {{ _badge[1] }}">{{ _badge[0] }}</span>
+        <span class="text-gray-600 dark:text-slate-400">
+            Устройств: {{ status.counts.total }}
+            · актуально {{ status.counts.ok }}
+            {% if status.counts.warn %}· давно {{ status.counts.warn }}{% endif %}
+            {% if status.counts.fail %}· <span class="text-rose-600 dark:text-rose-400 font-medium">с ошибкой {{ status.counts.fail }}</span>{% endif %}
+            {% if status.counts.none %}· без бэкапов {{ status.counts.none }}{% endif %}
+            {% if status.counts.disabled %}· отключено {{ status.counts.disabled }}{% endif %}
+        </span>
+    </div>
+    <div class="text-sm text-gray-600 dark:text-slate-400">
+        {% if status.scheduler.enabled %}
+            Следующий плановый бэкап: <span class="font-mono">{{ status.scheduler.next_run or '—' }}</span>
+        {% else %}
+            Автобэкап выключен.
+        {% endif %}
+        {% if status.last_run %}
+            <br>Последний прогон: <span class="font-mono">{{ status.last_run.finished }}</span> — {{ status.last_run.message }}
+        {% endif %}
+    </div>
+    {% if status.problems or status.warnings %}
+    <ul class="text-sm space-y-1">
+        {% for p in status.problems %}<li class="text-rose-700 dark:text-rose-300">✗ {{ p }}</li>{% endfor %}
+        {% for w in status.warnings %}<li class="text-amber-700 dark:text-amber-300">⚠ {{ w }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+</section>
+
+<!-- Адреса -->
+<section class="{{ _card }}">
+    <h3 class="{{ _h3 }}">🔗 Адреса для мониторинга</h3>
+    <div class="space-y-3 text-sm">
+        <div>
+            <div class="font-medium">Проверка доступности — без пароля</div>
+            <div class="text-xs text-gray-500 dark:text-slate-400 mb-1">200 — работает, 503 — планировщик остановлен или нельзя писать в папку данных.</div>
+            <code class="{{ _code }}">{{ health_url }}</code>
+        </div>
+        <div>
+            <div class="font-medium">Полное состояние (JSON) — по токену</div>
+            <div class="text-xs text-gray-500 dark:text-slate-400 mb-1">Устройства, планировщик, последний прогон, список проблем. Для Zabbix.</div>
+            <code class="{{ _code }}">{{ status_url }}</code>
+        </div>
+        <div>
+            <div class="font-medium">Последние события — по токену</div>
+            <code class="{{ _code }}">{{ events_url }}?limit=50</code>
+        </div>
+        <div>
+            <div class="font-medium">Проверка из командной строки</div>
+            <code class="{{ _code }}">curl -H "Authorization: Bearer &lt;токен&gt;" {{ status_url }}</code>
+        </div>
+    </div>
+</section>
+
+<!-- Токен -->
+<section class="{{ _card }}">
+    <h3 class="{{ _h3 }}">🔑 Токен мониторинга</h3>
+    <p class="text-sm text-gray-600 dark:text-slate-400">
+        Отдельный ключ только для чтения состояния — не нужно отдавать системе мониторинга
+        пароль администратора. Передаётся в заголовке <code class="font-mono text-xs">Authorization: Bearer &lt;токен&gt;</code>.
+    </p>
+    <div class="text-sm">
+        {% if token.configured %}
+            Токен создан <span class="font-mono">{{ token.created }}</span>.
+        {% else %}
+            Токен не создан.
+        {% endif %}
+        {% if token.from_env %}
+            <br><span class="text-gray-500 dark:text-slate-400">Также действует токен из переменной окружения NBM_API_TOKEN.</span>
+        {% endif %}
+    </div>
+    <div class="flex flex-wrap gap-2">
+        <form method="POST" action="/settings/monitoring/token"
+              {% if token.configured %}onsubmit="return confirm('Создать новый токен? Прежний перестанет действовать — его придётся заменить в Zabbix.')"{% endif %}>
+            <button type="submit" class="{{ _btn }} bg-brand-600 hover:bg-brand-700 text-white">
+                {{ 'Создать новый токен' if token.configured else 'Создать токен' }}
+            </button>
+        </form>
+        {% if token.configured %}
+        <form method="POST" action="/settings/monitoring/token/revoke"
+              onsubmit="return confirm('Отозвать токен? Мониторинг с ним перестанет получать данные.')">
+            <button type="submit" class="{{ _btn }} border border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950/40">
+                Отозвать
+            </button>
+        </form>
+        {% endif %}
+    </div>
+</section>
+
+<!-- Zabbix -->
+<section class="{{ _card }}">
+    <h3 class="{{ _h3 }}">📈 Zabbix</h3>
+    <ol class="text-sm text-gray-700 dark:text-slate-300 list-decimal pl-5 space-y-1">
+        <li>Скачайте шаблон: <a href="{{ zabbix_template_url }}" download class="text-brand-600 dark:text-brand-400 underline">zbx_nbm_template.json</a> (Zabbix 6.0 и новее).</li>
+        <li>Zabbix: <b>Сбор данных → Шаблоны → Импорт</b>, выберите файл.</li>
+        <li>Привяжите шаблон «Network Backup Manager by HTTP» к узлу сети.</li>
+        <li>В макросах узла задайте <code class="font-mono text-xs">{$NBM.URL}</code> =
+            <code class="font-mono text-xs">{{ base_url }}</code> и
+            <code class="font-mono text-xs">{$NBM.TOKEN}</code> = токен.</li>
+    </ol>
+    <p class="text-xs text-gray-500 dark:text-slate-400">
+        Шаблон опрашивает /api/status раз в 5 минут и сам находит устройства. Триггеры: программа недоступна,
+        планировщик не работает или просрочен, бэкап устройства с ошибкой или давно не было успешного,
+        прогон завершился с ошибками.
+    </p>
+</section>
+
+<!-- События -->
+<section class="{{ _card }}">
+    <h3 class="{{ _h3 }}">🗒 Последние события</h3>
+    {% if recent_events %}
+    <div class="overflow-x-auto -mx-2">
+        <table class="w-full text-sm">
+            <tbody class="divide-y divide-gray-100 dark:divide-slate-800">
+            {% for e in recent_events %}
+                <tr>
+                    <td class="px-2 py-1.5 whitespace-nowrap font-mono text-xs text-gray-500 dark:text-slate-400">{{ e.at }}</td>
+                    <td class="px-2 py-1.5 whitespace-nowrap">
+                        {% if e.level == 'error' %}<span class="text-rose-600 dark:text-rose-400">✗</span>
+                        {% elif e.level == 'warning' %}<span class="text-amber-600 dark:text-amber-400">⚠</span>
+                        {% else %}<span class="text-emerald-600 dark:text-emerald-400">✓</span>{% endif %}
+                    </td>
+                    <td class="px-2 py-1.5 break-words">{{ e.message }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+        <p class="text-sm text-gray-500 dark:text-slate-400">Событий пока нет.</p>
+    {% endif %}
+</section>
+
+<script>
+document.querySelectorAll('[data-copy]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+        var el = document.getElementById(btn.dataset.copy);
+        if (!el) return;
+        var done = function () { btn.textContent = 'Скопировано'; };
+        if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(el.textContent.trim()).then(done);
+        } else {
+            var r = document.createRange(); r.selectNodeContents(el);
+            var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+            try { document.execCommand('copy'); done(); } catch (e) {}
+        }
+    });
+});
+</script>
