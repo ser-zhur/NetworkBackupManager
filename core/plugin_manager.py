@@ -457,6 +457,9 @@ class PluginManager:
 
             self._log_storage_result(backend.id, result)
 
+            if result.ok and ctx.changed:
+                self._emit_config_changed(device_type, router, ctx)
+
         # ---- остальные ----
         for backend in backends:
             if backend.is_authority:
@@ -508,6 +511,40 @@ class PluginManager:
             results,
             backup_path=backup_path,
             device=_event_device(device_type, router),
+        )
+
+    @staticmethod
+    def _emit_config_changed(device_type: str, router: dict, ctx) -> None:
+        """
+        Событие config.changed: что изменилось относительно
+        предыдущей версии. Первая версия устройства — не
+        изменение, события нет. Текст изменений — только
+        подписчикам (_private), не в журнал.
+        """
+        from core import config_diff
+
+        try:
+            change = config_diff.summarize_change(ctx.backup_path, ctx.normalize)
+        except Exception as exc:
+            logging.warning("config_diff: %s", exc, exc_info=True)
+            return
+        if not change:
+            return
+
+        label = device_label(router)
+        files = ", ".join(change["files"])
+        events.emit(
+            events.CONFIG_CHANGED,
+            f"{label}: конфигурация изменилась "
+            f"(+{change['added']} −{change['removed']}; {files})",
+            device_id=ctx.device_id,
+            _private={"diff": change["diff"]},
+            sha=change["sha"],
+            prev_sha=change["prev_sha"],
+            files=change["files"],
+            added=change["added"],
+            removed=change["removed"],
+            **_event_device(device_type, router),
         )
 
     # =====================================================

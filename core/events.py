@@ -44,6 +44,7 @@ BACKUP_RECOVERED = "backup.recovered"      # удалась после неуд�
 STORAGE_FAILED = "storage.failed"          # выгрузка в хранилище с ошибкой
 STORAGE_RECOVERED = "storage.recovered"    # хранилище снова в порядке
 RUN_FINISHED = "run.finished"              # массовый прогон завершён
+CONFIG_CHANGED = "config.changed"          # конфигурация устройства изменилась
 SCHEDULER_ERROR = "scheduler.error"        # сбой планировщика
 
 LEVELS = ("info", "warning", "error")
@@ -110,9 +111,17 @@ def emit(
     message: str,
     level: str = "info",
     device_id: str | None = None,
+    _private: dict | None = None,
     **data,
 ) -> dict:
-    """Записать событие и разослать подписчикам. Не бросает исключений."""
+    """
+    Записать событие и разослать подписчикам. Не бросает исключений.
+
+    _private — данные только для подписчиков (например, текст
+    изменений конфигурации с возможными секретами): в журнал,
+    файл и /api/events не попадают. Подписчик видит их в
+    event["private"].
+    """
     global _seq
     if level not in LEVELS:
         level = "info"
@@ -132,9 +141,10 @@ def emit(
         _append_to_file(event)
         subscribers = list(_subscribers)
 
+    delivered = dict(event, private=dict(_private)) if _private else event
     for fn in subscribers:
         try:
-            fn(event)
+            fn(delivered)
         except Exception as exc:
             logger.error("События: ошибка подписчика %r: %s", fn, exc, exc_info=True)
     return event
