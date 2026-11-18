@@ -37,6 +37,16 @@ def _oauth_tmpdirs():
     return set(glob.glob(os.path.join(tempfile.gettempdir(), "nbm_oauth_*")))
 
 
+def _wizard_answer(question: dict) -> str:
+    """Ответ на вопрос мастера rclone: «нет» для да/нет, иначе по умолчанию.
+    Набор вопросов зависит от версии rclone (1.76 спрашивает ещё
+    config_shared_client_id) — тесты проходят их все."""
+    values = [e["value"] for e in question.get("examples") or []]
+    if "false" in values:
+        return "false"
+    return str(question.get("default") or "")
+
+
 @pytest.fixture
 def cfg_file(tmp_path, monkeypatch):
     path = tmp_path / "config.json"
@@ -59,13 +69,15 @@ def test_pasted_token_runs_rclone_wizard_to_the_end():
     before = _oauth_tmpdirs()       # чужие (например, запущенной службы) не в счёт
     flow = rclone_oauth.start("drive", {}, token=FAKE_TOKEN)
 
+    asked = []
     v = flow.view()
-    assert v["state"] == "question"                      # общий диск?
-    assert v["question"]["name"] == "config_change_team_drive"
-    assert [e["value"] for e in v["question"]["examples"]] == ["true", "false"]
-
-    flow.answer("false")
-    v = flow.view()
+    while v["state"] == "question":
+        asked.append(v["question"]["name"])
+        if v["question"]["name"] == "config_change_team_drive":   # общий диск?
+            assert [e["value"] for e in v["question"]["examples"]] == ["true", "false"]
+        flow.answer(_wizard_answer(v["question"]))
+        v = flow.view()
+    assert "config_change_team_drive" in asked
     assert v["state"] == "done"
     assert json.loads(flow.result["token"])["refresh_token"] == "fake-r"
     assert _oauth_tmpdirs() <= before                    # временный конфиг удалён
@@ -164,7 +176,9 @@ def test_api_flow_and_save_with_login_result(client):
     s, c = client
     v = c.post("/api/oauth/start", json={"type": "drive", "options": {}, "token": FAKE_TOKEN}).json()
     assert v["state"] == "question"
-    v = c.post(f"/api/oauth/{v['id']}/answer", json={"result": "false"}).json()
+    while v["state"] == "question":
+        v = c.post(f"/api/oauth/{v['id']}/answer",
+                   json={"result": _wizard_answer(v["question"])}).json()
     assert v["state"] == "done"
 
     r = c.post("/settings/storage/save", data={

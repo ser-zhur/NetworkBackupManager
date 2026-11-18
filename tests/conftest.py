@@ -6,10 +6,35 @@
 #
 # =========================================================
 
+import atexit
+import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
+
+
+# ---- Папка данных тестов ----
+#
+# До импорта core.*: тесты не должны трогать рабочие data/,
+# logs/, backups/ (web.server при импорте загружает плагины
+# и устройства, логгер пишет в logs/app.log).
+
+_TEST_HOME = Path(tempfile.mkdtemp(prefix="nbm_test_home_"))
+(_TEST_HOME / "backups").mkdir()
+os.environ["NBM_HOME"] = str(_TEST_HOME)
+
+
+def _remove_test_home():
+    # Сначала закрыть logs/app.log — иначе Windows не даст удалить
+    import logging
+    logging.shutdown()
+    shutil.rmtree(_TEST_HOME, ignore_errors=True)
+
+
+atexit.register(_remove_test_home)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent

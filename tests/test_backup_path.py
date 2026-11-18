@@ -3,7 +3,7 @@
 # =========================================================
 #
 # Единое правило backup_path: относительный путь всегда
-# разрешается от BASE_DIR — в загрузке, формах, плагинах.
+# разрешается от HOME_DIR (папка данных) — в загрузке, формах, плагинах.
 #
 # =========================================================
 
@@ -11,12 +11,12 @@ from pathlib import Path
 
 import pytest
 
-from core.context import BASE_DIR, resolve_backup_path
+from core.context import HOME_DIR, resolve_backup_path
 
 
-def test_relative_is_resolved_from_base_dir():
+def test_relative_is_resolved_from_home_dir():
     assert resolve_backup_path("Backups/dev1") == (
-        BASE_DIR / "Backups" / "dev1"
+        HOME_DIR / "Backups" / "dev1"
     ).resolve()
 
 
@@ -32,7 +32,7 @@ def test_whitespace_is_stripped():
 
 def test_result_does_not_depend_on_cwd(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    assert resolve_backup_path("Backups/dev1").is_relative_to(BASE_DIR)
+    assert resolve_backup_path("Backups/dev1").is_relative_to(HOME_DIR)
 
 
 def test_mass_backup_passes_absolute_path_to_plugin(tmp_path, monkeypatch):
@@ -59,7 +59,7 @@ def test_mass_backup_passes_absolute_path_to_plugin(tmp_path, monkeypatch):
 
     pm.run_all_backups()
 
-    assert received == [str((BASE_DIR / "Backups" / "_nbm_test").resolve())]
+    assert received == [str((HOME_DIR / "Backups" / "_nbm_test").resolve())]
     assert Path(received[0]).is_absolute()
 
 
@@ -90,7 +90,7 @@ def test_save_router_stores_absolute_path(monkeypatch):
         assert r.status_code == 303
         assert len(routers) == before + 1
         assert routers[-1]["backup_path"] == str(
-            (BASE_DIR / "Backups" / "_nbm_test_rel").resolve()
+            (HOME_DIR / "Backups" / "_nbm_test_rel").resolve()
         )
     finally:
         del routers[before:]
