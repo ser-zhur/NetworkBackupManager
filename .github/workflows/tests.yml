@@ -2,10 +2,10 @@
 # Тесты на Windows и Linux при каждом push и pull request
 # =========================================================
 #
-# Linux пока помечен continue-on-error: приложение ещё не
-# переведено на Linux (служба, пути, регистр имён плагинов —
-# шаг «слой платформы»). Ошибки там видны в отчёте, но не
-# делают весь прогон красным. Убрать после переноса.
+# rclone скачивается на временную машину GitHub — без него
+# тесты внешних хранилищ и OAuth пропускаются. Версия
+# закреплена (RCLONE_VERSION), чтобы прогоны не менялись
+# сами по себе с выходом новой rclone.
 #
 # =========================================================
 
@@ -16,11 +16,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  RCLONE_VERSION: v1.72.0
+
 jobs:
   test:
     name: ${{ matrix.os }} / Python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.os == 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -28,9 +30,9 @@ jobs:
         python: ["3.14"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
           cache: pip
@@ -43,8 +45,24 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
 
-      - name: Version
-        run: python main.py --version
+      - name: Install rclone
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Windows) platform=windows-amd64 ;;
+            *)       platform=linux-amd64 ;;
+          esac
+          name="rclone-${RCLONE_VERSION}-${platform}"
+          curl -fsSL -o "$RUNNER_TEMP/rclone.zip" \
+            "https://downloads.rclone.org/${RCLONE_VERSION}/${name}.zip"
+          python -m zipfile -e "$RUNNER_TEMP/rclone.zip" "$RUNNER_TEMP"
+          chmod +x "$RUNNER_TEMP/$name/rclone" 2>/dev/null || true
+          echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
+
+      - name: Versions
+        run: |
+          python main.py --version
+          rclone version
 
       - name: Tests
-        run: python -m pytest -q
+        run: python -m pytest -q -rs
