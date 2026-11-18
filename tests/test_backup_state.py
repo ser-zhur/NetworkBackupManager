@@ -82,8 +82,9 @@ class _FakePM:
         self.runs = 0
         self.mass_seen_during_run = None
 
-    def run_all_backups(self):
+    def run_all_backups(self, source="manual"):
         self.runs += 1
+        self.source = source
         # Во время планового прогона слот должен быть занят
         self.mass_seen_during_run = backup_state.get_backup_status()["mass"]
 

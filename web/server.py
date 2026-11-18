@@ -89,7 +89,7 @@ from core.context import (
 )
 from core.version import APP_NAME, __version__
 from core import devices as device_store
-from core import device_status
+from core import device_status, events
 
 from core.logger import (
     setup_logging,
@@ -287,6 +287,12 @@ async def lifespan(
         )
 
     scheduler.start()
+
+    events.emit(
+        events.APP_STARTED,
+        f"{APP_NAME} {__version__} запущен",
+        version=__version__,
+    )
 
     try:
 

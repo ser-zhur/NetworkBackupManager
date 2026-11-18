@@ -2,7 +2,7 @@ import logging
 import threading
 from datetime import datetime, timedelta
 
-from core import backup_state
+from core import backup_state, events
 from core.context import (
     SCHEDULER_FILE,
     load_json,
@@ -140,7 +140,7 @@ class BackupScheduler:
                                 )
 
                                 if self.plugin_manager:
-                                    self.plugin_manager.run_all_backups()
+                                    self.plugin_manager.run_all_backups(source="schedule")
 
                                 self.config["last_run"] = (
                                     datetime.now().strftime(
@@ -182,6 +182,11 @@ class BackupScheduler:
                             except Exception as e:
                                 logging.error(
                                     f"❌ Ошибка автоматического бэкапа: {e}"
+                                )
+                                events.emit(
+                                    events.SCHEDULER_ERROR,
+                                    f"Плановый бэкап прерван: {e}",
+                                    level="error",
                                 )
 
                             finally:

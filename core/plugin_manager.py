@@ -18,6 +18,7 @@ from pathlib import Path
 from core import backup_state
 from core import devices as device_store
 from core import device_status
+from core import events
 from core.secure_storage import get_secure_storage
 from core.context import (
     PLUGINS_DIR,
@@ -44,6 +45,22 @@ def is_device_disabled(router: dict) -> bool:
     не применяется — история хранится как есть.
     """
     return bool(router.get("disabled"))
+
+
+def device_label(router: dict) -> str:
+    """Имя устройства для сообщений: имя, иначе адрес."""
+    return (
+        router.get("name") or router.get("host") or router.get("ip")
+        or router.get("id") or "?"
+    )
+
+
+def _event_device(device_type: str, router: dict) -> dict:
+    return {
+        "name": router.get("name") or "",
+        "host": router.get("host") or router.get("ip") or "",
+        "type": device_type,
+    }
 
 
 # Lock для атомарного read-modify-write data/state.json.
@@ -368,6 +385,7 @@ class PluginManager:
                 self.router_id(router),
                 results,
                 backup_path=backup_path,
+                device=_event_device(device_type, router),
             )
             logging.info(
                 "storage: изменений нет, выгрузка не требуется (%s)",
@@ -489,6 +507,7 @@ class PluginManager:
             ctx.device_id,
             results,
             backup_path=backup_path,
+            device=_event_device(device_type, router),
         )
 
     # =====================================================
@@ -810,6 +829,7 @@ class PluginManager:
     device_id: str,
     results: dict,
     backup_path=None,
+    device: dict | None = None,
     ) -> None:
         """
         Обновляет data/state.json по одному устройству.
@@ -858,6 +878,22 @@ class PluginManager:
             # attempt (record_attempt) — исход последней попытки.
             prev = state.get(device_id)
             entry = dict(prev) if isinstance(prev, dict) else {}
+            # Хранилища, чья последняя НАСТОЯЩАЯ выгрузка упала.
+            # «Пропущено» (нет изменений) не меняет список: оно
+            # не доказывает, что хранилище снова работает.
+            failing_before = set(entry.get("storage_failing") or [])
+            failing = set(failing_before)
+            for bid, r in results.items():
+                if r.details and r.details.get("skipped"):
+                    continue
+                if r.ok:
+                    failing.discard(bid)
+                else:
+                    failing.add(bid)
+            if failing:
+                entry["storage_failing"] = sorted(failing)
+            else:
+                entry.pop("storage_failing", None)
             entry.update({
                 "last_run": datetime.now().strftime(
                     "%Y-%m-%d %H:%M:%S"
@@ -886,7 +922,27 @@ class PluginManager:
                 logging.error(
                     "storage: не удалось сохранить state.json: %s",
                     exc,
-                )    
+                )
+
+        # ---- События: хранилище с ошибкой / снова в порядке ----
+        info = dict(device or {})
+        label = info.get("name") or info.get("host") or device_id
+        for bid, r in results.items():
+            if r.details and r.details.get("skipped"):
+                continue
+            if not r.ok:
+                events.emit(
+                    events.STORAGE_FAILED,
+                    f"{label}: хранилище {bid} — {r.message or 'ошибка'}",
+                    level="error", device_id=device_id,
+                    storage=bid, error=r.message or "", **info,
+                )
+            elif bid in failing_before:
+                events.emit(
+                    events.STORAGE_RECOVERED,
+                    f"{label}: хранилище {bid} снова в порядке",
+                    device_id=device_id, storage=bid, **info,
+                )
 
     @staticmethod
     def record_attempt(
@@ -894,16 +950,19 @@ class PluginManager:
         ok: bool,
         error: str = "",
         duration_s: float | None = None,
-    ) -> None:
+    ) -> int:
         """
         Исход попытки бэкапа → state.json (attempt): время,
         ошибка, неудач подряд. Пишется при КАЖДОМ запуске —
         и удачном, и упавшем (см. core/device_status.py).
+
+        Возвращает число неудач подряд ДО этой попытки.
         """
         with _STATE_LOCK:
             state = load_json(STATE_FILE, {})
             if not isinstance(state, dict):
                 state = {}
+            prev = device_status.summarize(state.get(device_id))
             state[device_id] = device_status.record_attempt(
                 state.get(device_id), ok, error, duration_s,
             )
@@ -914,6 +973,28 @@ class PluginManager:
                     "state: не удалось сохранить исход бэкапа %s: %s",
                     device_id, exc,
                 )
+        return prev["failures"]
+
+    @staticmethod
+    def _emit_backup_event(
+        device_type, router, device_id, ok, error, prev_failures,
+    ) -> None:
+        label = device_label(router)
+        info = _event_device(device_type, router)
+        if not ok:
+            events.emit(
+                events.BACKUP_FAILED,
+                f"{label}: бэкап не удался — {error}",
+                level="error", device_id=device_id,
+                error=error, failures=prev_failures + 1, **info,
+            )
+        elif prev_failures:
+            events.emit(
+                events.BACKUP_RECOVERED,
+                f"{label}: бэкап снова успешен "
+                f"(после неудач подряд: {prev_failures})",
+                device_id=device_id, after_failures=prev_failures, **info,
+            )
 
     # =====================================================
     # BACKUP ONE DEVICE
@@ -1025,7 +1106,13 @@ class PluginManager:
         finally:
             duration = time.monotonic() - started
             try:
-                self.record_attempt(device_id, ok, error, duration)
+                prev_failures = self.record_attempt(
+                    device_id, ok, error, duration,
+                )
+                self._emit_backup_event(
+                    device_type, original, device_id, ok, error,
+                    prev_failures,
+                )
             finally:
                 if debug_connection:
                     logging.info(
@@ -1127,12 +1214,14 @@ class PluginManager:
     # RUN ALL BACKUPS
     # =====================================================
 
-    def run_all_backups(self) -> dict:
+    def run_all_backups(self, source: str = "manual") -> dict:
         """
         Параллельный запуск бэкапов для всех устройств.
 
-        Возвращает сводку: started, finished, total, success,
-        failed, timed_out, skipped_disabled.
+        source — кто запустил: "manual" (кнопка) или "schedule".
+        Возвращает сводку: source, started, finished, total,
+        success, failed, timed_out, skipped_disabled; она же —
+        в событии run.finished.
         """
 
         # Читаем лимиты из config.json, чтобы настройки из UI работали.
@@ -1179,6 +1268,7 @@ class PluginManager:
             )
 
         summary = {
+            "source": source,
             "started": device_status.now_str(),
             "finished": None,
             "total": total,
@@ -1314,6 +1404,13 @@ class PluginManager:
 
         summary.update(
             finished=device_status.now_str(), success=success, failed=failed,
+        )
+        text = f"Прогон завершён: успешно {success} из {total}"
+        if failed:
+            text += f", ошибок {failed}"
+        events.emit(
+            events.RUN_FINISHED, text,
+            level="error" if failed else "info", **summary,
         )
         return summary
 
