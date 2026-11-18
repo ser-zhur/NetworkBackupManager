@@ -282,7 +282,7 @@ def _backup_config(stamp: str) -> str | None:
 def migrate(plugin_manager, storage_manager) -> dict | None:
     """
     Перенос старых схем хранения настроек хранилищ.
-    Идемпотентно. Копии: routers.json.bak-<дата>,
+    Идемпотентно. Копии: devices.json.bak-<дата>,
     config.json.bak-<дата>.
 
     Возвращает отчёт или None, если делать было нечего.
@@ -331,22 +331,23 @@ def migrate(plugin_manager, storage_manager) -> dict | None:
             storage_manager.reload_remotes()
 
     with plugin_manager.routers_lock:
-        for device_type, pd in plugin_manager._plugins.items():
-            changed = [r for r in pd.get("routers", []) if strip_device_storage(r)]
-            if not changed:
-                continue
+        stripped = sum(
+            1
+            for pd in plugin_manager._plugins.values()
+            for r in pd.get("routers", [])
+            if strip_device_storage(r)
+        )
+        if stripped:
+            from core.context import DEVICES_FILE
 
-            plugin_dir = pd.get("dir")
-            if plugin_dir:
-                src = Path(plugin_dir) / "routers.json"
-                if src.exists():
-                    dst = src.with_name(f"routers.json.bak-{stamp}")
-                    if not dst.exists():
-                        shutil.copy2(src, dst)
-                        report["backups"].append(str(dst))
+            if DEVICES_FILE.exists():
+                dst = DEVICES_FILE.with_name(f"devices.json.bak-{stamp}")
+                if not dst.exists():
+                    shutil.copy2(DEVICES_FILE, dst)
+                    report["backups"].append(str(dst))
 
-            plugin_manager.save_routers(device_type)
-            report["devices_stripped"] += len(changed)
+            plugin_manager.save_routers()
+            report["devices_stripped"] += stripped
 
     if report["created_remotes"] or report["devices_stripped"] or report["backups"]:
         logger.info("storage: перенос настроек хранилищ: %s", report)

@@ -62,6 +62,10 @@ SCHEDULER_FILE = DATA_DIR / "scheduler.json"
 STATE_FILE = DATA_DIR / "state.json"
 AUTH_FILE = DATA_DIR / "auth.json"
 
+# Все устройства (core/devices.py) и их SSH-ключи
+DEVICES_FILE = DATA_DIR / "devices.json"
+KEYS_DIR = DATA_DIR / "keys"
+
 # Ключ шифрования паролей и секретов (Fernet).
 # Раньше лежал в корне программы — см. secure_storage.
 SECRET_KEY_FILE = DATA_DIR / "secret.key"

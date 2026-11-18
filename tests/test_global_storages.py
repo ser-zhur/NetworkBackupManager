@@ -126,19 +126,20 @@ def _old_router(host, dir_, *, enabled=True):
     }
 
 
-def test_migrate_from_per_device_settings(cfg_file, tmp_path):
+def test_migrate_from_per_device_settings(cfg_file, tmp_path, monkeypatch):
+    from core import context, devices
     from core.plugin_manager import PluginManager
 
-    plugin_dir = tmp_path / "Plugin"
-    plugin_dir.mkdir()
+    devices_file = tmp_path / "devices.json"
+    monkeypatch.setattr(context, "DEVICES_FILE", devices_file)
     routers = [_old_router("10.0.0.1", "/A"), _old_router("10.0.0.2", "/B")]
-    (plugin_dir / "routers.json").write_text(json.dumps(routers), encoding="utf-8")
-    original = (plugin_dir / "routers.json").read_bytes()
+    devices.save_devices([{"type": "fake", **r} for r in routers])
+    original = devices_file.read_bytes()
 
     sm = StorageManager()
     sm.discover()
     pm = PluginManager(storage_manager=sm)
-    pm._plugins = {"fake": {"func": None, "routers": routers, "dir": str(plugin_dir)}}
+    pm._plugins = {"fake": {"func": None, "routers": routers, "dir": str(tmp_path)}}
 
     report = global_config.migrate(pm, sm)
 
@@ -149,9 +150,9 @@ def test_migrate_from_per_device_settings(cfg_file, tmp_path):
     assert json.loads(cfg_file.read_text(encoding="utf-8"))["port"] == 8080
     assert sm.get("webdav") is not None                      # backend перечитан
 
-    saved = json.loads((plugin_dir / "routers.json").read_text(encoding="utf-8"))
+    saved = devices.load_devices()
     assert saved[0]["storage"]["webdav"] == {"enabled": True}
-    bak = list(plugin_dir.glob("routers.json.bak-*"))
+    bak = list(tmp_path.glob("devices.json.bak-*"))
     assert len(bak) == 1 and bak[0].read_bytes() == original
 
     assert global_config.migrate(pm, sm) is None             # повторно — ничего

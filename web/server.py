@@ -88,6 +88,7 @@ from core.context import (
     resolve_backup_path,
 )
 from core.version import APP_NAME, __version__
+from core import devices as device_store
 
 from core.logger import (
     setup_logging,
@@ -273,8 +274,8 @@ async def lifespan(
     invalidate_status_cache()
 
     # Однократный перенос настроек хранилищ из устройств в
-    # общие (config.json). Идемпотентен; копия routers.json —
-    # routers.json.bak-<дата> рядом с оригиналом.
+    # общие (config.json). Идемпотентен; копия devices.json —
+    # devices.json.bak-<дата> рядом с оригиналом.
     #
     # Здесь, а не при импорте модуля: импорт (тесты, утилиты)
     # не должен менять рабочие данные.
@@ -1395,7 +1396,7 @@ def _build_device_payload(
 
     # Можем ли автоматически удалить SSH-ключ?
     # Только если он задан относительным путём (лежит
-    # внутри plugins/<type>/) И не используется другими
+    # внутри data/keys/<type>/) И не используется другими
     # устройствами того же типа.
     _key_name = (
         router.get("ssh_key")
@@ -3605,8 +3606,10 @@ def run_backup(
             ]
         )
 
+    device_store.prepare_key_path(device_type, secure_router)
+
     # Плагин и git получают абсолютный путь по общему
-    # правилу (относительный — от BASE_DIR), а не разрешают
+    # правилу (относительный — от HOME_DIR), а не разрешают
     # его каждый по-своему.
     if secure_router.get("backup_path"):
         secure_router["backup_path"] = str(
@@ -4954,6 +4957,8 @@ async def update_router(
         for field in plugin_manager._SERVICE_FIELDS:
             if field in old_router:
                 updated_router[field] = old_router[field]
+        if "id" in old_router:
+            updated_router["id"] = old_router["id"]
 
         _check_storage_conflicts(
             device_type, updated_router, exclude=old_router,
@@ -5426,32 +5431,10 @@ def _local_key_path(device_type: str, key_name: str) -> Path | None:
     Абсолютный путь к локальному SSH-ключу устройства или
     None, если удалять его нельзя.
 
-    Ключ «локальный» — относительное имя внутри каталога
-    плагина. Путь с '../' или указывающий на код/конфиг
-    плагина (*.py, *.json) — не ключ: None.
+    Ключ «локальный» — относительное имя внутри
+    data/keys/<type>/. Путь с '../' — не ключ: None.
     """
-    if not key_name or Path(key_name).is_absolute():
-        return None
-
-    plugin = (
-        plugin_manager._plugins.get(device_type)
-        if plugin_manager else None
-    )
-    plugin_dir = Path(
-        (plugin or {}).get("dir") or (PLUGINS_DIR / device_type)
-    ).resolve()
-
-    try:
-        key_path = (plugin_dir / key_name).resolve()
-    except OSError:
-        return None
-
-    if not key_path.is_relative_to(plugin_dir) or key_path == plugin_dir:
-        return None
-    if key_path.suffix.lower() in (".py", ".json", ".pyc"):
-        return None
-
-    return key_path
+    return device_store.local_key_path(device_type, key_name)
 
 
 @app.post("/delete-device/{device_type}/{index}")
@@ -5537,7 +5520,7 @@ async def delete_device(
 
     # Ключ можно удалить только если:
     #   • запрошено пользователем (remove_key);
-    #   • путь относительный (внутри plugins/<type>/);
+    #   • путь относительный (внутри data/keys/<type>/);
     #   • он не используется другими устройствами.
     key_name = (
         router.get("ssh_key")

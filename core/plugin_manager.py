@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from core import backup_state
+from core import devices as device_store
 from core.secure_storage import get_secure_storage
 from core.context import (
     PLUGINS_DIR,
@@ -53,6 +54,12 @@ class PluginManager:
     def __init__(self, storage_manager=None):
         self.plugins_dir = PLUGINS_DIR
         self._plugins = {}
+        # Устройства типов, чей плагин не загрузился: не теряем
+        # их при сохранении devices.json.
+        self._orphan_devices: list[dict] = []
+        # Миграция не удалась — список в памяти неполный,
+        # записывать devices.json нельзя (затёр бы устройства).
+        self._devices_readonly = False
         # Явно тот же ключ, что и у web/server.py.
         self.storage = get_secure_storage()
         self.storage_manager = storage_manager
@@ -67,10 +74,13 @@ class PluginManager:
     # ROUTERS.JSON
     # =====================================================
 
-    def save_routers(self, device_type: str) -> None:
+    def save_routers(self, device_type: str | None = None) -> None:
         """
-        Атомарно сохраняет routers.json плагина device_type
-        из текущего списка в памяти.
+        Атомарно сохраняет data/devices.json — все устройства
+        из списков в памяти (device_type не важен: файл один;
+        параметр оставлен для вызывающего кода).
+
+        Устройствам без id выдаётся id (новое устройство).
 
         • под routers_lock — параллельные записи (веб +
           потоки бэкапа) не перемешиваются;
@@ -81,19 +91,78 @@ class PluginManager:
         как сообщить пользователю.
         """
         with self.routers_lock:
-            plugin = self._plugins.get(device_type)
-            if plugin is None:
+            if device_type is not None and device_type not in self._plugins:
                 raise KeyError(f"Плагин не найден: {device_type}")
-
-            plugin_dir = plugin.get("dir")
-            if not plugin_dir:
-                raise FileNotFoundError(
-                    f"Каталог плагина {device_type} не известен"
+            if self._devices_readonly:
+                raise RuntimeError(
+                    "Устройства не перенесены из папок плагинов (см. лог) — "
+                    "сохранение отключено, чтобы не потерять их"
                 )
 
-            save_json(
-                Path(plugin_dir) / "routers.json",
-                copy.deepcopy(plugin["routers"]),
+            all_routers = [
+                r for pd in self._plugins.values() for r in pd["routers"]
+            ]
+            device_store.ensure_ids(all_routers + self._orphan_devices)
+
+            devices = []
+            for dtype, pd in self._plugins.items():
+                for router in pd["routers"]:
+                    dev = copy.deepcopy(router)
+                    dev.pop("type", None)
+                    devices.append({"id": dev.pop("id"), "type": dtype, **dev})
+            devices += copy.deepcopy(self._orphan_devices)
+
+            device_store.save_devices(devices)
+
+    def load_devices(self) -> None:
+        """
+        data/devices.json → списки устройств плагинов в памяти
+        (перед этим — разовая миграция из plugins/*/routers.json).
+        """
+        self._devices_readonly = False
+        try:
+            device_store.migrate_from_plugins(self.plugins_dir)
+        except Exception:
+            logging.exception("Миграция устройств из папок плагинов не удалась")
+            from core import context
+            if not context.DEVICES_FILE.exists():
+                self._devices_readonly = True
+
+        with self.routers_lock:
+            for pd in self._plugins.values():
+                pd["routers"] = []
+            self._orphan_devices = []
+
+            devices = device_store.load_devices()
+            need_save = device_store.ensure_ids(devices)
+
+            for dev in devices:
+                dtype = str(dev.get("type", "")).lower()
+                plugin = self._plugins.get(dtype)
+                if plugin is None:
+                    self._orphan_devices.append(dev)
+                    continue
+                router = {k: v for k, v in dev.items() if k != "type"}
+                # Приводим относительные пути бэкапов к HOME_DIR
+                if router.get("backup_path"):
+                    router["backup_path"] = str(
+                        resolve_backup_path(router["backup_path"])
+                    )
+                plugin["routers"].append(router)
+
+            if self._orphan_devices:
+                logging.warning(
+                    "Устройства без загруженного плагина (сохраняются, "
+                    "но не обслуживаются): %s",
+                    ", ".join(sorted({d["type"] for d in self._orphan_devices})),
+                )
+
+            if need_save:
+                self.save_routers()
+
+        for dtype, pd in self._plugins.items():
+            logging.info(
+                "🔌 Плагин %s: устройств %s", dtype, len(pd["routers"]),
             )
 
     @staticmethod
@@ -117,10 +186,12 @@ class PluginManager:
     def discover_and_load_plugins(self):
         """Автоматический поиск и загрузка плагинов из папки plugins"""
 
-        if not os.path.exists(self.plugins_dir):
-            return
+        items = (
+            os.listdir(self.plugins_dir)
+            if os.path.exists(self.plugins_dir) else []
+        )
 
-        for item in os.listdir(self.plugins_dir):
+        for item in items:
 
             item_path = os.path.join(self.plugins_dir, item)
 
@@ -146,21 +217,6 @@ class PluginManager:
                 if not hasattr(module, "run_backup"):
                     continue
 
-                routers_path = os.path.join(item_path, "routers.json")
-                routers_data = []
-
-                if os.path.exists(routers_path):
-                    with open(routers_path, "r", encoding="utf-8") as f:
-                        routers_data = json.load(f)
-
-                    # Приводим относительные пути бэкапов к HOME_DIR
-                    for router in routers_data:
-                        backup_path = router.get("backup_path")
-                        if backup_path:
-                            router["backup_path"] = str(
-                                resolve_backup_path(backup_path)
-                            )
-
                 # Ищем нормализатор, объявленный плагином.
                 # Если его нет — используем identity.
                 normalize_fn = getattr(
@@ -180,18 +236,13 @@ class PluginManager:
 
                 self._plugins[device_type] = {
                     "func": module.run_backup,
-                    "routers": routers_data,
+                    "routers": [],
                     "normalize": normalize_fn,
-                    # Реальный каталог (с исходным регистром
-                    # имени) — для save_routers().
+                    # Реальный каталог (с исходным регистром имени)
                     "dir": item_path,
                 }
 
-                logging.info(
-                    "🔌 Загружен плагин: %s (устройств: %s)",
-                    device_type,
-                    len(routers_data),
-                )
+                logging.info("🔌 Загружен плагин: %s", device_type)
 
             except Exception as e:
                 logging.error(
@@ -199,6 +250,8 @@ class PluginManager:
                     item,
                     e,
                 )
+
+        self.load_devices()
 
     # =====================================================
     # STORAGE HELPERS
@@ -1006,6 +1059,7 @@ class PluginManager:
                     secure_router["ssh_pass"] = self.storage.decrypt(
                         secure_router["ssh_pass"]
                     )
+                device_store.prepare_key_path(device_type, secure_router)
 
                 logging.info("🔄 Старт бэкапа: %s", ip)
 

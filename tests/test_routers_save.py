@@ -2,11 +2,11 @@
 # tests/test_routers_save.py
 # =========================================================
 #
-# Запись routers.json: атомарность, сериализация,
+# Запись data/devices.json: атомарность, сериализация, id,
 # привязка служебных полей к нужному устройству.
 #
-# Все тесты работают во временном каталоге — реальные
-# plugins/*/routers.json не трогаются.
+# Все тесты работают во временном каталоге (DEVICES_FILE
+# подменён).
 #
 # =========================================================
 
@@ -17,9 +17,11 @@ import pytest
 
 
 @pytest.fixture
-def pm(tmp_path):
+def pm(tmp_path, monkeypatch):
+    from core import context
     from core.plugin_manager import PluginManager
 
+    monkeypatch.setattr(context, "DEVICES_FILE", tmp_path / "devices.json")
     manager = PluginManager()
     plugin_dir = tmp_path / "Mikrotik"
     plugin_dir.mkdir()
@@ -36,16 +38,66 @@ def pm(tmp_path):
 
 
 def _read(pm):
-    path = pm._plugins["mikrotik"]["dir"] + "/routers.json"
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+    from core import context
+
+    with open(context.DEVICES_FILE, encoding="utf-8") as f:
+        devices = json.load(f)["devices"]
+    assert all(d.pop("type") == "mikrotik" for d in devices)
+    return devices
 
 
 def test_save_routers_writes_list_without_tmp(pm, tmp_path):
     pm.save_routers("mikrotik")
 
     assert [r["name"] for r in _read(pm)] == ["A", "B", "C"]
-    assert list((tmp_path / "Mikrotik").glob("*.tmp")) == []
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_save_assigns_stable_ids(pm):
+    from core import devices
+
+    routers = pm._plugins["mikrotik"]["routers"]
+    pm.save_routers()
+    ids = [r["id"] for r in routers]
+    assert all(devices.is_valid_id(i) for i in ids) and len(set(ids)) == 3
+    assert [d["id"] for d in _read(pm)] == ids
+
+    routers.pop(0)
+    routers.append({"host": "10.0.0.4", "name": "D"})
+    pm.save_routers()
+    assert [r["id"] for r in routers[:2]] == ids[1:]      # не сдвинулись
+    assert routers[2]["id"] not in ids
+
+
+def test_load_devices_roundtrip_keeps_unknown_types(pm, tmp_path):
+    from core import context, devices
+
+    devices.save_devices([
+        {"id": "aaaaaaaaaaaa", "type": "mikrotik", "name": "A", "backup_path": "backups/a"},
+        {"id": "bbbbbbbbbbbb", "type": "gone", "name": "X"},
+        {"type": "mikrotik", "name": "без id"},
+    ])
+    pm.load_devices()
+
+    routers = pm._plugins["mikrotik"]["routers"]
+    assert [r["name"] for r in routers] == ["A", "без id"]
+    assert routers[0]["backup_path"] == str((context.HOME_DIR / "backups" / "a").resolve())
+    assert devices.is_valid_id(routers[1]["id"])          # выдан и сохранён
+    saved = json.loads(context.DEVICES_FILE.read_text(encoding="utf-8"))["devices"]
+    assert {d["id"]: d["type"] for d in saved}["bbbbbbbbbbbb"] == "gone"
+    assert routers[1]["id"] in {d["id"] for d in saved}
+
+
+def test_failed_migration_blocks_saving(pm, monkeypatch):
+    from core import devices
+
+    def fail(*a):
+        raise OSError("нет доступа")
+
+    monkeypatch.setattr(devices, "migrate_from_plugins", fail)
+    pm.load_devices()
+    with pytest.raises(RuntimeError):
+        pm.save_routers()
 
 
 def test_save_routers_unknown_plugin_raises(pm):
@@ -130,8 +182,14 @@ def web(monkeypatch):
     if not s.plugin_manager or not s.plugin_manager._plugins:
         pytest.skip("нет загруженных плагинов")
 
-    def boom(device_type):
+    def boom(*args):
         raise OSError("диск недоступен")
+
+    # Своё устройство: тесты не зависят от данных на машине
+    device_type = next(iter(s.plugin_manager._plugins))
+    routers = s.plugin_manager._plugins[device_type]["routers"]
+    fake = {"id": "0123456789ab", "host": "10.9.9.9", "name": "Тест"}
+    routers.insert(0, fake)
 
     monkeypatch.setattr(s.plugin_manager, "save_routers", boom)
     s.app.dependency_overrides[s.require_auth] = lambda: "test"
@@ -139,14 +197,14 @@ def web(monkeypatch):
         yield s, TestClient(s.app, raise_server_exceptions=False)
     finally:
         s.app.dependency_overrides.clear()
+        if fake in routers:
+            routers.remove(fake)
 
 
 def test_toggle_pin_rolls_back_on_save_error(web):
     s, client = web
     device_type = next(iter(s.plugin_manager._plugins))
     routers = s.plugin_manager._plugins[device_type]["routers"]
-    if not routers:
-        pytest.skip("нет устройств")
 
     before = routers[0].get("pinned")
     r = client.post(f"/toggle-pin/{device_type}/0")
@@ -159,8 +217,6 @@ def test_delete_device_rolls_back_on_save_error(web):
     s, client = web
     device_type = next(iter(s.plugin_manager._plugins))
     routers = s.plugin_manager._plugins[device_type]["routers"]
-    if not routers:
-        pytest.skip("нет устройств")
 
     snapshot = list(routers)
     r = client.post(f"/delete-device/{device_type}/0", data={})

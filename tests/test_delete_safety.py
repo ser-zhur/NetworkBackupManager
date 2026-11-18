@@ -21,8 +21,13 @@ def fake_devices(monkeypatch, tmp_path):
     if s.plugin_manager is None:
         pytest.skip("PluginManager не загружен")
 
+    from core import context
+
     plugin_dir = tmp_path / "FakePlugin"
     plugin_dir.mkdir()
+    monkeypatch.setattr(context, "KEYS_DIR", tmp_path / "keys")
+    key_dir = tmp_path / "keys" / "fake"
+    key_dir.mkdir(parents=True)
     plugins = {
         "fake": {
             "func": lambda r: [],
@@ -39,6 +44,7 @@ def fake_devices(monkeypatch, tmp_path):
         return router
 
     add.plugin_dir = plugin_dir
+    add.key_dir = key_dir
     return add
 
 
@@ -109,12 +115,12 @@ def test_own_dir_is_safe_when_excluded(fake_devices, tmp_path):
 # _local_key_path
 # =========================================================
 
-def test_key_inside_plugin_dir(fake_devices):
+def test_key_inside_keys_dir(fake_devices):
     assert s._local_key_path("fake", "id_rsa.key") == (
-        fake_devices.plugin_dir / "id_rsa.key"
+        fake_devices.key_dir / "id_rsa.key"
     ).resolve()
-    assert s._local_key_path("fake", "keys/../id.key") == (
-        fake_devices.plugin_dir / "id.key"
+    assert s._local_key_path("fake", "sub/../id.key") == (
+        fake_devices.key_dir / "id.key"
     ).resolve()
 
 
@@ -123,8 +129,6 @@ def test_key_inside_plugin_dir(fake_devices):
     "../../secret.key",
     "..",
     "",
-    "plugin.py",
-    "routers.json",
 ])
 def test_key_outside_or_not_a_key_rejected(fake_devices, name):
     assert s._local_key_path("fake", name) is None
@@ -146,7 +150,7 @@ def client(monkeypatch, tmp_path, fake_devices):
     state = tmp_path / "state.json"
     state.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(s, "STATE_FILE", state)
-    monkeypatch.setattr(s.plugin_manager, "save_routers", lambda t: None)
+    monkeypatch.setattr(s.plugin_manager, "save_routers", lambda *a: None)
     s.app.dependency_overrides[s.require_auth] = lambda: "test"
     try:
         yield TestClient(s.app)
@@ -172,7 +176,7 @@ def test_delete_removes_own_dir_and_local_key(client, fake_devices, tmp_path):
     own = tmp_path / "own"
     own.mkdir()
     (own / "config.rsc").write_text("x")
-    key = fake_devices.plugin_dir / "dev.key"
+    key = fake_devices.key_dir / "dev.key"
     key.write_text("k")
     fake_devices("A", own, ssh_key="dev.key")
 
