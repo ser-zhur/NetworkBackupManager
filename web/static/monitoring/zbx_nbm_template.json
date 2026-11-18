@@ -1,0 +1,946 @@
+{
+    "zabbix_export": {
+        "version": "6.0",
+        "groups": [
+            {
+                "uuid": "ebcd05e12468404cbbb132ee8f7aef70",
+                "name": "Templates/Applications"
+            }
+        ],
+        "templates": [
+            {
+                "uuid": "44112107ecfa4bef814f041ac875a6c9",
+                "template": "Network Backup Manager by HTTP",
+                "name": "Network Backup Manager by HTTP",
+                "description": "Network Backup Manager: состояние бэкапов сетевых устройств через HTTP API (/api/status, /api/health).\n\nМакросы узла: {$NBM.URL} — адрес программы без / в конце (например http://192.0.2.10:8080), {$NBM.TOKEN} — токен мониторинга (Настройки → Мониторинг).",
+                "groups": [
+                    {
+                        "name": "Templates/Applications"
+                    }
+                ],
+                "items": [
+                    {
+                        "uuid": "90e874bc48214c0c927cafb7cdc3142b",
+                        "name": "NBM: Получить состояние",
+                        "type": "HTTP_AGENT",
+                        "key": "nbm.status.get",
+                        "delay": "{$NBM.INTERVAL}",
+                        "history": "0",
+                        "trends": "0",
+                        "value_type": "TEXT",
+                        "timeout": "15s",
+                        "url": "{$NBM.URL}/api/status",
+                        "status_codes": "200",
+                        "tags": [
+                            {
+                                "tag": "component",
+                                "value": "raw"
+                            }
+                        ],
+                        "headers": [
+                            {
+                                "name": "Authorization",
+                                "value": "Bearer {$NBM.TOKEN}"
+                            }
+                        ]
+                    },
+                    {
+                        "uuid": "cc15be18ab7248b3b76bfba5b1ef89ba",
+                        "name": "NBM: Проверка доступности",
+                        "type": "HTTP_AGENT",
+                        "key": "nbm.health.get",
+                        "delay": "{$NBM.INTERVAL}",
+                        "history": "0",
+                        "trends": "0",
+                        "value_type": "TEXT",
+                        "timeout": "15s",
+                        "url": "{$NBM.URL}/api/health",
+                        "status_codes": "200,503",
+                        "tags": [
+                            {
+                                "tag": "component",
+                                "value": "raw"
+                            }
+                        ]
+                    },
+                    {
+                        "uuid": "a16df23de88e4d018f1c8dda3cde72ed",
+                        "name": "NBM: Доступность",
+                        "type": "DEPENDENT",
+                        "key": "nbm.health",
+                        "delay": "0",
+                        "history": "7d",
+                        "value_type": "CHAR",
+                        "trends": "0",
+                        "preprocessing": [
+                            {
+                                "type": "JSONPATH",
+                                "parameters": [
+                                    "$.status"
+                                ]
+                            }
+                        ],
+                        "master_item": {
+                            "key": "nbm.health.get"
+                        },
+                        "tags": [
+                            {
+                                "tag": "component",
+                                "value": "health"
+                            }
+                        ],
+                        "triggers": [
+                            {
+                                "uuid": "31e55c3282af4b6e94f1d665dc25a07a",
+                                "expression": "nodata(/Network Backup Manager by HTTP/nbm.health,{$NBM.NODATA})=1",
+                                "name": "NBM: программа недоступна",
+                                "priority": "HIGH",
+                                "description": "Нет ответа от /api/health дольше {$NBM.NODATA}: программа остановлена, недоступна по сети или неверен {$NBM.URL}."
+                            },
+                            {
+                                "uuid": "c53fd37791be41fc80963a879d31f807",
+                                "expression": "last(/Network Backup Manager by HTTP/nbm.health)<>\"ok\"",
+                                "name": "NBM: проверка доступности не пройдена",
+                                "priority": "HIGH",
+                                "description": "/api/health вернул ошибку: планировщик остановлен или нет записи в папку данных. Подробности — в журнале программы."
+                            }
+                        ]
+                    },
+                    {
+                        "uuid": "b639de0dd008498ba8ac8a939c6c8098",
+                        "name": "NBM: Версия",
+                        "type": "DEPENDENT",
+                        "key": "nbm.version",
+                        "delay": "0",
+                        "history": "90d",
+                        "value_type": "CHAR",
+                        "trends": "0",
+                        "preprocessing": [
+                            {
+                                "type": "JSONPATH",
+                                "parameters": [
+                                    "$.app.version"
+                                ]
+                            },
+                            {
+                                "type": "DISCARD_UNCHANGED_HEARTBEAT",
+                                "parameters": [
+                                    "1d"
+                                ]
+                            }
+                        ],
+                        "master_item": {
+                            "key": "nbm.status.get"
+                        },
+                        "tags": [
+                            {
+                                "tag": "component",
+                                "value": "application"
+                            }
+                        ]
+                    },
+                    {
+                        "uuid": "769ad734c74f4d5e9908bb48ffe82402",
+                        "name": "NBM: Время работы",
+                        "type": "DEPENDENT",
+                        "key": "nbm.uptime",
+                        "delay": "0",
+                        "history": "31d",
+                        "value_type": "UNSIGNED",
+                        "units": "s",
+                        "preprocessing": [
+                            {
+                                "type": "JSONPATH",
+                                "parameters": [
+                                    "$.app.uptime_s"
+                                ]
+                            }
+                        ],
+                        "master_item": {
+                            "key": "nbm.status.get"
+                        },
+                        "tags": [
+                            {
+                                "tag": "component",
+                                "value": "application"
+                            }
+                        ],
+                        "triggers": [
+                            {
+                                "uuid": "52c2f6857f354bf38c33a42a0b877ddd",
+                                "expression": "last(/Network Backup Manager by HTTP/nbm.uptime)<600",
+                                "name": "NBM: программа перезапущена",
+                                "priority": "INFO",
+                                "manual_close": "YES"
+                            }
+                        ]
+                    },
+                    {
+                        "uuid": "f810659c29de464695d6dcd692e697d2",
+                        "name": "NBM: Общее состояние",
+                        "type": "DEPENDENT",
+                        "key": "nbm.severity",
+                        "delay": "0",
+                        "history": "31d",
+                        "value_type": "UNSIGNED",
+                        "valuemap": {
+                            "name": "NBM severity"
+                        },
+                        "preprocessing": [
+                            {
+                                "type": "JSONPATH",
+                                "parameters": [
+                                    "$.severity"
+                                ]
+                            }
+                        ],
+                        "master_item": {
+                            "key": "nbm.status.get"
+                        },
+                        "tags": [
+                            {
+                                "tag": "component",
+                                "value": "health"
+                            }
+                        ]
+                    },
+                    {
+                        "uuid": "7fe5aff7a9d14d0d86dc49c5273bfcc5",
+                        "name": "NBM: Проблемы",
+                        "type": "DEPENDENT",
+                        "key": "nbm.problems",
+                        "delay": "0",
+                        "history": "7d",
+                        "value_type": "TEXT",
+                        "trends": "0",
+                        "preprocessing": [
+                            {
+                                "type": "JSONPATH",
+                                "parameters": [
+                                    "$.problems"
+                                ]
+                            },
+                            {
+                                "type": "JAVASCRIPT",
+                                "parameters": [
+                                    "return JSON.parse(value).join('\\n');"
+                                ]
+                            }
+                        ],
+                        "master_item": {
+                            "key": "nbm.status.get"
+                        },
+                        "tags": [
+                            {
+                                "tag": "component",
+                                "value": "health"
+                            }
+                        ]
+                    },
+                    {
+                        "uuid": "72d701e8037d4c56a10a76c92cd09be3",
+                        "name": "NBM: Автобэкап включён",
+                        "type": "DEPENDENT",
+                        "key": "nbm.scheduler.enabled",
+                        "delay": "0",
+                        "history": "31d",
+                        "value_type": "UNSIGNED",
+                        "preprocessing": [
+                            {
+                                "type": "JSONPATH",
+                                "parameters": [
+                                    "$.scheduler.enabled"
+                                ]
+                            },
+                            {
+                                "type": "BOOL_TO_DECIMAL",
+                                "parameters": [
+                                    ""
+                                ]
+                            },
+                            {
+                                "type": "DISCARD_UNCHANGED_HEARTBEAT",
+                                "parameters": [
+                                    "1h"
+                                ]
+                            }
+                        ],
+                        "master_item": {
+                            "key": "nbm.status.get"
+                        },
+                        "tags": [
+                            {
+                                "tag": "component",
+                                "value": "scheduler"
+                            }
+                        ]
+                    },
+                    {
+                        "uuid": "191fd7d3b79b42d98749b9ebcc31e935",
+                        "name": "NBM: Планировщик работает",
+                        "type": "DEPENDENT",
+                        "key": "nbm.scheduler.alive",
+                        "delay": "0",
+                        "history": "31d",
+                        "value_type": "UNSIGNED",
+                        "preprocessing": [
+                            {
+                                "type": "JSONPATH",
+                                "parameters": [
+                                    "$.scheduler.alive"
+                                ]
+                            },
+                            {
+                                "type": "BOOL_TO_DECIMAL",
+                                "parameters": [
+                                    ""
+                                ]
+                            }
+                        ],
+                        "master_item": {
+                            "key": "nbm.status.get"
+                        },
+                        "tags": [
+                            {
+                                "tag": "component",
+                                "value": "scheduler"
+                            }
+                        ],
+                        "triggers": [
+                            {
+                                "uuid": "5fadac83a962414cb6fdc93607c18a2e",
+                                "expression": "last(/Network Backup Manager by HTTP/nbm.scheduler.alive)=0",
+                                "name": "NBM: планировщик не работает",
+                                "priority": "HIGH",
+                                "description": "Поток планировщика остановлен — плановые бэкапы не запускаются. Перезапустите программу."
+                            }
+                        ]
+                    },
+                    {
+                        "uuid": "1e2f5d6bcad04ae490ddd91f5b50bfd1",
+                        "name": "NBM: Плановый бэкап просрочен",
+                        "type": "DEPENDENT",
+                        "key": "nbm.scheduler.overdue",
+                        "delay": "0",
+                        "history": "31d",
+                        "value_type": "UNSIGNED",
+                        "preprocessing": [
+                            {
+                                "type": "JSONPATH",
+                                "parameters": [
+                                    "$.scheduler.overdue"
+                                ]
+                            },
+                            {
+                                "type": "BOOL_TO_DECIMAL",
+                                "parameters": [
+                                    ""
+                                ]
+                            }
+                        ],
+                        "master_item": {
+                            "key": "nbm.status.get"
+                        },
+                        "tags": [
+                            {
+                                "tag": "component",
+                                "value": "scheduler"
+                            }
+                        ],
+                        "triggers": [
+                            {
+                                "uuid": "a61d694091c540c1988cf6cac70f6020",
+                                "expression": "last(/Network Backup Manager by HTTP/nbm.scheduler.overdue)=1",
+                                "name": "NBM: плановый бэкап не начался вовремя",
+                                "priority": "AVERAGE",
+                                "description": "Срок планового бэкапа прошёл больше часа назад, а прогон не начался."
+                            }
+                        ]
+                    },
+                    {
+                        "uuid": "67d20659bfa34bbdad1ff64bdb726ad0",
+                        "name": "NBM: Следующий плановый бэкап",
+                        "type": "DEPENDENT",
+                        "key": "nbm.scheduler.next_run",
+                        "delay": "0",
+                        "history": "31d",
+                        "value_type": "CHAR",
+                        "trends": "0",
+                        "preprocessing": [
+                            {
+                                "type": "JSONPATH",
+                                "parameters": [
+                                    "$.scheduler.next_run"
+                                ],
+                                "error_handler": "CUSTOM_VALUE",
+                                "error_handler_params": "—"
+                            },
+                            {
+                                "type": "DISCARD_UNCHANGED_HEARTBEAT",
+                                "parameters": [
+                                    "1h"
+                                ]
+                            }
+                        ],
+                        "master_item": {
+                            "key": "nbm.status.get"
+                        },
+                        "tags": [
+                            {
+                                "tag": "component",
+                                "value": "scheduler"
+                            }
+                        ]
+                    },
+                    {
+                        "uuid": "ca83445ab7114bd4b89237c79639e6b5",
+                        "name": "NBM: Последний прогон — завершён",
+                        "type": "DEPENDENT",
+                        "key": "nbm.lastrun.finished",
+                        "delay": "0",
+                        "history": "31d",
+                        "value_type": "CHAR",
+                        "trends": "0",
+                        "preprocessing": [
+                            {
+                                "type": "JSONPATH",
+                                "parameters": [
+                                    "$.last_run.finished"
+                                ],
+                                "error_handler": "DISCARD_VALUE"
+                            },
+                            {
+                                "type": "DISCARD_UNCHANGED_HEARTBEAT",
+                                "parameters": [
+                                    "1h"
+                                ]
+                            }
+                        ],
+                        "master_item": {
+                            "key": "nbm.status.get"
+                        },
+                        "tags": [
+                            {
+                                "tag": "component",
+                                "value": "run"
+                            }
+                        ]
+                    },
+                    {
+                        "uuid": "a1d52d0f6ab84ae49b05a5d8d4d79bf7",
+                        "name": "NBM: Последний прогон — ошибок",
+                        "type": "DEPENDENT",
+                        "key": "nbm.lastrun.failed",
+                        "delay": "0",
+                        "history": "31d",
+                        "value_type": "UNSIGNED",
+                        "preprocessing": [
+                            {
+                                "type": "JSONPATH",
+                                "parameters": [
+                                    "$.last_run.failed"
+                                ],
+                                "error_handler": "DISCARD_VALUE"
+                            }
+                        ],
+                        "master_item": {
+                            "key": "nbm.status.get"
+                        },
+                        "tags": [
+                            {
+                                "tag": "component",
+                                "value": "run"
+                            }
+                        ],
+                        "triggers": [
+                            {
+                                "uuid": "350524065be44e868bd17981e747c3d2",
+                                "expression": "last(/Network Backup Manager by HTTP/nbm.lastrun.failed)>0",
+                                "name": "NBM: последний прогон завершился с ошибками",
+                                "opdata": "Ошибок: {ITEM.LASTVALUE1}",
+                                "priority": "WARNING"
+                            }
+                        ]
+                    },
+                    {
+                        "uuid": "6e852f5b5e5f4951925d059381f5d3f8",
+                        "name": "NBM: Устройств — всего",
+                        "type": "DEPENDENT",
+                        "key": "nbm.devices.total",
+                        "delay": "0",
+                        "history": "31d",
+                        "value_type": "UNSIGNED",
+                        "preprocessing": [
+                            {
+                                "type": "JSONPATH",
+                                "parameters": [
+                                    "$.counts.total"
+                                ]
+                            }
+                        ],
+                        "master_item": {
+                            "key": "nbm.status.get"
+                        },
+                        "tags": [
+                            {
+                                "tag": "component",
+                                "value": "devices"
+                            }
+                        ]
+                    },
+                    {
+                        "uuid": "ea4674ed1d3346fbba04848de5f29daf",
+                        "name": "NBM: Устройств — актуально",
+                        "type": "DEPENDENT",
+                        "key": "nbm.devices.ok",
+                        "delay": "0",
+                        "history": "31d",
+                        "value_type": "UNSIGNED",
+                        "preprocessing": [
+                            {
+                                "type": "JSONPATH",
+                                "parameters": [
+                                    "$.counts.ok"
+                                ]
+                            }
+                        ],
+                        "master_item": {
+                            "key": "nbm.status.get"
+                        },
+                        "tags": [
+                            {
+                                "tag": "component",
+                                "value": "devices"
+                            }
+                        ]
+                    },
+                    {
+                        "uuid": "2997441417fa44199faf33e8cc2bea07",
+                        "name": "NBM: Устройств — давно",
+                        "type": "DEPENDENT",
+                        "key": "nbm.devices.warn",
+                        "delay": "0",
+                        "history": "31d",
+                        "value_type": "UNSIGNED",
+                        "preprocessing": [
+                            {
+                                "type": "JSONPATH",
+                                "parameters": [
+                                    "$.counts.warn"
+                                ]
+                            }
+                        ],
+                        "master_item": {
+                            "key": "nbm.status.get"
+                        },
+                        "tags": [
+                            {
+                                "tag": "component",
+                                "value": "devices"
+                            }
+                        ]
+                    },
+                    {
+                        "uuid": "c6fa1b5932ae48209531ca9345550a3f",
+                        "name": "NBM: Устройств — с ошибкой",
+                        "type": "DEPENDENT",
+                        "key": "nbm.devices.fail",
+                        "delay": "0",
+                        "history": "31d",
+                        "value_type": "UNSIGNED",
+                        "preprocessing": [
+                            {
+                                "type": "JSONPATH",
+                                "parameters": [
+                                    "$.counts.fail"
+                                ]
+                            }
+                        ],
+                        "master_item": {
+                            "key": "nbm.status.get"
+                        },
+                        "tags": [
+                            {
+                                "tag": "component",
+                                "value": "devices"
+                            }
+                        ]
+                    },
+                    {
+                        "uuid": "c59023d6fa4a4761bc0d6ee9b99ebc77",
+                        "name": "NBM: Устройств — без бэкапов",
+                        "type": "DEPENDENT",
+                        "key": "nbm.devices.none",
+                        "delay": "0",
+                        "history": "31d",
+                        "value_type": "UNSIGNED",
+                        "preprocessing": [
+                            {
+                                "type": "JSONPATH",
+                                "parameters": [
+                                    "$.counts.none"
+                                ]
+                            }
+                        ],
+                        "master_item": {
+                            "key": "nbm.status.get"
+                        },
+                        "tags": [
+                            {
+                                "tag": "component",
+                                "value": "devices"
+                            }
+                        ]
+                    },
+                    {
+                        "uuid": "7fc726118295471c985b9356e3fe108a",
+                        "name": "NBM: Устройств — отключено",
+                        "type": "DEPENDENT",
+                        "key": "nbm.devices.disabled",
+                        "delay": "0",
+                        "history": "31d",
+                        "value_type": "UNSIGNED",
+                        "preprocessing": [
+                            {
+                                "type": "JSONPATH",
+                                "parameters": [
+                                    "$.counts.disabled"
+                                ]
+                            }
+                        ],
+                        "master_item": {
+                            "key": "nbm.status.get"
+                        },
+                        "tags": [
+                            {
+                                "tag": "component",
+                                "value": "devices"
+                            }
+                        ]
+                    }
+                ],
+                "discovery_rules": [
+                    {
+                        "uuid": "079bbee3c1dc46fc826bd55b65537e17",
+                        "name": "NBM: Обнаружение устройств",
+                        "type": "DEPENDENT",
+                        "key": "nbm.devices.discovery",
+                        "delay": "0",
+                        "lifetime": "7d",
+                        "item_prototypes": [
+                            {
+                                "uuid": "25141c3822ad4ec4b89b40b42ecd7115",
+                                "name": "NBM {#NAME} ({#HOST}): Статус",
+                                "type": "DEPENDENT",
+                                "key": "nbm.device.status[{#ID}]",
+                                "delay": "0",
+                                "history": "31d",
+                                "value_type": "CHAR",
+                                "trends": "0",
+                                "preprocessing": [
+                                    {
+                                        "type": "JSONPATH",
+                                        "parameters": [
+                                            "$.devices[?(@.id=='{#ID}')].status.first()"
+                                        ]
+                                    },
+                                    {
+                                        "type": "DISCARD_UNCHANGED_HEARTBEAT",
+                                        "parameters": [
+                                            "1h"
+                                        ]
+                                    }
+                                ],
+                                "master_item": {
+                                    "key": "nbm.status.get"
+                                },
+                                "tags": [
+                                    {
+                                        "tag": "component",
+                                        "value": "device"
+                                    },
+                                    {
+                                        "tag": "device",
+                                        "value": "{#NAME}"
+                                    }
+                                ]
+                            },
+                            {
+                                "uuid": "d47edc2cea1b4044874cca04aa77ac8e",
+                                "name": "NBM {#NAME} ({#HOST}): Состояние",
+                                "type": "DEPENDENT",
+                                "key": "nbm.device.severity[{#ID}]",
+                                "delay": "0",
+                                "history": "31d",
+                                "value_type": "UNSIGNED",
+                                "valuemap": {
+                                    "name": "NBM severity"
+                                },
+                                "preprocessing": [
+                                    {
+                                        "type": "JSONPATH",
+                                        "parameters": [
+                                            "$.devices[?(@.id=='{#ID}')].severity.first()"
+                                        ]
+                                    }
+                                ],
+                                "master_item": {
+                                    "key": "nbm.status.get"
+                                },
+                                "tags": [
+                                    {
+                                        "tag": "component",
+                                        "value": "device"
+                                    },
+                                    {
+                                        "tag": "device",
+                                        "value": "{#NAME}"
+                                    }
+                                ]
+                            },
+                            {
+                                "uuid": "ee678dc6386741f89b2544eaa87779a4",
+                                "name": "NBM {#NAME} ({#HOST}): Неудач подряд",
+                                "type": "DEPENDENT",
+                                "key": "nbm.device.failures[{#ID}]",
+                                "delay": "0",
+                                "history": "31d",
+                                "value_type": "UNSIGNED",
+                                "preprocessing": [
+                                    {
+                                        "type": "JSONPATH",
+                                        "parameters": [
+                                            "$.devices[?(@.id=='{#ID}')].failures.first()"
+                                        ]
+                                    }
+                                ],
+                                "master_item": {
+                                    "key": "nbm.status.get"
+                                },
+                                "tags": [
+                                    {
+                                        "tag": "component",
+                                        "value": "device"
+                                    },
+                                    {
+                                        "tag": "device",
+                                        "value": "{#NAME}"
+                                    }
+                                ]
+                            },
+                            {
+                                "uuid": "54c37e2502e2435e91eeaaf054fad579",
+                                "name": "NBM {#NAME} ({#HOST}): Дней с успешного бэкапа",
+                                "type": "DEPENDENT",
+                                "key": "nbm.device.age[{#ID}]",
+                                "delay": "0",
+                                "history": "31d",
+                                "value_type": "UNSIGNED",
+                                "units": "d",
+                                "preprocessing": [
+                                    {
+                                        "type": "JSONPATH",
+                                        "parameters": [
+                                            "$.devices[?(@.id=='{#ID}')].success_age_days.first()"
+                                        ],
+                                        "error_handler": "DISCARD_VALUE"
+                                    }
+                                ],
+                                "master_item": {
+                                    "key": "nbm.status.get"
+                                },
+                                "tags": [
+                                    {
+                                        "tag": "component",
+                                        "value": "device"
+                                    },
+                                    {
+                                        "tag": "device",
+                                        "value": "{#NAME}"
+                                    }
+                                ]
+                            },
+                            {
+                                "uuid": "30f517d4128b4a049747379abd8da447",
+                                "name": "NBM {#NAME} ({#HOST}): Ошибка",
+                                "type": "DEPENDENT",
+                                "key": "nbm.device.error[{#ID}]",
+                                "delay": "0",
+                                "history": "7d",
+                                "value_type": "TEXT",
+                                "trends": "0",
+                                "preprocessing": [
+                                    {
+                                        "type": "JSONPATH",
+                                        "parameters": [
+                                            "$.devices[?(@.id=='{#ID}')].error.first()"
+                                        ]
+                                    },
+                                    {
+                                        "type": "DISCARD_UNCHANGED_HEARTBEAT",
+                                        "parameters": [
+                                            "1h"
+                                        ]
+                                    }
+                                ],
+                                "master_item": {
+                                    "key": "nbm.status.get"
+                                },
+                                "tags": [
+                                    {
+                                        "tag": "component",
+                                        "value": "device"
+                                    },
+                                    {
+                                        "tag": "device",
+                                        "value": "{#NAME}"
+                                    }
+                                ]
+                            },
+                            {
+                                "uuid": "62003f54590147eaa8e59d76654a2deb",
+                                "name": "NBM {#NAME} ({#HOST}): Последний успешный бэкап",
+                                "type": "DEPENDENT",
+                                "key": "nbm.device.last_success[{#ID}]",
+                                "delay": "0",
+                                "history": "31d",
+                                "value_type": "CHAR",
+                                "trends": "0",
+                                "preprocessing": [
+                                    {
+                                        "type": "JSONPATH",
+                                        "parameters": [
+                                            "$.devices[?(@.id=='{#ID}')].last_success.first()"
+                                        ],
+                                        "error_handler": "DISCARD_VALUE"
+                                    },
+                                    {
+                                        "type": "DISCARD_UNCHANGED_HEARTBEAT",
+                                        "parameters": [
+                                            "1h"
+                                        ]
+                                    }
+                                ],
+                                "master_item": {
+                                    "key": "nbm.status.get"
+                                },
+                                "tags": [
+                                    {
+                                        "tag": "component",
+                                        "value": "device"
+                                    },
+                                    {
+                                        "tag": "device",
+                                        "value": "{#NAME}"
+                                    }
+                                ]
+                            }
+                        ],
+                        "trigger_prototypes": [
+                            {
+                                "uuid": "4db81dc98861458ab4a6e7485b59f7b7",
+                                "expression": "last(/Network Backup Manager by HTTP/nbm.device.status[{#ID}])=\"fail\" and length(last(/Network Backup Manager by HTTP/nbm.device.error[{#ID}]))>=0",
+                                "name": "NBM: {#NAME} ({#HOST}): бэкап с ошибкой",
+                                "opdata": "{ITEM.LASTVALUE2}",
+                                "priority": "AVERAGE",
+                                "description": "Последняя попытка бэкапа или выгрузки в хранилище не удалась, либо успешного бэкапа не было больше 30 дней."
+                            },
+                            {
+                                "uuid": "47de938bc0eb4c2abd55185b88620da0",
+                                "expression": "last(/Network Backup Manager by HTTP/nbm.device.status[{#ID}])=\"warn\" and last(/Network Backup Manager by HTTP/nbm.device.age[{#ID}])>=0",
+                                "name": "NBM: {#NAME} ({#HOST}): давно не было успешного бэкапа",
+                                "opdata": "Дней: {ITEM.LASTVALUE2}",
+                                "priority": "WARNING",
+                                "description": "Последний успешный бэкап — больше 14 дней назад."
+                            },
+                            {
+                                "uuid": "64818fa986314d2888340a4a2ad4b00e",
+                                "expression": "last(/Network Backup Manager by HTTP/nbm.device.status[{#ID}])=\"none\"",
+                                "name": "NBM: {#NAME} ({#HOST}): бэкапов ещё не было",
+                                "priority": "INFO",
+                                "description": "Устройство добавлено, но успешного бэкапа ещё не было."
+                            }
+                        ],
+                        "master_item": {
+                            "key": "nbm.status.get"
+                        },
+                        "lld_macro_paths": [
+                            {
+                                "lld_macro": "{#ID}",
+                                "path": "$.id"
+                            },
+                            {
+                                "lld_macro": "{#NAME}",
+                                "path": "$.name"
+                            },
+                            {
+                                "lld_macro": "{#HOST}",
+                                "path": "$.host"
+                            },
+                            {
+                                "lld_macro": "{#TYPE}",
+                                "path": "$.type"
+                            }
+                        ],
+                        "preprocessing": [
+                            {
+                                "type": "JSONPATH",
+                                "parameters": [
+                                    "$.devices"
+                                ]
+                            },
+                            {
+                                "type": "DISCARD_UNCHANGED_HEARTBEAT",
+                                "parameters": [
+                                    "1h"
+                                ]
+                            }
+                        ]
+                    }
+                ],
+                "macros": [
+                    {
+                        "macro": "{$NBM.URL}",
+                        "value": "http://127.0.0.1:8080",
+                        "description": "Адрес Network Backup Manager без / в конце"
+                    },
+                    {
+                        "macro": "{$NBM.TOKEN}",
+                        "type": "SECRET_TEXT",
+                        "description": "Токен мониторинга (Настройки → Мониторинг)"
+                    },
+                    {
+                        "macro": "{$NBM.INTERVAL}",
+                        "value": "5m",
+                        "description": "Период опроса"
+                    },
+                    {
+                        "macro": "{$NBM.NODATA}",
+                        "value": "15m",
+                        "description": "Нет ответа дольше — «программа недоступна»"
+                    }
+                ],
+                "valuemaps": [
+                    {
+                        "uuid": "d273d4f43622416abf7fd347d98e1c8c",
+                        "name": "NBM severity",
+                        "mappings": [
+                            {
+                                "value": "0",
+                                "newvalue": "ОК"
+                            },
+                            {
+                                "value": "1",
+                                "newvalue": "Внимание"
+                            },
+                            {
+                                "value": "2",
+                                "newvalue": "Проблема"
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+}

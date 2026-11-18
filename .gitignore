@@ -27,6 +27,7 @@ id_rsa*
 id_ed25519*
 .env
 *.json
+!web/static/monitoring/*.json
 *.bak-*
 data/
 
