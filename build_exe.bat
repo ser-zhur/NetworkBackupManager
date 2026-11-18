@@ -340,6 +340,10 @@ if not "%PYI_EXIT%"=="0" (
     >>"%LOG_FILE%" echo   BUILD FAILED
     >>"%LOG_FILE%" echo ========================================
     >>"%LOG_FILE%" echo.
+    echo Папка build\ оставлена для разбора: отсутствующие модули —
+    echo   build\NetworkBackupManager\warn-NetworkBackupManager.txt
+    echo.
+    >>"%LOG_FILE%" echo build\ kept for diagnostics: build\NetworkBackupManager\warn-NetworkBackupManager.txt
     pause
     exit /b 1
 )
@@ -592,6 +596,26 @@ REM ========================================================
 >>"%LOG_FILE%" echo On a new computer create the user with:
 >>"%LOG_FILE%" echo   NetworkBackupManager.exe --create-user
 >>"%LOG_FILE%" echo.
+
+
+REM ========================================================
+REM CLEANUP: build\ — промежуточные файлы PyInstaller
+REM ========================================================
+REM
+REM Нужны только для разбора неудачной сборки (при ошибке
+REM выше скрипт завершается раньше и папка остаётся).
+REM Следующая сборка всё равно начинает с нуля (шаг 1, --clean).
+REM
+
+if exist build (
+    rmdir /s /q build 2>nul
+    if exist build (
+        echo WARNING: build\ не удалена ^(файлы заняты?^).
+        >>"%LOG_FILE%" echo WARNING: build\ could not be removed.
+    ) else (
+        >>"%LOG_FILE%" echo [OK] build\ removed.
+    )
+)
 
 
 REM ========================================================
