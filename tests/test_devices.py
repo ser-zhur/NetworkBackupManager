@@ -116,6 +116,18 @@ def test_prepare_key_path(home):
     assert r == {"ssh_key": "../../secret.key"}
 
 
+@pytest.mark.skipif(__import__("os").name == "nt", reason="права POSIX")
+def test_prepare_key_path_restricts_permissions(home):
+    key = context.KEYS_DIR / "mikrotik" / "id_rsa.key"
+    key.parent.mkdir(parents=True)
+    key.write_text("k")
+    key.chmod(0o644)
+
+    devices.prepare_key_path("mikrotik", {})
+
+    assert key.stat().st_mode & 0o777 == 0o600
+
+
 def test_ensure_ids_fixes_missing_and_duplicates():
     devs = [{"id": "aaaaaaaaaaaa"}, {"id": "aaaaaaaaaaaa"}, {}, {"id": "bad"}]
     assert devices.ensure_ids(devs) is True

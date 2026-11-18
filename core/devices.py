@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 import uuid
@@ -116,7 +117,26 @@ def prepare_key_path(device_type: str, router: dict) -> None:
     """
     path = local_key_path(device_type, key_name(router) or DEFAULT_KEY_NAME)
     if path is not None and path.is_file():
+        _restrict_key_permissions(path)
         router["ssh_key"] = str(path)
+
+
+def _restrict_key_permissions(path: Path) -> None:
+    """
+    Linux/macOS: системный ssh (MikroTik ROS6) отказывается
+    работать с ключом, доступным группе или остальным
+    («UNPROTECTED PRIVATE KEY FILE») — приводим к 600.
+    На Windows права задаются ACL, здесь не трогаем.
+    """
+    if os.name == "nt":
+        return
+    try:
+        mode = path.stat().st_mode & 0o777
+        if mode & 0o077:
+            path.chmod(0o600)
+            logger.info("🔑 Права ключа %s: %o → 600", path, mode)
+    except OSError as exc:
+        logger.warning("Не удалось ограничить права ключа %s: %s", path, exc)
 
 
 # =========================================================
