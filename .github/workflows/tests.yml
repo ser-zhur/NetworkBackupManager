@@ -4,8 +4,9 @@
 #
 # rclone скачивается на временную машину GitHub — без него
 # тесты внешних хранилищ и OAuth пропускаются. Версия
-# закреплена (RCLONE_VERSION), чтобы прогоны не менялись
-# сами по себе с выходом новой rclone.
+# закреплена (CI_RCLONE_VERSION), чтобы прогоны не менялись
+# сами по себе с выходом новой rclone. Префикс RCLONE_ для
+# своих переменных нельзя: rclone читает их как свои ключи.
 #
 # =========================================================
 
@@ -17,7 +18,7 @@ on:
   workflow_dispatch:
 
 env:
-  RCLONE_VERSION: v1.72.0
+  CI_RCLONE_VERSION: v1.72.0
 
 jobs:
   test:
@@ -52,9 +53,9 @@ jobs:
             Windows) platform=windows-amd64 ;;
             *)       platform=linux-amd64 ;;
           esac
-          name="rclone-${RCLONE_VERSION}-${platform}"
+          name="rclone-${CI_RCLONE_VERSION}-${platform}"
           curl -fsSL -o "$RUNNER_TEMP/rclone.zip" \
-            "https://downloads.rclone.org/${RCLONE_VERSION}/${name}.zip"
+            "https://downloads.rclone.org/${CI_RCLONE_VERSION}/${name}.zip"
           python -m zipfile -e "$RUNNER_TEMP/rclone.zip" "$RUNNER_TEMP"
           chmod +x "$RUNNER_TEMP/$name/rclone" 2>/dev/null || true
           echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
