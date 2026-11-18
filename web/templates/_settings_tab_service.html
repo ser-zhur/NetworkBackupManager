@@ -9,6 +9,13 @@
         </button>
     </div>
 
+    {% if service.container %}
+    <div class="mb-4 p-3 rounded-lg bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 border border-brand-200 dark:border-brand-900 text-sm">
+        🐳 Программа работает в контейнере: запуском, остановкой и
+        перезапуском управляет Docker (<code>docker compose restart</code>).
+    </div>
+    {% endif %}
+
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3 text-sm">
         <div class="flex justify-between items-center py-2 border-b border-gray-100 dark:border-slate-800">
             <span class="text-gray-500 dark:text-slate-400">Регистрация:</span>
@@ -42,6 +49,7 @@
                 {% elif service.task_state == "stopped" %}остановлена
                 {% elif service.task_state == "startpending" %}запускается
                 {% elif service.task_state == "stoppending" %}останавливается
+                {% elif service.task_state == "container" %}контейнер
                 {% else %}неизвестно{% endif %}
             </span>
         </div>

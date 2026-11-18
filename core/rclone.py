@@ -47,10 +47,14 @@ DEFAULT_BINARY = "rclone"
 
 def get_rclone_path() -> str:
     """
-    Настроенный путь к бинарнику rclone.
+    Настроенный путь к бинарнику rclone: NBM_RCLONE, затем
+    config.json (rclone.binary_path).
 
-    Пустая строка = "rclone" (поиск в PATH).
+    Пустая строка = "rclone" (bin/ рядом с программой, затем PATH).
     """
+    env_path = (os.environ.get("NBM_RCLONE") or "").strip()
+    if env_path:
+        return env_path
     try:
         config = load_json(CONFIG_FILE, {})
         path = (config.get("rclone") or {}).get("binary_path", "")
@@ -86,6 +90,16 @@ def resolve_binary() -> str | None:
     if "/" in path or "\\" in path or Path(path).is_absolute():
         p = Path(path)
         return str(p) if p.is_file() else None
+
+    # Не задан — сначала bin/ рядом с программой (поставляется
+    # с установкой), затем PATH
+    if path == DEFAULT_BINARY:
+        from core.context import BASE_DIR
+
+        name = "rclone.exe" if os.name == "nt" else "rclone"
+        bundled = BASE_DIR / "bin" / name
+        if bundled.is_file():
+            return str(bundled)
 
     return shutil.which(path)
 

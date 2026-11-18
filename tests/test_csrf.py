@@ -67,6 +67,23 @@ def test_origin_takes_priority_over_referer(client):
     assert r.status_code == 403
 
 
+def test_behind_proxy_forwarded_host_accepted(client):
+    # Прокси подменил Host на адрес upstream, исходный — в X-Forwarded-Host
+    r = client.post(PROBE, headers={
+        "Origin": "https://nbm.example.com",
+        "X-Forwarded-Host": "nbm.example.com",
+    })
+    assert r.status_code != 403
+
+
+def test_forwarded_host_does_not_whitelist_other_sites(client):
+    r = client.post(PROBE, headers={
+        "Origin": "https://evil.example",
+        "X-Forwarded-Host": "nbm.example.com",
+    })
+    assert r.status_code == 403
+
+
 def test_get_with_foreign_origin_not_blocked(client):
     # GET не изменяет состояние — не блокируем
     r = client.get(PROBE, headers={"Origin": "http://evil.example"})

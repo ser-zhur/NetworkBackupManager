@@ -337,19 +337,34 @@ app = FastAPI(
 _CSRF_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
 
 
+def _csrf_hosts(request: Request) -> set[str]:
+    """
+    Адреса, под которыми открыт сам сайт: Host и, за обратным
+    прокси, X-Forwarded-Host (прокси может подменять Host на
+    адрес upstream). Подделать X-Forwarded-Host чужая страница
+    не может: браузер не даёт сайту добавить такой заголовок к
+    межсайтовому запросу без CORS, а CORS мы не разрешаем.
+    """
+    hosts = {(request.headers.get("host") or "").lower()}
+    forwarded = request.headers.get("x-forwarded-host") or ""
+    hosts |= {h.strip().lower() for h in forwarded.split(",") if h.strip()}
+    hosts.discard("")
+    return hosts
+
+
 def _csrf_source_ok(request: Request) -> bool:
-    host = (request.headers.get("host") or "").lower()
+    hosts = _csrf_hosts(request)
 
     origin = request.headers.get("origin")
     if origin is not None:
         # "null" — sandbox/file:// и т.п.: источник неизвестен
         if origin.strip().lower() == "null":
             return False
-        return urllib.parse.urlsplit(origin).netloc.lower() == host
+        return urllib.parse.urlsplit(origin).netloc.lower() in hosts
 
     referer = request.headers.get("referer")
     if referer:
-        return urllib.parse.urlsplit(referer).netloc.lower() == host
+        return urllib.parse.urlsplit(referer).netloc.lower() in hosts
 
     return True
 
@@ -488,43 +503,7 @@ if templates is not None:
 # PASSWORD (verify only — hash делается в main.py)
 # =========================================================
 
-def verify_password(
-    password: str,
-    stored: str,
-) -> bool:
-
-    try:
-
-        algorithm, iterations, salt_b64, key_b64 = (
-            stored.split("$")
-        )
-
-        if algorithm != "pbkdf2_sha256":
-            return False
-
-        salt = base64.b64decode(
-            salt_b64
-        )
-
-        expected = base64.b64decode(
-            key_b64
-        )
-
-        test = hashlib.pbkdf2_hmac(
-            "sha256",
-            password.encode("utf-8"),
-            salt,
-            int(iterations),
-        )
-
-        return secrets.compare_digest(
-            test,
-            expected,
-        )
-
-    except Exception:
-
-        return False
+from core.auth import verify_password  # noqa: E402
 
 
 # =========================================================

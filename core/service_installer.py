@@ -381,27 +381,9 @@ def _spawn_detached(cmd) -> bool:
 # =========================================================
 
 def get_web_config() -> tuple[str, int]:
-    """
-    FIX: локальная копия get_web_config с валидацией.
-    В идеале — вынести в core.context и переиспользовать.
-    """
-
-    config = load_json(CONFIG_FILE, {})
-
-    host = config.get("host", "127.0.0.1")
-    if not isinstance(host, str) or not host.strip():
-        host = "127.0.0.1"
-
-    raw_port = config.get("port", 8080)
-    try:
-        port = int(raw_port)
-        if not (1 <= port <= 65535):
-            raise ValueError("порт вне диапазона")
-    except (TypeError, ValueError):
-        logger.warning("Некорректный port в конфиге: %r", raw_port)
-        port = 8080
-
-    return host, port
+    """(host, port) — см. core.settings.web_config."""
+    from core import settings
+    return settings.web_config()
 
 
 def wait_for_http(timeout: float = 20) -> bool:
@@ -576,10 +558,37 @@ def get_status(use_cache: bool = True) -> dict:
             ):
                 return _status_cache_value
 
+    from core import settings
+
+    # В контейнере службой управляет Docker: кнопки службы
+    # не показываем, systemctl/nssm не вызываем.
+    if settings.in_container():
+        result = {
+            "registered": False,
+            "os_running": False,
+            "http_up": True,
+            "service_mode": is_service_process(),
+            "container": True,
+            "can_install": False,
+            "can_restart": False,
+            "can_stop": False,
+            "can_start": False,
+            "can_uninstall": False,
+            "is_admin": is_admin(),
+            "task_state": "container",
+            "service_name": SERVICE_NAME,
+            "base_dir": str(BASE_DIR.resolve()),
+        }
+        with _status_cache_lock:
+            _status_cache_value = result
+            _status_cache_time = now
+        return result
+
     # ---- один опрос вместо трёх ----
     registered, running, task_state = _get_service_state_snapshot()
 
     result = {
+        "container": False,
         "registered": registered,
         "os_running": running,
         "http_up": is_http_up(),
@@ -669,6 +678,11 @@ def relaunch_elevated(args: list[str]) -> bool:
 # =========================================================
 
 def install_service() -> tuple[bool, str]:
+
+    from core import settings
+
+    if settings.in_container():
+        return False, "В контейнере службой управляет Docker."
 
     if not is_admin():
         return (
@@ -1221,6 +1235,27 @@ def _shell_quote(value: str) -> str:
 # LINUX SYSTEMD
 # =========================================================
 
+def _unit_environment() -> str:
+    """
+    Environment= для переменных NBM_*, заданных при установке
+    (NBM_HOME, NBM_PORT, …): служба запускается с теми же
+    настройками, что и установщик. Пароль не переносим —
+    он нужен только при первом запуске.
+    """
+    lines = []
+    for name in sorted(os.environ):
+        if not name.startswith("NBM_") or name == "NBM_ADMIN_PASSWORD":
+            continue
+        value = (
+            os.environ[name]
+            .replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("%", "%%")          # спецификаторы systemd
+        )
+        lines.append(f'Environment="{name}={value}"\n')
+    return "".join(lines)
+
+
 def _install_linux_service() -> tuple[bool, str]:
 
     executable, args, work_dir = get_service_command()
@@ -1243,13 +1278,14 @@ def _install_linux_service() -> tuple[bool, str]:
     # и убьёт отложенный скрипт до того, как он сработает.
     unit_content = f"""[Unit]
 Description={DESCRIPTION}
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory={work_dir}
-ExecStart={quoted}
+{_unit_environment()}ExecStart={quoted}
 Restart=on-failure
 RestartSec=5
 KillMode=process

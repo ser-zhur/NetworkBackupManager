@@ -14,8 +14,6 @@ if __name__ == "__main__":
 import os
 import sys
 import json
-import base64
-import hashlib
 import ctypes
 import logging
 import webbrowser
@@ -151,41 +149,67 @@ else:
 
 
 # =========================================================
-# НАСТРОЙКИ WEB
+# НАСТРОЙКИ И ПОЛЬЗОВАТЕЛЬ
+# =========================================================
+#
+# Хост/порт и прочее — core/settings.py (окружение NBM_* важнее
+# config.json). Пароль — core/auth.py.
+
+from core import settings
+from core.auth import hash_password, save_user, ensure_user_from_env
+
+
+# =========================================================
+# CREATE USER — КОНСОЛЬ (Linux без графики, Docker)
 # =========================================================
 
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8080
+def create_user_console() -> int:
+    """
+    Создание пользователя в терминале:
+        python main.py --create-user
+        docker exec -it nbm python main.py --create-user
+    """
+    import getpass
+
+    ensure_directories()
+    ensure_default_files()
+
+    if not sys.stdin or not sys.stdin.isatty():
+        print(
+            "Нет терминала для ввода. Задайте NBM_ADMIN_USER и "
+            "NBM_ADMIN_PASSWORD — пользователь создастся при запуске."
+        )
+        return 1
+
+    print("Создание пользователя веб-интерфейса")
+    username = input("Логин [admin]: ").strip() or "admin"
+    if len(username) > 100:
+        print("Слишком длинный логин.")
+        return 1
+
+    password = getpass.getpass("Пароль: ")
+    if len(password) < 4:
+        print("Пароль слишком короткий (минимум 4 символа).")
+        return 1
+    if getpass.getpass("Повторите пароль: ") != password:
+        print("Пароли не совпадают.")
+        return 1
+
+    if AUTH_FILE.exists():
+        answer = input("Пользователь уже есть. Перезаписать? [y/N]: ")
+        if answer.strip().lower() not in ("y", "yes", "д", "да"):
+            print("Отменено.")
+            return 1
+
+    save_user(username, password)
+    print(f"Пользователь {username!r} сохранён в {AUTH_FILE}")
+    return 0
 
 
-# =========================================================
-# ПАРОЛЬ
-# =========================================================
-
-PBKDF2_ITERATIONS = 260000
-
-
-def hash_password(
-    password: str,
-    salt: bytes | None = None,
-) -> str:
-
-    if salt is None:
-        salt = os.urandom(16)
-
-    key = hashlib.pbkdf2_hmac(
-        "sha256",
-        password.encode("utf-8"),
-        salt,
-        PBKDF2_ITERATIONS,
-    )
-
-    return (
-        "pbkdf2_sha256$"
-        f"{PBKDF2_ITERATIONS}$"
-        f"{base64.b64encode(salt).decode()}$"
-        f"{base64.b64encode(key).decode()}"
-    )
+def _has_gui() -> bool:
+    if os.name == "nt":
+        return True
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
 # =========================================================
@@ -196,8 +220,11 @@ def create_user() -> int:
     """
     Графическое создание пользователя.
 
-    Работает в EXE, собранном с --noconsole.
+    Работает в EXE, собранном с --noconsole. Без графики
+    (Linux-сервер, Docker) — вопросы в терминале.
     """
+    if not _has_gui():
+        return create_user_console()
 
     # FIX: готовим каталоги и дефолтные файлы заранее,
     # чтобы AUTH_FILE гарантированно лежал в существующем каталоге.
@@ -214,6 +241,9 @@ def create_user() -> int:
         import tkinter as tk
         from tkinter import messagebox
     except Exception as exc:
+        if os.name != "nt":
+            print(f"Графика недоступна ({exc}) — ввод в терминале.")
+            return create_user_console()
         ensure_console()
         print(f"Не удалось загрузить tkinter: {exc}")
         return 1
@@ -627,38 +657,8 @@ def restart_service_cli() -> int:
 # =========================================================
 
 def get_web_config() -> tuple[str, int]:
-    """
-    Возвращает (host, port) с защитой от некорректных значений.
-    """
-
-    config = load_json(CONFIG_FILE, {})
-
-    # host
-    host = config.get("host", DEFAULT_HOST)
-    if not isinstance(host, str) or not host.strip():
-        logger.warning(
-            "Некорректный host в конфиге (%r), использую %s",
-            host,
-            DEFAULT_HOST,
-        )
-        host = DEFAULT_HOST
-
-    # port
-    raw_port = config.get("port", DEFAULT_PORT)
-    try:
-        port = int(raw_port)
-        if not (1 <= port <= 65535):
-            raise ValueError("порт вне диапазона 1..65535")
-    except (TypeError, ValueError) as exc:
-        logger.warning(
-            "Некорректный port в конфиге (%r): %s; использую %s",
-            raw_port,
-            exc,
-            DEFAULT_PORT,
-        )
-        port = DEFAULT_PORT
-
-    return host, port
+    """(host, port) — см. core.settings.web_config."""
+    return settings.web_config()
 
 
 # =========================================================
@@ -666,6 +666,10 @@ def get_web_config() -> tuple[str, int]:
 # =========================================================
 
 def open_browser_when_ready() -> None:
+
+    # В контейнере и при NBM_OPEN_BROWSER=0 / open_browser=false
+    if not settings.open_browser():
+        return
 
     try:
         if not wait_for_http(20):
@@ -711,12 +715,20 @@ def run_web_server() -> None:
         port,
     )
 
+    extra = {}
+    proxies = settings.trusted_proxies()
+    if proxies:
+        # Реальный адрес клиента и схема (https) из X-Forwarded-*
+        extra["forwarded_allow_ips"] = proxies
+
     uvicorn.run(
         "web.server:app",
         host=host,
         port=port,
         reload=False,
         log_config=None,
+        proxy_headers=True,
+        **extra,
     )
 
 
@@ -724,11 +736,15 @@ def run_web_server() -> None:
 # START NORMAL APPLICATION
 # =========================================================
 
-def run_application(skip_service_install: bool = False) -> int:
+def run_application(
+    skip_service_install: bool = False,
+    foreground: bool = False,
+) -> int:
 
     ensure_directories()
-    ensure_web_files() 
+    ensure_web_files()
     ensure_default_files()
+    ensure_user_from_env()
 
     # -----------------------------------------------------
     # РЕЖИМ СЛУЖБЫ
@@ -736,6 +752,17 @@ def run_application(skip_service_install: bool = False) -> int:
 
     if is_service_process():
         logger.info("Приложение запущено в режиме службы.")
+        run_web_server()
+        return 0
+
+    # -----------------------------------------------------
+    # --foreground / контейнер: только веб-сервер, без
+    # установки службы и без браузера (Docker, systemd
+    # с ExecStart вручную, отладка)
+    # -----------------------------------------------------
+
+    if foreground or settings.in_container():
+        logger.info("Запуск на переднем плане (без службы ОС).")
         run_web_server()
         return 0
 
@@ -851,6 +878,7 @@ _KNOWN_FLAGS = {
     "--restart-service",
     "--skip-service-install",
     "--version",
+    "--foreground",
 }
 
 
@@ -931,7 +959,10 @@ def main() -> int:
 
     skip_service_install = "--skip-service-install" in args
 
-    return run_application(skip_service_install=skip_service_install)
+    return run_application(
+        skip_service_install=skip_service_install,
+        foreground="--foreground" in args,
+    )
 
 
 # =========================================================

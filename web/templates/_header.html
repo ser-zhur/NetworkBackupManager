@@ -29,7 +29,12 @@
 
         {% if header_show_status %}
         <div class="hidden md:flex items-center gap-2 text-[11px]" id="status-chips">
-            {% if service.registered and service.os_running %}
+            {% if service.container %}
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-900">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                Контейнер
+            </span>
+            {% elif service.registered and service.os_running %}
             <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-900">
                 <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
                 Служба работает
