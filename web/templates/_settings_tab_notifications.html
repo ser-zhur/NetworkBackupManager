@@ -1,0 +1,166 @@
+{# Вкладка «Уведомления»: каналы (Telegram, почта, webhook) и правила #}
+
+{% set _card = "bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm p-6 space-y-4" %}
+{% set _h3 = "text-sm font-semibold text-gray-700 dark:text-slate-200 flex items-center gap-2" %}
+{% set _input = "w-full rounded-lg px-3 py-2 text-sm bg-gray-50 dark:bg-slate-950 border border-gray-200 dark:border-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition" %}
+{% set _btn = "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition" %}
+{% set _btn_ghost = _btn ~ " border border-gray-200 dark:border-slate-700 text-gray-700 dark:text-slate-300 hover:bg-gray-50 dark:hover:bg-slate-800" %}
+{% set _run_labels = {"always": "итог каждого прогона", "errors": "итог прогона с ошибками", "never": ""} %}
+
+{% if notice %}
+<div class="px-4 py-3 rounded-lg text-sm border
+            {% if notice_ok %}bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-900 text-emerald-800 dark:text-emerald-300
+            {% else %}bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-900 text-rose-800 dark:text-rose-300{% endif %}">
+    {{ '✓' if notice_ok else '✗' }} {{ notice }}
+</div>
+{% endif %}
+
+{% if edit %}
+{# ===================== ФОРМА КАНАЛА ===================== #}
+{% set ch = edit.channel %}
+{% set impl = edit.impl %}
+<form method="POST" action="/settings/notifications/save" class="{{ _card }}" autocomplete="off">
+    <input type="hidden" name="type" value="{{ ch.type }}">
+    <input type="hidden" name="id" value="{{ ch.id }}">
+
+    <h3 class="{{ _h3 }}">{{ impl.icon }} {{ 'Новый канал' if edit.is_new else 'Канал' }}: {{ impl.name }}</h3>
+    <p class="text-sm text-gray-500 dark:text-slate-400">{{ impl.description }}</p>
+
+    {% if form_error %}
+    <div class="px-3 py-2 rounded-lg text-sm bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-rose-800 dark:text-rose-300">
+        ✗ {{ form_error }}
+    </div>
+    {% endif %}
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+            <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Название</label>
+            <input type="text" name="name" value="{{ ch.name }}" class="{{ _input }}" placeholder="{{ impl.name }}">
+        </div>
+        <label class="flex items-center gap-3 md:pt-7">
+            <input type="checkbox" name="enabled" {% if ch.enabled %}checked{% endif %} class="text-brand-600 focus:ring-brand-500">
+            <span class="text-sm text-gray-700 dark:text-slate-300">Включён</span>
+        </label>
+
+        {% for f in impl.fields %}
+        <div>
+            <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
+                {{ f.label }}{% if f.required %} <span class="text-rose-500">*</span>{% endif %}
+            </label>
+            {% if f.type == "select" %}
+                <select name="f_{{ f.name }}" class="{{ _input }}">
+                    {% for value, label in f.choices %}
+                        <option value="{{ value }}" {% if edit.values[f.name] == value %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+            {% elif f.type == "password" %}
+                <input type="password" name="f_{{ f.name }}" class="{{ _input }} font-mono" autocomplete="new-password"
+                       placeholder="{{ '•••••• задан — оставьте пустым, чтобы не менять' if edit.secret_set[f.name] else f.placeholder }}">
+            {% else %}
+                <input type="{{ 'number' if f.type == 'number' else 'text' }}" name="f_{{ f.name }}"
+                       value="{{ edit.values[f.name] }}" placeholder="{{ f.placeholder }}"
+                       class="{{ _input }} font-mono">
+            {% endif %}
+            {% if f.help %}<p class="mt-1 text-xs text-gray-500 dark:text-slate-400 break-words">{{ f.help }}</p>{% endif %}
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="pt-2 border-t border-gray-100 dark:border-slate-800 space-y-3">
+        <div class="text-sm font-medium text-gray-700 dark:text-slate-300">О чём сообщать</div>
+        {% set r = ch.rules %}
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm text-gray-700 dark:text-slate-300">
+            <label class="flex items-start gap-2"><input type="checkbox" name="errors" {% if r.errors %}checked{% endif %} class="mt-0.5 text-brand-600">
+                <span>Ошибки<span class="block text-xs text-gray-500 dark:text-slate-400">бэкап или выгрузка в хранилище не удались, сбой планировщика</span></span></label>
+            <label class="flex items-start gap-2"><input type="checkbox" name="recovered" {% if r.recovered %}checked{% endif %} class="mt-0.5 text-brand-600">
+                <span>Восстановление<span class="block text-xs text-gray-500 dark:text-slate-400">снова успешно после ошибки</span></span></label>
+            <label class="flex items-start gap-2"><input type="checkbox" name="config" {% if r.config %}checked{% endif %} class="mt-0.5 text-brand-600">
+                <span>Изменения конфигурации<span class="block text-xs text-gray-500 dark:text-slate-400">какие файлы и сколько строк изменилось</span></span></label>
+            <label class="flex items-start gap-2"><input type="checkbox" name="include_diff" {% if r.include_diff %}checked{% endif %} class="mt-0.5 text-brand-600">
+                <span>…с текстом изменений<span class="block text-xs text-amber-700 dark:text-amber-400">⚠ в конфигурации бывают хэши паролей и ключи — они уйдут в сообщение</span></span></label>
+            <label class="flex items-start gap-2"><input type="checkbox" name="app" {% if r.app %}checked{% endif %} class="mt-0.5 text-brand-600">
+                <span>Запуск программы</span></label>
+        </div>
+        <div class="flex flex-wrap items-center gap-3 text-sm">
+            <span class="text-gray-700 dark:text-slate-300">Итог прогона всех устройств:</span>
+            <select name="run" class="rounded-lg px-3 py-2 text-sm bg-gray-50 dark:bg-slate-950 border border-gray-200 dark:border-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-500">
+                <option value="errors" {% if r.run == 'errors' %}selected{% endif %}>только если были ошибки</option>
+                <option value="always" {% if r.run == 'always' %}selected{% endif %}>всегда</option>
+                <option value="never" {% if r.run == 'never' %}selected{% endif %}>не сообщать</option>
+            </select>
+        </div>
+        <p class="text-xs text-gray-500 dark:text-slate-400">
+            Во время прогона всех устройств сообщения не сыплются по одному: всё, что случилось
+            за прогон, приходит одним сообщением вместе с его итогом.
+        </p>
+    </div>
+
+    <div class="flex flex-wrap gap-2 pt-2">
+        <button type="submit" class="{{ _btn }} bg-brand-600 hover:bg-brand-700 text-white">Сохранить</button>
+        <a href="/settings?tab=notifications" class="{{ _btn_ghost }}">Отмена</a>
+    </div>
+</form>
+
+{% else %}
+{# ===================== СПИСОК КАНАЛОВ ===================== #}
+<section class="{{ _card }}">
+    <h3 class="{{ _h3 }}">🔔 Каналы уведомлений</h3>
+
+    {% if channels %}
+    <div class="divide-y divide-gray-100 dark:divide-slate-800">
+        {% for ch in channels %}
+        {% set impl = channel_types[ch.type] %}
+        {% set st = channel_status.get(ch.id) %}
+        <div class="py-3 first:pt-0 last:pb-0 flex flex-wrap items-start justify-between gap-3">
+            <div class="min-w-0">
+                <div class="text-sm font-medium flex items-center gap-2 {{ '' if ch.enabled else 'opacity-50' }}">
+                    {{ impl.icon }} {{ ch.name }}
+                    <span class="text-xs font-normal text-gray-500 dark:text-slate-400">{{ impl.name }}</span>
+                    {% if not ch.enabled %}<span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-gray-100 dark:bg-slate-800 text-gray-500">выключен</span>{% endif %}
+                </div>
+                <div class="mt-0.5 text-xs text-gray-500 dark:text-slate-400">
+                    {% set parts = [] %}
+                    {% if ch.rules.errors %}{% set _ = parts.append('ошибки') %}{% endif %}
+                    {% if ch.rules.recovered %}{% set _ = parts.append('восстановление') %}{% endif %}
+                    {% if ch.rules.config %}{% set _ = parts.append('изменения конфигурации' ~ (' с текстом' if ch.rules.include_diff else '')) %}{% endif %}
+                    {% if _run_labels[ch.rules.run] %}{% set _ = parts.append(_run_labels[ch.rules.run]) %}{% endif %}
+                    {% if ch.rules.app %}{% set _ = parts.append('запуск программы') %}{% endif %}
+                    {{ parts | join(', ') if parts else 'ничего не выбрано' }}
+                </div>
+                {% if st %}
+                <div class="mt-0.5 text-xs {{ 'text-emerald-600 dark:text-emerald-400' if st.ok else 'text-rose-600 dark:text-rose-400' }} break-words">
+                    {{ '✓ отправлено' if st.ok else '✗ ' ~ st.error }} · {{ st.at }}
+                </div>
+                {% endif %}
+            </div>
+            <div class="flex flex-wrap gap-2 shrink-0">
+                <form method="POST" action="/settings/notifications/{{ ch.id }}/test">
+                    <button type="submit" class="{{ _btn_ghost }}" title="Отправить проверочное сообщение">Проверить</button>
+                </form>
+                <a href="/settings?tab=notifications&edit={{ ch.id }}" class="{{ _btn_ghost }}">Изменить</a>
+                <form method="POST" action="/settings/notifications/{{ ch.id }}/toggle">
+                    <button type="submit" class="{{ _btn_ghost }}">{{ 'Выключить' if ch.enabled else 'Включить' }}</button>
+                </form>
+                <form method="POST" action="/settings/notifications/{{ ch.id }}/delete"
+                      onsubmit='return confirm({{ ("Удалить канал «" ~ ch.name ~ "»?") | tojson }})'>
+                    <button type="submit" class="{{ _btn }} border border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950/40">Удалить</button>
+                </form>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+        <p class="text-sm text-gray-500 dark:text-slate-400">
+            Каналов пока нет. Добавьте Telegram, почту или webhook — и программа сама сообщит
+            об ошибках бэкапа, восстановлении и изменениях конфигурации устройств.
+        </p>
+    {% endif %}
+
+    <div class="flex flex-wrap gap-2 pt-1">
+        {% for type_id, impl in channel_types.items() %}
+            <a href="/settings?tab=notifications&new={{ type_id }}"
+               class="{{ _btn }} bg-brand-600 hover:bg-brand-700 text-white">+ {{ impl.icon }} {{ impl.name }}</a>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}

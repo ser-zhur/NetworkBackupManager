@@ -5574,8 +5574,10 @@ def settings_page(
         storage   — хранилища (rclone)
         service   — управление службой
         monitoring — мониторинг: токен, адреса API, события
+        notifications — уведомления: каналы и правила
     """
-    if tab not in ("general", "scheduler", "retention", "storage", "service", "monitoring"):
+    if tab not in ("general", "scheduler", "retention", "storage", "service",
+                   "monitoring", "notifications"):
         tab = "general"
 
     # Шапка (_header.html с header_show_status=True) требует
@@ -5642,6 +5644,9 @@ def settings_page(
     elif tab == "monitoring":
         context.update(_monitoring_context(request))
 
+    elif tab == "notifications":
+        context.update(_notifications_context(request))
+
     return templates.TemplateResponse(
         request,
         "settings.html",
@@ -5695,6 +5700,166 @@ def settings_monitoring_token_revoke(user: str = Depends(require_auth)):
     monitoring.revoke_token()
     logging.info("🔑 Токен мониторинга отозван")
     return RedirectResponse("/settings?tab=monitoring&message=revoked", status_code=303)
+
+
+# =========================================================
+# УВЕДОМЛЕНИЯ
+# =========================================================
+
+def _notifications_context(
+    request: Request,
+    edit: dict | None = None,
+    form_error: str = "",
+) -> dict:
+    """
+    Вкладка «Уведомления». edit — канал в форме правки
+    (новый или существующий); иначе берётся из ?edit=<id> /
+    ?new=<тип>. Секретные значения в форму не попадают.
+    """
+    from core.notify_channels import CHANNELS
+
+    q = request.query_params
+    if edit is None:
+        if q.get("edit"):
+            edit = notifications.get_channel(q["edit"])
+        elif q.get("new") in CHANNELS:
+            edit = notifications.new_channel(q["new"])
+
+    edit_view = None
+    if edit is not None:
+        impl = CHANNELS[edit["type"]]
+        secrets_ = set(impl.secret_fields())
+        stored = edit.get("settings") or {}
+        # «Задано» — только про сохранённое: секрет из формы,
+        # вернувшейся с ошибкой, нигде не записан.
+        persisted = notifications.get_channel(edit["id"])
+        saved = (persisted or {}).get("settings") or {}
+        edit_view = {
+            "channel": edit,
+            "impl": impl,
+            "is_new": persisted is None,
+            "values": {
+                f.name: ("" if f.name in secrets_ else stored.get(f.name, f.default))
+                for f in impl.fields
+            },
+            "secret_set": {name: bool(saved.get(name)) for name in secrets_},
+        }
+
+    return {
+        "channels": notifications.load_config()["channels"],
+        "channel_types": CHANNELS,
+        "channel_status": dict(notifications.dispatcher.status),
+        "edit": edit_view,
+        "form_error": form_error,
+        "notice": q.get("notice", ""),
+        "notice_ok": q.get("ok", "1") == "1",
+    }
+
+
+def _notifications_page(request: Request, **kw):
+    context = {
+        "active_tab": "notifications",
+        "message": "",
+        "service": get_status(),
+        "scheduler_config": scheduler.config,
+        "logs_size": format_size(get_dir_size(LOGS_DIR)),
+        "is_backup_running": is_backup_running(),
+        **_notifications_context(request, **kw),
+    }
+    return templates.TemplateResponse(request, "settings.html", context)
+
+
+def _notifications_redirect(notice: str = "", ok: bool = True):
+    from urllib.parse import urlencode
+    query = {"tab": "notifications"}
+    if notice:
+        query.update(notice=notice, ok="1" if ok else "0")
+    return RedirectResponse("/settings?" + urlencode(query), status_code=303)
+
+
+@app.post("/settings/notifications/save", response_class=HTMLResponse)
+async def settings_notifications_save(
+    request: Request,
+    user: str = Depends(require_auth),
+):
+    from core.notify_channels import CHANNELS
+
+    form = await request.form()
+    channel_type = str(form.get("type") or "")
+    if channel_type not in CHANNELS:
+        raise HTTPException(400, "Неизвестный тип канала")
+
+    config = notifications.load_config()
+    channel_id = str(form.get("id") or "")
+    existing = next((c for c in config["channels"] if c["id"] == channel_id), None)
+    if existing is not None and existing["type"] != channel_type:
+        raise HTTPException(400, "Тип канала не меняется")
+
+    channel = dict(existing) if existing else notifications.new_channel(channel_type)
+    if not existing and channel_id:
+        channel["id"] = channel_id
+    impl = CHANNELS[channel_type]
+
+    plain = {f.name: str(form.get(f"f_{f.name}") or "").strip() for f in impl.fields}
+    channel["name"] = str(form.get("name") or "").strip() or impl.name
+    channel["enabled"] = form.get("enabled") == "on"
+    channel["rules"] = notifications.normalize_rules({
+        key: form.get(key) == "on"
+        for key in ("errors", "recovered", "config", "include_diff", "app")
+    } | {"run": form.get("run")})
+    channel["settings"] = notifications.encrypt_settings(
+        channel_type, plain, (existing or {}).get("settings"),
+    )
+
+    error = impl.validate(notifications.decrypt_settings(channel))
+    if error:
+        # Показать форму снова — с введёнными значениями
+        # (секретные поля — только признак «задано»).
+        return _notifications_page(request, edit=channel, form_error=error)
+
+    if existing:
+        config["channels"] = [channel if c["id"] == channel["id"] else c
+                              for c in config["channels"]]
+    else:
+        config["channels"].append(channel)
+    notifications.save_config(config)
+    logging.info("🔔 Канал уведомлений «%s» (%s) сохранён", channel["name"], channel_type)
+    return _notifications_redirect(f"Канал «{channel['name']}» сохранён")
+
+
+@app.post("/settings/notifications/{channel_id}/delete")
+def settings_notifications_delete(channel_id: str, user: str = Depends(require_auth)):
+    config = notifications.load_config()
+    channel = next((c for c in config["channels"] if c["id"] == channel_id), None)
+    if channel is None:
+        raise HTTPException(404, "Канал не найден")
+    config["channels"] = [c for c in config["channels"] if c["id"] != channel_id]
+    notifications.save_config(config)
+    logging.info("🔔 Канал уведомлений «%s» удалён", channel["name"])
+    return _notifications_redirect(f"Канал «{channel['name']}» удалён")
+
+
+@app.post("/settings/notifications/{channel_id}/toggle")
+def settings_notifications_toggle(channel_id: str, user: str = Depends(require_auth)):
+    config = notifications.load_config()
+    for c in config["channels"]:
+        if c["id"] == channel_id:
+            c["enabled"] = not c.get("enabled")
+            notifications.save_config(config)
+            state = "включён" if c["enabled"] else "выключен"
+            return _notifications_redirect(f"Канал «{c['name']}» {state}")
+    raise HTTPException(404, "Канал не найден")
+
+
+@app.post("/settings/notifications/{channel_id}/test")
+def settings_notifications_test(channel_id: str, user: str = Depends(require_auth)):
+    channel = notifications.get_channel(channel_id)
+    if channel is None:
+        raise HTTPException(404, "Канал не найден")
+    ok, detail = notifications.dispatcher.send_test(channel)
+    if ok:
+        return _notifications_redirect(f"Проверочное сообщение в «{channel['name']}» отправлено")
+    return _notifications_redirect(f"«{channel['name']}»: {detail}", ok=False)
 
 
 @app.post("/settings/general/save")

@@ -31,6 +31,7 @@
                 ("retention", "🧹 Очистка"),
                 ("storage",   "🗄 Хранилища"),
                 ("service",   "⚙ Служба"),
+                ("notifications", "🔔 Уведомления"),
                 ("monitoring", "📈 Мониторинг"),
             ] %}
             {% for tab_id, tab_label in _tabs %}
@@ -61,6 +62,8 @@
             {% include "_settings_tab_storage.html" %}
         {% elif active_tab == "service" %}
             {% include "_settings_tab_service.html" %}
+        {% elif active_tab == "notifications" %}
+            {% include "_settings_tab_notifications.html" %}
         {% elif active_tab == "monitoring" %}
             {% include "_settings_tab_monitoring.html" %}
         {% endif %}
