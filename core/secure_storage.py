@@ -1,5 +1,20 @@
+# =========================================================
+# core/secure_storage.py — шифрование паролей и секретов
+# =========================================================
+#
+# Ключ Fernet — data/secret.key (core.context.SECRET_KEY_FILE).
+# Без него зашифрованные пароли устройств и хранилищ не
+# расшифровать: его нужно сохранять вместе с data/.
+#
+# В приложении используйте get_secure_storage() — один
+# экземпляр на процесс.
+#
+# =========================================================
+
 import logging
 import os
+import shutil
+import threading
 
 from cryptography.fernet import Fernet
 
@@ -10,13 +25,8 @@ logger = logging.getLogger(__name__)
 class SecureStorage:
     def __init__(self, storage_dir=None):
         if storage_dir is None:
-            # Ключ всегда рядом с приложением (BASE_DIR):
-            # в исходниках — корень проекта, в EXE — папка
-            # с .exe. Вычислять от __file__ нельзя: в EXE
-            # модуль лежит внутри _internal/, и там был бы
-            # создан второй, «чужой» ключ.
-            from core.context import BASE_DIR
-            self.storage_dir = str(BASE_DIR)
+            from core.context import SECRET_KEY_FILE
+            self.storage_dir = str(SECRET_KEY_FILE.parent)
         else:
             self.storage_dir = str(storage_dir)
 
@@ -63,3 +73,42 @@ class SecureStorage:
                 "значение: %s", exc,
             )
             return ""
+
+
+# =========================================================
+# Один экземпляр на процесс
+# =========================================================
+
+_instances: dict[str, SecureStorage] = {}
+_instances_lock = threading.Lock()
+
+
+def _adopt_legacy_key(key_file) -> None:
+    """
+    Прежние версии держали secret.key в корне программы.
+    Если в data/ ключа ещё нет — копируем оттуда (копия, а не
+    перенос: запущенный старый процесс не создаст себе новый,
+    чужой ключ на месте пропавшего).
+    """
+    from core.context import BASE_DIR
+
+    legacy = BASE_DIR / "secret.key"
+    if key_file.exists() or not legacy.is_file() or legacy == key_file:
+        return
+    key_file.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(legacy, key_file)
+    logger.info("🔑 secret.key скопирован в %s", key_file)
+
+
+def get_secure_storage() -> SecureStorage:
+    """Общий SecureStorage с ключом data/secret.key."""
+    from core.context import SECRET_KEY_FILE
+
+    key = str(SECRET_KEY_FILE)
+    with _instances_lock:
+        inst = _instances.get(key)
+        if inst is None:
+            _adopt_legacy_key(SECRET_KEY_FILE)
+            inst = SecureStorage(SECRET_KEY_FILE.parent)
+            _instances[key] = inst
+        return inst

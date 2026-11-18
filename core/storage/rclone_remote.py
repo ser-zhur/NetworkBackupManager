@@ -88,9 +88,8 @@ def _flags(base: list[str], type_name: str) -> list[str]:
 
 
 def _secure_storage():
-    from core.context import BASE_DIR
-    from core.secure_storage import SecureStorage
-    return SecureStorage(BASE_DIR)
+    from core.secure_storage import get_secure_storage
+    return get_secure_storage()
 
 
 def password_option_names(type_name: str) -> set[str]:

@@ -60,9 +60,8 @@ def is_archive_name(name: str) -> bool:
 
 
 def _storage():
-    from core.context import BASE_DIR
-    from core.secure_storage import SecureStorage
-    return SecureStorage(BASE_DIR)
+    from core.secure_storage import get_secure_storage
+    return get_secure_storage()
 
 
 def get_password() -> str:

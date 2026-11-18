@@ -15,10 +15,9 @@ from datetime import datetime
 from pathlib import Path
 
 from core import backup_state
-from core.secure_storage import SecureStorage
+from core.secure_storage import get_secure_storage
 from core.context import (
     PLUGINS_DIR,
-    BASE_DIR,
     STATE_FILE,
     load_json,
     save_json,
@@ -55,7 +54,7 @@ class PluginManager:
         self.plugins_dir = PLUGINS_DIR
         self._plugins = {}
         # Явно тот же ключ, что и у web/server.py.
-        self.storage = SecureStorage(BASE_DIR)
+        self.storage = get_secure_storage()
         self.storage_manager = storage_manager
 
         # Сериализует изменения списков routers в памяти и
@@ -154,7 +153,7 @@ class PluginManager:
                     with open(routers_path, "r", encoding="utf-8") as f:
                         routers_data = json.load(f)
 
-                    # Приводим относительные пути бэкапов к BASE_DIR
+                    # Приводим относительные пути бэкапов к HOME_DIR
                     for router in routers_data:
                         backup_path = router.get("backup_path")
                         if backup_path:

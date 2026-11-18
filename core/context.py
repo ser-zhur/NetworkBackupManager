@@ -27,12 +27,28 @@ else:
 
 
 # =========================================================
+# Папка данных (NBM_HOME)
+# =========================================================
+#
+# BASE_DIR — код: main.py/EXE, core, web, plugins. Только чтение.
+# HOME_DIR — всё изменяемое: data/, logs/, backups/.
+#
+# По умолчанию HOME_DIR = BASE_DIR (установка на Windows —
+# всё в одной папке). В Docker/Linux задаётся переменной
+# окружения NBM_HOME (например, /var/lib/nbm), чтобы данные
+# жили отдельно от кода и переживали обновление.
+
+_home_env = os.environ.get("NBM_HOME", "").strip()
+HOME_DIR = Path(_home_env).expanduser().resolve() if _home_env else BASE_DIR
+
+
+# =========================================================
 # Каталоги
 # =========================================================
 
-DATA_DIR = BASE_DIR / "data"
-LOGS_DIR = BASE_DIR / "logs"
-BACKUPS_DIR = BASE_DIR / "backups"
+DATA_DIR = HOME_DIR / "data"
+LOGS_DIR = HOME_DIR / "logs"
+BACKUPS_DIR = HOME_DIR / "backups"
 PLUGINS_DIR = BASE_DIR / "plugins"
 WEB_DIR = BASE_DIR / "web"
 
@@ -46,6 +62,10 @@ SCHEDULER_FILE = DATA_DIR / "scheduler.json"
 STATE_FILE = DATA_DIR / "state.json"
 AUTH_FILE = DATA_DIR / "auth.json"
 
+# Ключ шифрования паролей и секретов (Fernet).
+# Раньше лежал в корне программы — см. secure_storage.
+SECRET_KEY_FILE = DATA_DIR / "secret.key"
+
 
 # =========================================================
 # Путь к бэкапам устройства
@@ -54,8 +74,8 @@ AUTH_FILE = DATA_DIR / "auth.json"
 def resolve_backup_path(raw) -> Path:
     """
     Единое правило для backup_path устройства:
-    абсолютный — как есть, относительный — от BASE_DIR
-    (папка приложения / рядом с EXE).
+    абсолютный — как есть, относительный — от HOME_DIR
+    (папка данных; по умолчанию — папка приложения).
 
     Используется везде: загрузка routers.json, формы
     добавления/редактирования, плагины, git, UI. Иначе
@@ -65,7 +85,7 @@ def resolve_backup_path(raw) -> Path:
     """
     path = Path(str(raw).strip())
     if not path.is_absolute():
-        path = BASE_DIR / path
+        path = HOME_DIR / path
     return path.resolve()
 
 

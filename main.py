@@ -28,12 +28,7 @@ logger = logging.getLogger("nbm.main")
 # ОСНОВНЫЕ ПУТИ
 # =========================================================
 
-# FIX: APPLICATION_DIR вычисляется, но в этом файле не используется.
-# Оставлен на случай, если понадобится в других модулях через import.
-if getattr(sys, "frozen", False):
-    APPLICATION_DIR = Path(sys.executable).resolve().parent
-else:
-    APPLICATION_DIR = Path(__file__).resolve().parent
+# Пути — в core/context.py (BASE_DIR — код, HOME_DIR — данные).
 
 
 # =========================================================

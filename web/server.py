@@ -46,9 +46,7 @@ from fastapi.security import (
 )
 
 
-from core.secure_storage import (
-    SecureStorage,
-)
+from core.secure_storage import get_secure_storage
 
 from core.scheduler import (
     BackupScheduler,
@@ -76,6 +74,7 @@ from core.service_installer import (
 
 from core.context import (
     BASE_DIR,
+    HOME_DIR,
     BACKUPS_DIR,
     DATA_DIR,
     LOGS_DIR,
@@ -151,9 +150,7 @@ from core.backup_state import (
 # CORE
 # =========================================================
 
-storage = SecureStorage(
-    str(BASE_DIR)
-)
+storage = get_secure_storage()
 
 # WWW-Authenticate для всех 401: charset="UTF-8" (RFC 7617)
 # подсказывает браузеру кодировать логин/пароль в UTF-8.
@@ -390,11 +387,7 @@ app.mount(
 
 templates = None
 
-if (
-    BASE_DIR
-    / "web"
-    / "templates"
-).exists():
+if (WEB_DIR / "templates").exists():
 
     templates = Jinja2Templates(
         directory=str(
@@ -5322,6 +5315,7 @@ def _protected_dirs() -> list[Path]:
     """
     dirs = [
         BASE_DIR,
+        HOME_DIR,
         DATA_DIR,
         LOGS_DIR,
         PLUGINS_DIR,
