@@ -1083,13 +1083,13 @@ def _device_storage_view(
 # =========================================================
 
 def _raise_routers_save_error(where: str, exc: Exception):
-    """Лог + HTTP 500 при неудачной записи routers.json."""
+    """Лог + HTTP 500 при неудачной записи devices.json."""
     logging.error(
-        "%s: не удалось сохранить routers.json: %s",
+        "%s: не удалось сохранить devices.json: %s",
         where, exc, exc_info=True,
     )
     raise HTTPException(
-        500, f"Не удалось сохранить routers.json: {exc}",
+        500, f"Не удалось сохранить devices.json: {exc}",
     )
 
 
@@ -1140,7 +1140,7 @@ def _parse_tags(raw) -> list[str]:
 def _safe_router_tags(router: dict) -> list[str]:
     """
     Возвращает гарантированно список строк — даже если
-    пользователь вручную испортил routers.json (например,
+    пользователь вручную испортил devices.json (например,
     записал строку или число вместо массива).
     """
     raw = router.get("tags")
@@ -1976,7 +1976,7 @@ def execute_device_backup_task(
         created_files = backup_func(secure_router)
         
         # Если плагин определил служебные поля (ros_version),
-        # переносим их в in-memory конфиг и routers.json.
+        # переносим их в in-memory конфиг и devices.json.
         if plugin_manager is not None:
             try:
                 plugin_manager.persist_router_service_fields(
@@ -2619,7 +2619,7 @@ def remote_delete(rid: str, user: str = Depends(require_auth)):
                         plugin_manager.save_routers(device_type)
                     except Exception as exc:
                         logging.error(
-                            "хранилище %s: не удалось обновить routers.json (%s): %s",
+                            "хранилище %s: не удалось обновить devices.json (%s): %s",
                             rid, device_type, exc,
                         )
 
@@ -2719,7 +2719,7 @@ def remote_enable_all(rid: str, user: str = Depends(require_auth)):
                     errors += 1
                     revert(items)           # в памяти — как на диске
                     logging.error(
-                        "хранилище %s: не удалось обновить routers.json (%s): %s",
+                        "хранилище %s: не удалось обновить devices.json (%s): %s",
                         rid, device_type, exc,
                     )
 
@@ -3388,7 +3388,7 @@ async def save_router_endpoint(
         "ssh_pass":
             encrypted_ssh_pass,
 
-        # Сразу абсолютный — как после загрузки routers.json.
+        # Сразу абсолютный — как после загрузки devices.json.
         # Иначе до перезапуска плагин, git и UI разрешали бы
         # относительный путь от разных каталогов.
         "backup_path":
@@ -3399,7 +3399,7 @@ async def save_router_endpoint(
     }
 
     # Название — опционально. Не пишем пустую строку
-    # в routers.json, чтобы файл оставался компактным.
+    # в devices.json, чтобы файл оставался компактным.
     if device_name:
         new_router["name"] = device_name
 
@@ -3428,7 +3428,7 @@ async def save_router_endpoint(
 
     new_router["storage"] = _parse_storage_form(form, {})
     
-    # Теги — опционально. Не пишем пустой массив в routers.json,
+    # Теги — опционально. Не пишем пустой массив в devices.json,
     # чтобы файл оставался компактным.
     tags = _parse_tags(form.get("tags") or "")
     if tags:
@@ -3704,7 +3704,7 @@ def toggle_pin(
     user: str = Depends(require_auth),
 ):
     """
-    Переключает флаг pinned у устройства и сохраняет routers.json.
+    Переключает флаг pinned у устройства и сохраняет devices.json.
 
     Возвращает редирект на Referer (чтобы пользователь остался
     на той же странице с теми же фильтрами).
@@ -3730,10 +3730,10 @@ def toggle_pin(
         if is_pinned:
             router["pinned"] = True
         else:
-            # Не мусорим в routers.json, если сняли закрепление
+            # Не мусорим в devices.json, если сняли закрепление
             router.pop("pinned", None)
 
-        # 3. Сохраняем в routers.json (атомарно)
+        # 3. Сохраняем в devices.json (атомарно)
         try:
             plugin_manager.save_routers(device_type)
         except Exception as exc:
@@ -4880,7 +4880,7 @@ async def update_router(
         "ssh_pass":
             ssh_pass_encrypted,
 
-        # Сразу абсолютный — как после загрузки routers.json.
+        # Сразу абсолютный — как после загрузки devices.json.
         # Иначе до перезапуска плагин, git и UI разрешали бы
         # относительный путь от разных каталогов.
         "backup_path":
@@ -5467,7 +5467,7 @@ async def delete_device(
 ):
     """
     Удаляет устройство целиком:
-        • запись из routers.json;
+        • запись из devices.json;
         • запись и переиндексацию в state.json;
         • директорию с бэкапами (recurse, включая .git);
         • опционально — SSH-ключ, но только если он
@@ -5475,7 +5475,7 @@ async def delete_device(
 
     Порядок:
         1. Собрать статистику.
-        2. Удалить из routers.json.
+        2. Удалить из devices.json.
         3. Пересобрать state.json.
         4. Удалить директорию бэкапов.
         5. Удалить SSH-ключ (если разрешено).
@@ -5559,7 +5559,7 @@ async def delete_device(
 
         else:
             # Проверяем использование другими устройствами
-            # ДО удаления записи из routers.json.
+            # ДО удаления записи из devices.json.
             shared_with = []
             for i, other in enumerate(routers):
                 if i == index:
@@ -5586,7 +5586,7 @@ async def delete_device(
                     device_type, key_name,
                 )
 
-    # ---- 2. Удалить запись из routers.json ----
+    # ---- 2. Удалить запись из devices.json ----
 
     with plugin_manager.routers_lock:
         # Пока разбиралась форма, список мог измениться —

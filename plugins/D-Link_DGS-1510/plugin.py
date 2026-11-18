@@ -43,7 +43,7 @@ def backup_dlink_ssh(router):
     Скачивает running-config с D-Link DGS-1510 по SSH
     через интерактивную сессию (invoke_shell).
 
-    router (из routers.json, ssh_pass уже расшифрован):
+    router (из data/devices.json, ssh_pass уже расшифрован):
         host / ip        : адрес коммутатора
         port             : SSH-порт (по умолчанию 22)
         username / user  : имя пользователя (по умолчанию "admin")

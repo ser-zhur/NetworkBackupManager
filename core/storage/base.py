@@ -250,7 +250,7 @@ class PushContext:
     # исходные данные без изменений.
     normalize: NormalizeFn = identity_normalize
 
-    # Название устройства из routers.json (для {name}
+    # Название устройства из devices.json (для {name}
     # в remote_dir). Пусто — {name} = {host}.
     device_name: str = ""
 

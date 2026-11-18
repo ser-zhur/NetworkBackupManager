@@ -1,5 +1,6 @@
 import time
 import sys
+from pathlib import Path
 import os
 import paramiko
 from scp import SCPClient
@@ -10,7 +11,7 @@ from scp import SCPClient
 HOST = "192.0.2.2"
 PORT = 22
 USERNAME = "backup"
-KEY_PATH = r"D:\MySoft\routerbackups\NetworkBackupManager\plugins\Mikrotik\id_rsa.key"
+KEY_PATH = str(Path(__file__).resolve().parents[2] / "data" / "keys" / "mikrotik" / "id_rsa.key")
 
 TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 LOCAL_BACKUP = os.path.join(TEST_DIR, "test_config.backup")

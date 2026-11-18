@@ -65,13 +65,13 @@ class PluginManager:
         self.storage_manager = storage_manager
 
         # Сериализует изменения списков routers в памяти и
-        # запись routers.json. RLock — чтобы код, уже
+        # запись devices.json. RLock — чтобы код, уже
         # держащий лок (веб-обработчик), мог вызвать
         # save_routers() без взаимоблокировки.
         self.routers_lock = threading.RLock()
 
     # =====================================================
-    # ROUTERS.JSON
+    # DEVICES.JSON
     # =====================================================
 
     def save_routers(self, device_type: str | None = None) -> None:
@@ -901,7 +901,7 @@ class PluginManager:
         """
         Переносит служебные поля из рабочей копии роутера
         (source — тот же dict, что ушёл в плагин) в in-memory
-        конфиг и в routers.json.
+        конфиг и в devices.json.
 
         original — объект роутера из списка в памяти, для
         которого запускался бэкап. Если передан, устройство
@@ -922,7 +922,7 @@ class PluginManager:
                 found = self.find_router_index(routers, original)
                 if found is None:
                     logging.info(
-                        "routers.json: устройство %s/%s изменено "
+                        "devices.json: устройство %s/%s изменено "
                         "или удалено во время бэкапа — служебные "
                         "поля не сохраняем",
                         device_type, index,
@@ -949,7 +949,7 @@ class PluginManager:
             try:
                 self.save_routers(device_type)
                 logging.info(
-                    "routers.json: обновлены поля %s "
+                    "devices.json: обновлены поля %s "
                     "для %s/%s",
                     changed_fields,
                     device_type,
@@ -957,7 +957,7 @@ class PluginManager:
                 )
             except Exception as exc:
                 logging.warning(
-                    "Не удалось сохранить routers.json "
+                    "Не удалось сохранить devices.json "
                     "(%s): %s",
                     device_type, exc,
                 )

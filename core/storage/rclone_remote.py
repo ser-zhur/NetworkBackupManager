@@ -8,7 +8,7 @@
 # Описание в config.json → "remotes":
 #
 #     {
-#         "id": "webdav",                # ключ в routers.json
+#         "id": "webdav",                # ключ в devices.json
 #         "name": "Nextcloud офис",
 #         "type": "webdav",              # тип rclone
 #         "options": {"url": ..., "user": ..., "pass": <enc>},

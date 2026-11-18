@@ -7,7 +7,7 @@
 #
 # Создаёт:
 #   plugins/demo/plugin.py          минимальный плагин
-#   plugins/demo/routers.json       несколько устройств
+#   data/devices.json               устройства типа demo (прежние demo заменяются)
 #   backups/demo/device_N/.git      готовые репы с историей
 #
 # Запуск из корня проекта:
@@ -105,6 +105,14 @@ def clean():
     if BACKUP_ROOT.exists():
         shutil.rmtree(BACKUP_ROOT)
         removed.append(str(BACKUP_ROOT.relative_to(PROJECT_ROOT)))
+
+    from core import devices as device_store
+
+    devices = device_store.load_devices()
+    kept = [d for d in devices if d.get("type") != "demo"]
+    if len(kept) != len(devices):
+        device_store.save_devices(kept)
+        removed.append(f"data/devices.json: устройств demo — {len(devices) - len(kept)}")
 
     if removed:
         print("Удалено:")
@@ -275,15 +283,13 @@ def _seed_device(
 
 
 # =========================================================
-# ЗАПИСЬ ROUTERS.JSON
+# ЗАПИСЬ УСТРОЙСТВ (data/devices.json)
 # =========================================================
 
 def _write_routers(devices):
     """
     devices — список dict с полями name, host, backup_path.
     """
-    import json
-
     routers = []
     for d in devices:
         routers.append({
@@ -310,10 +316,12 @@ def _write_routers(devices):
         encoding="utf-8",
     )
 
-    (PLUGIN_DIR / "routers.json").write_text(
-        json.dumps(routers, ensure_ascii=False, indent=4),
-        encoding="utf-8",
-    )
+    from core import devices as device_store
+
+    others = [d for d in device_store.load_devices() if d.get("type") != "demo"]
+    demo = [{"id": "", "type": "demo", **r} for r in routers]
+    device_store.ensure_ids(others + demo)
+    device_store.save_devices(others + demo)
 
 
 # =========================================================
@@ -378,7 +386,7 @@ def seed(
     print("=" * 60)
     print("Готово. Создано:")
     print(f"  plugins/demo/plugin.py")
-    print(f"  plugins/demo/routers.json ({devices_count} устройств)")
+    print(f"  data/devices.json ({devices_count} устройств demo)")
     print(f"  backups/demo/device_1..{devices_count}/")
 
     print()

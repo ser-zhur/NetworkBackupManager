@@ -71,7 +71,7 @@ def test_save_router_stores_absolute_path(monkeypatch):
     if not s.plugin_manager or "mikrotik" not in s.plugin_manager._plugins:
         pytest.skip("плагин mikrotik не загружен")
 
-    # Реальный routers.json не пишем
+    # Реальный devices.json не пишем
     monkeypatch.setattr(s.plugin_manager, "save_routers", lambda t: None)
     s.app.dependency_overrides[s.require_auth] = lambda: "test"
 

@@ -393,8 +393,6 @@ echo [7/9] Preparing external directories...
 
 if not exist "dist\NetworkBackupManager\data"              mkdir "dist\NetworkBackupManager\data"
 if not exist "dist\NetworkBackupManager\plugins"           mkdir "dist\NetworkBackupManager\plugins"
-if not exist "dist\NetworkBackupManager\plugins\Mikrotik"  mkdir "dist\NetworkBackupManager\plugins\Mikrotik"
-if not exist "dist\NetworkBackupManager\plugins\Pfsense"   mkdir "dist\NetworkBackupManager\plugins\Pfsense"
 if not exist "dist\NetworkBackupManager\backups"           mkdir "dist\NetworkBackupManager\backups"
 if not exist "dist\NetworkBackupManager\logs"              mkdir "dist\NetworkBackupManager\logs"
 if not exist "dist\NetworkBackupManager\storages"          mkdir "dist\NetworkBackupManager\storages"
@@ -412,58 +410,31 @@ REM ========================================================
 echo [8/9] Copying plugin and storage files...
 
 REM --------------------------------------------------------
-REM MIKROTIK
+REM PLUGINS: plugin.py of every plugins\<Name>\
 REM --------------------------------------------------------
 
-if exist "plugins\Mikrotik\plugin.py" (
-    copy /Y ^
-        "plugins\Mikrotik\plugin.py" ^
-        "dist\NetworkBackupManager\plugins\Mikrotik\plugin.py" >nul 2>&1
-
-    if errorlevel 1 (
-        echo ERROR copying Mikrotik plugin.py
-        >>"%LOG_FILE%" echo ERROR copying Mikrotik plugin.py
-        pause
-        exit /b 1
+for /d %%P in ("plugins\*") do (
+    if exist "%%P\plugin.py" (
+        if not exist "dist\NetworkBackupManager\plugins\%%~nxP" mkdir "dist\NetworkBackupManager\plugins\%%~nxP"
+        copy /Y "%%P\plugin.py" "dist\NetworkBackupManager\plugins\%%~nxP\plugin.py" >nul 2>&1
+        if errorlevel 1 (
+            echo ERROR copying %%P\plugin.py
+            >>"%LOG_FILE%" echo ERROR copying %%P\plugin.py
+            pause
+            exit /b 1
+        )
+        echo   [OK] %%P\plugin.py
+        >>"%LOG_FILE%" echo   [OK] %%P\plugin.py
     )
-
-    echo   [OK] plugins\Mikrotik\plugin.py
-    >>"%LOG_FILE%" echo   [OK] plugins\Mikrotik\plugin.py
-) else (
-    echo   [WARNING] plugins\Mikrotik\plugin.py not found - plugin will be skipped
-    >>"%LOG_FILE%" echo   [WARNING] plugins\Mikrotik\plugin.py not found - plugin will be skipped
-)
-
-REM --------------------------------------------------------
-REM PFSENSE
-REM --------------------------------------------------------
-
-if exist "plugins\Pfsense\plugin.py" (
-    copy /Y ^
-        "plugins\Pfsense\plugin.py" ^
-        "dist\NetworkBackupManager\plugins\Pfsense\plugin.py" >nul 2>&1
-
-    if errorlevel 1 (
-        echo ERROR copying Pfsense plugin.py
-        >>"%LOG_FILE%" echo ERROR copying Pfsense plugin.py
-        pause
-        exit /b 1
-    )
-
-    echo   [OK] plugins\Pfsense\plugin.py
-    >>"%LOG_FILE%" echo   [OK] plugins\Pfsense\plugin.py
-) else (
-    echo   [WARNING] plugins\Pfsense\plugin.py not found - plugin will be skipped
-    >>"%LOG_FILE%" echo   [WARNING] plugins\Pfsense\plugin.py not found - plugin will be skipped
 )
 
 echo.
 echo Only plugin.py files were copied.
-echo routers.json and SSH keys were NOT copied.
+echo Devices and SSH keys live in data\ and were NOT copied.
 echo.
 >>"%LOG_FILE%" echo.
 >>"%LOG_FILE%" echo Only plugin.py files were copied.
->>"%LOG_FILE%" echo routers.json and SSH keys were NOT copied.
+>>"%LOG_FILE%" echo Devices and SSH keys live in data\ and were NOT copied.
 >>"%LOG_FILE%" echo.
 
 REM --------------------------------------------------------

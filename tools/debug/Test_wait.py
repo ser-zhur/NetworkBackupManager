@@ -1,5 +1,6 @@
 import time
 import sys
+from pathlib import Path
 import paramiko
 
 # ============================================================
@@ -8,7 +9,7 @@ import paramiko
 HOST = "192.0.2.2"
 PORT = 22
 USERNAME = "backup"
-KEY_PATH = r"D:\MySoft\routerbackups\NetworkBackupManager\plugins\Mikrotik\id_rsa.key"
+KEY_PATH = str(Path(__file__).resolve().parents[2] / "data" / "keys" / "mikrotik" / "id_rsa.key")
 
 # ============================================================
 # ФУНКЦИЯ ПРОВЕРКИ

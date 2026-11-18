@@ -206,6 +206,9 @@ def _run_command(cmd, timeout=60, verbose=False):
 
 
 def _get_key_path(router):
+    # Ядро передаёт абсолютный путь из data/keys/mikrotik/.
+    # Относительное имя (ключа там нет) — ищем, как раньше,
+    # в папке плагина.
     key_filename = router.get(
         "ssh_key",
         router.get("private_key", "id_rsa.key"),
@@ -227,8 +230,9 @@ def _get_key_path(router):
     if not os.path.exists(key_path):
         raise FileNotFoundError(
             f"SSH-ключ не найден: {key_path}. "
-            f"Проверьте параметр 'ssh_key' или "
-            f"'private_key' в конфиге роутера "
+            f"Положите ключ в data/keys/<тип устройства>/ "
+            f"или проверьте поле 'ssh_key' / 'private_key' "
+            f"устройства "
             f"(host={router.get('host')})."
         )
 
@@ -677,7 +681,7 @@ def backup_router(router):
     """
     Резервное копирование MikroTik с кэшем версии RouterOS.
 
-    Если в routers.json есть поле ros_version — начинаем с
+    Если у устройства есть поле ros_version — начинаем с
     него. Иначе — с ROS7 (историческое поведение).
     При успехе плагин записывает определённую версию в
     переданный словарь; plugin_manager сохранит её на диск.
@@ -688,7 +692,7 @@ def backup_router(router):
     """
 
     # PluginManager передаёт уже абсолютный путь. На случай
-    # прямого вызова — то же общее правило (от BASE_DIR),
+    # прямого вызова — то же общее правило (от HOME_DIR),
     # а не от папки плагина.
     from core.context import resolve_backup_path
 

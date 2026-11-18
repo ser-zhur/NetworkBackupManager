@@ -32,7 +32,7 @@ HOST = "192.0.2.1"          # ← поменяйте
 PORT = 22
 USERNAME = "backup"         # ← поменяйте, если ходите под другим
 
-KEY_PATH = Path(__file__).resolve().parent / "id_rsa.key"
+KEY_PATH = Path(__file__).resolve().parents[2] / "data" / "keys" / "mikrotik" / "id_rsa.key"
 
 DEBUG_LOG = Path(__file__).resolve().parent / "paramiko_debug.log"
 

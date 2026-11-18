@@ -12,14 +12,14 @@
 #         "type": "webdav", "options": {...},
 #         "base_dir": "/", "mode": "changes_only"}, ...]
 #
-#   routers.json — у устройства только ползунки:
+#   devices.json — у устройства только ползунки:
 #       "storage": {"webdav": {"enabled": true}, ...}
 #
 # Папка устройства на хранилище = <base_dir>/<имя локальной
 # папки бэкапов> (core.storage.base.device_remote_dir).
 #
 # Перенос старых схем (идемпотентно, при старте сервера):
-#   1) настройки в каждом устройстве (routers.json)
+#   1) настройки в каждом устройстве (devices.json)
 #   2) общие настройки по типам  (config.json → "storages")
 #   → список хранилищ rclone     (config.json → "remotes")
 #

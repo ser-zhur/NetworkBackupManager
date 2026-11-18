@@ -28,7 +28,7 @@ HOST = "192.0.2.1"          # ← поменяйте
 PORT = 22
 USERNAME = "backup"         # ← поменяйте, если ходите под другим
 
-KEY_FILE = Path(r"D:\MySoft\routerbackups\NetworkBackupManager\plugins\Mikrotik\id_rsa.key")
+KEY_FILE = Path(__file__).resolve().parents[2] / "data" / "keys" / "mikrotik" / "id_rsa.key"
 
 DEBUG_LOG = Path(__file__).resolve().with_name("paramiko_debug.log")
 
