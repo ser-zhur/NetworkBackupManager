@@ -22,7 +22,7 @@
                 <span>устройство #{{ index }}</span>
             </p>
         </div>
-            <a href="/?selected={{ device_type }}/{{ index }}"
+            <a href="/?selected={{ device_id }}"
                class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
                       bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
                       border border-gray-200 dark:border-slate-700 transition">
@@ -30,7 +30,7 @@
             </a>
     </div>
 
-    <form action="/update-router/{{ device_type }}/{{ index }}" method="POST" class="space-y-5">
+    <form action="/device/{{ device_id }}/update" method="POST" class="space-y-5">
 
         <!-- 0. Статус устройства -->
         <section class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm p-6">

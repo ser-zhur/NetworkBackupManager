@@ -212,7 +212,7 @@ def test_push_via_plugin_manager_to_two_local_remotes(cfg_file, tmp_path, monkey
     assert (tmp_path / "r1" / "Dev_Local" / "config.rsc").read_bytes() == b"cfg"
     assert (tmp_path / "r2" / "Dev_Local" / "config.rsc").read_bytes() == b"cfg"
     state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
-    backends = state["mikrotik/0"]["backends"]
+    backends = state[router["id"]]["backends"]
     assert backends["one"]["ok"] and backends["two"]["ok"]
     assert backends["broken"]["ok"] is False and "не настроено" in backends["broken"]["message"]
 
@@ -239,7 +239,7 @@ def web(cfg_file, tmp_path, monkeypatch):
     monkeypatch.setattr(s.plugin_manager, "_plugins", {
         "fake": {"func": None, "routers": routers, "dir": str(tmp_path)},
     })
-    monkeypatch.setattr(s.plugin_manager, "save_routers", lambda t: None)
+    monkeypatch.setattr(s.plugin_manager, "save_routers", lambda *a: None)
     s.storage_manager.reload_remotes()
     s.app.dependency_overrides[s.require_auth] = lambda: "test"
     yield s, TestClient(s.app), routers
@@ -397,12 +397,13 @@ def test_device_form_toggles_for_remotes(web, tmp_path):
         {"id": "w", "name": "Без url", "type": "webdav", "options": {}, "base_dir": "/"},
     ])
     s.storage_manager.reload_remotes()
-    page = c.get("/edit/fake/0").text
+    did = s.plugin_manager.device_id("fake", 0)
+    page = c.get(f"/device/{did}/edit").text
     assert 'name="storage_x_enabled"' in page
     assert "/a" in page                                        # итоговая папка
     assert "Не настроено" in page                              # webdav без url
 
-    r = c.post("/update-router/fake/0", data={
+    r = c.post(f"/device/{did}/update", data={
         "ip": "10.0.0.1", "backup_path": routers[0]["backup_path"],
         "storage_x_enabled": "true", "storage_w_enabled": "true",
     }, follow_redirects=False)

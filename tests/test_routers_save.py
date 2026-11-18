@@ -207,7 +207,7 @@ def test_toggle_pin_rolls_back_on_save_error(web):
     routers = s.plugin_manager._plugins[device_type]["routers"]
 
     before = routers[0].get("pinned")
-    r = client.post(f"/toggle-pin/{device_type}/0")
+    r = client.post("/device/0123456789ab/toggle-pin")
 
     assert r.status_code == 500
     assert routers[0].get("pinned") == before
@@ -219,7 +219,7 @@ def test_delete_device_rolls_back_on_save_error(web):
     routers = s.plugin_manager._plugins[device_type]["routers"]
 
     snapshot = list(routers)
-    r = client.post(f"/delete-device/{device_type}/0", data={})
+    r = client.post("/device/0123456789ab/delete", data={})
 
     assert r.status_code == 500
     assert routers == snapshot

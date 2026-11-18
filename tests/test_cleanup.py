@@ -112,6 +112,10 @@ class _FakePluginManager:
     def __init__(self, plugins):
         self._plugins = plugins
 
+    @staticmethod
+    def router_id(router):
+        return router.setdefault("id", "0123456789ab")
+
 
 def test_post_backup_cleanup_marks_old(tmp_path, patched_config):
     """

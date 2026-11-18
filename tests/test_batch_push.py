@@ -189,7 +189,7 @@ def test_sync_many_devices_in_one_rclone_run(make_repo, tmp_path, monkeypatch, r
     assert rclone_calls == ["copy"]                          # все устройства — один запуск
     assert prepared == [0, 1, 2]
     for (t, i), repo, n in zip(targets, repos, (2, 3, 4)):
-        r = results[f"{t}/{i}"]
+        r = results[pm.device_id(t, i)]
         assert r["ok"] and r["files"] == n and r["backends"]["r"]["ok"] == 1, r
         assert len(list((tmp_path / "remote" / repo.name).iterdir())) == n
 
@@ -210,7 +210,7 @@ def test_sync_many_skips_busy_device(make_repo, tmp_path, monkeypatch, rclone_ca
     pm, targets, repos = _many_devices(make_repo, tmp_path, monkeypatch, "")
     results = pm.sync_many_to_storages(targets, can_start=lambda t, i: i != 1)
 
-    assert sorted(results) == ["mikrotik/0", "mikrotik/2"]
+    assert sorted(results) == sorted(pm.device_id(t, i) for t, i in targets if i != 1)
     assert not (tmp_path / "remote" / repos[1].name).exists()
 
 

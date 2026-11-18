@@ -675,6 +675,28 @@ def _device_filter_tag(device_type: str, index: int) -> str | None:
     return device_log_tag(device_type, routers[index])
 
 
+def _device_ref(device_id: str) -> tuple[str, int]:
+    """
+    Постоянный id устройства → (тип, текущий номер в списке
+    плагина). 404, если такого устройства нет.
+    """
+    if plugin_manager:
+        with plugin_manager.routers_lock:
+            for device_type, pd in plugin_manager._plugins.items():
+                for index, router in enumerate(pd.get("routers", [])):
+                    if router.get("id") == device_id:
+                        return device_type, index
+    raise HTTPException(status_code=404, detail="Устройство не найдено")
+
+
+def _device_id(device_type: str, index: int) -> str:
+    """
+    (тип, номер) → постоянный id устройства
+    (см. PluginManager.router_id).
+    """
+    return plugin_manager.device_id(device_type, index)
+
+
 # =========================================================
 # LOG READER
 # =========================================================
@@ -1171,7 +1193,7 @@ def _iter_device_backup_paths():
                 continue
 
             yield (
-                f"{device_type}/{idx}",
+                plugin_manager.router_id(router),
                 device_type,
                 idx,
                 router,
@@ -1290,7 +1312,7 @@ def _build_device_payload(
     #   True  — все включённые backend'ы вернули ok=True
     #           (skipped тоже ok=True: «нет изменений» = успех)
     #   False — хотя бы один backend вернул ok=False
-    device_state = _load_device_state(f"{device_type}/{index}")
+    device_state = _load_device_state(_device_id(device_type, index))
 
     last_run_str = device_state.get("last_run") or ""
     backends_state = device_state.get("backends") or {}
@@ -1445,7 +1467,7 @@ def _build_device_payload(
         device_state,
     )
 
-    device_id = f"{device_type}/{index}"
+    device_id = _device_id(device_type, index)
 
     return {
         "id": device_id,
@@ -1586,7 +1608,7 @@ def _build_device_summary(
     Все данные — из router и уже загруженного state_all.
     Только fallback для backup_count читает .git (быстро).
     """
-    device_id = f"{device_type}/{index}"
+    device_id = _device_id(device_type, index)
     st = state_all.get(device_id) or {}
     if not isinstance(st, dict):
         st = {}
@@ -1700,7 +1722,7 @@ def execute_storage_sync_task(
     Возвращает результат sync_git_to_storages или None при
     исключении.
     """
-    device_id = f"{device_type}/{index}"
+    device_id = _device_id(device_type, index)
 
     # Тег как у бэкапа — иначе строки синхронизации не видны
     # в логе устройства (/logs/device/...).
@@ -1816,7 +1838,7 @@ def execute_sync_all_task(user: str) -> dict:
         )
 
         stats["devices"] = len(targets)
-        routers_by_id = {f"{t}/{i}": r for t, i, r in targets}
+        routers_by_id = {plugin_manager.router_id(r): (t, r) for t, i, r in targets}
 
         # Слот устройства занят только на время подготовки его
         # файлов (чтение git); выгрузка идёт уже без него, и
@@ -1824,7 +1846,7 @@ def execute_sync_all_task(user: str) -> dict:
         held: set[str] = set()
 
         def can_start(device_type: str, idx: int) -> bool:
-            device_id = f"{device_type}/{idx}"
+            device_id = plugin_manager.device_id(device_type, idx)
             if not try_start_sync(device_id):
                 stats["skipped"] += 1
                 logging.info(
@@ -1836,7 +1858,7 @@ def execute_sync_all_task(user: str) -> dict:
             return True
 
         def on_prepared(device_type: str, idx: int) -> None:
-            device_id = f"{device_type}/{idx}"
+            device_id = plugin_manager.device_id(device_type, idx)
             if device_id in held:
                 held.discard(device_id)
                 finish_sync(device_id)
@@ -1853,8 +1875,7 @@ def execute_sync_all_task(user: str) -> dict:
 
         # Итог — в лог каждого устройства, как при одиночной
         for device_id, result in results.items():
-            router = routers_by_id.get(device_id) or {}
-            device_type = device_id.rsplit("/", 1)[0]
+            device_type, router = routers_by_id.get(device_id) or ("", {})
             set_device_context(device_log_tag(device_type, router) if router else device_id)
             try:
                 if result.get("ok"):
@@ -1919,7 +1940,7 @@ def execute_device_backup_task(
     # Слот устройства уже занят в run_backup() через
     # try_start_device(); здесь только освобождаем его
     # в finally.
-    device_id = f"{device_type}/{index}"
+    device_id = _device_id(device_type, index)
 
     debug_connection = bool(secure_router.get("debug_connection"))
 
@@ -2151,15 +2172,15 @@ def read_root(
 # =========================================================
 
 @app.get(
-    "/api/device/{device_type}/{index}",
+    "/api/device/{device_id}",
     response_class=HTMLResponse,
 )
 def api_device_detail(
     request: Request,
-    device_type: str,
-    index: int,
+    device_id: str,
     user: str = Depends(require_auth),
 ):
+    device_type, index = _device_ref(device_id)
     if not plugin_manager or device_type not in plugin_manager._plugins:
         raise HTTPException(status_code=404, detail="Plugin not found")
 
@@ -3448,15 +3469,14 @@ async def save_router_endpoint(
 # SYNC STORAGES (git → все non-authority backend'ы)
 # =========================================================
 
-@app.post("/sync-storages/{device_type}/{index}")
+@app.post("/device/{device_id}/sync-storages")
 def sync_storages_endpoint(
     request: Request,           # <--- ДОБАВЛЕНО
-    device_type: str,
-    index: int,
+    device_id: str,
     background_tasks: BackgroundTasks,
     user: str = Depends(require_auth),
 ):
-    device_id = f"{device_type}/{index}"
+    device_type, index = _device_ref(device_id)
 
     # Не запускаем параллельно с бэкапом или другим sync
     if (
@@ -3512,19 +3532,18 @@ def sync_storages_endpoint(
 # =========================================================
 
 @app.post(
-    "/run-progress/{device_type}/{index}"
+    "/device/{device_id}/run"
 )
 def run_backup(
-    device_type: str,
+    device_id: str,
     request: Request,
-    index: int,
     background_tasks:
         BackgroundTasks,
     user: str = Depends(
         require_auth
     ),
 ):
-    device_id = f"{device_type}/{index}"
+    device_type, index = _device_ref(device_id)
     is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
 
     # Блокируем запуск, если:
@@ -3538,7 +3557,7 @@ def run_backup(
         if is_ajax:
             return Response(status_code=204)
         return RedirectResponse(
-            url=f"/logs/device/{device_type}/{index}",
+            url=f"/device/{device_id}/logs",
             status_code=303,
         )
 
@@ -3624,7 +3643,7 @@ def run_backup(
         if is_ajax:
             return Response(status_code=204)
         return RedirectResponse(
-            url=f"/logs/device/{device_type}/{index}",
+            url=f"/device/{device_id}/logs",
             status_code=303,
         )
 
@@ -3639,7 +3658,7 @@ def run_backup(
     if is_ajax:
         return Response(status_code=204)
     return RedirectResponse(
-        url=f"/logs/device/{device_type}/{index}",
+        url=f"/device/{device_id}/logs",
         status_code=303,
     )
 
@@ -3678,11 +3697,10 @@ def run_now_endpoint(
 # TOGGLE PIN
 # =========================================================
 
-@app.post("/toggle-pin/{device_type}/{index}")
+@app.post("/device/{device_id}/toggle-pin")
 def toggle_pin(
     request: Request,
-    device_type: str,
-    index: int,
+    device_id: str,
     user: str = Depends(require_auth),
 ):
     """
@@ -3691,6 +3709,7 @@ def toggle_pin(
     Возвращает редирект на Referer (чтобы пользователь остался
     на той же странице с теми же фильтрами).
     """
+    device_type, index = _device_ref(device_id)
     device_type = device_type.lower()
 
     if not plugin_manager or device_type not in plugin_manager._plugins:
@@ -3738,7 +3757,7 @@ def toggle_pin(
         return RedirectResponse(url=referer, status_code=303)
 
     return RedirectResponse(
-        url=f"/?selected={device_type}/{index}",
+        url=f"/?selected={device_id}",
         status_code=303,
     )
 # =========================================================
@@ -3746,22 +3765,22 @@ def toggle_pin(
 # =========================================================
 
 @app.get(
-    "/backups/{device_type}/{index}",
+    "/device/{device_id}/backups",
     response_class=HTMLResponse,
 )
 def backups_page(
     request: Request,
-    device_type: str,
-    index: int,
+    device_id: str,
     user: str = Depends(
         require_auth
     ),
 ):
+    device_type, index = _device_ref(device_id)
     # Версионирование полностью в git.
     # Страница «Архивы» оставлена как редирект для совместимости
     # с закладками пользователей.
     return RedirectResponse(
-        url=f"/git/{device_type}/{index}",
+        url=f"/device/{device_id}/git",
         status_code=307,
     )
 
@@ -3816,17 +3835,16 @@ async def save_scheduler_config(
 # =========================================================
 
 @app.get(
-    "/download-backup/"
-    "{device_type}/{index}/{filepath:path}"
+    "/device/{device_id}/download-backup/{filepath:path}"
 )
 def download_backup(
-    device_type: str,
-    index: int,
+    device_id: str,
     filepath: str,
     user: str = Depends(
         require_auth
     ),
 ):
+    device_type, index = _device_ref(device_id)
 
     plugin = (
         plugin_manager
@@ -3930,16 +3948,16 @@ def _get_git_storage_for(device_type: str, index: int):
 # =========================================================
 
 @app.get(
-    "/git/{device_type}/{index}",
+    "/device/{device_id}/git",
     response_class=HTMLResponse,
 )
 def git_history_page(
     request: Request,
-    device_type: str,
-    index: int,
+    device_id: str,
     limit: int = 100,
     user: str = Depends(require_auth),
 ):
+    device_type, index = _device_ref(device_id)
     router, backup_path, storage = _get_git_storage_for(
         device_type, index
     )
@@ -3989,6 +4007,7 @@ def git_history_page(
         {
             "device_type": device_type,
             "index": index,
+            "device_id": device_id,
             "host": host,
             "name": name,
             "backup_path": str(backup_path),
@@ -4010,15 +4029,15 @@ def git_history_page(
 # =========================================================
 
 @app.get(
-    "/git/{device_type}/{index}/download/{sha}/{filename}",
+    "/device/{device_id}/git/download/{sha}/{filename}",
 )
 def git_download_file(
-    device_type: str,
-    index: int,
+    device_id: str,
     sha: str,
     filename: str,
     user: str = Depends(require_auth),
 ):
+    device_type, index = _device_ref(device_id)
     router, backup_path, storage = _get_git_storage_for(
         device_type, index
     )
@@ -4072,15 +4091,15 @@ def _attachment_header(filename: str) -> str:
 # =========================================================
 
 @app.post(
-    "/git/{device_type}/{index}/note/{sha}",
+    "/device/{device_id}/git/note/{sha}",
 )
 async def git_set_note(
-    device_type: str,
-    index: int,
+    device_id: str,
     sha: str,
     request: Request,
     user: str = Depends(require_auth),
 ):
+    device_type, index = _device_ref(device_id)
     router, backup_path, storage = _get_git_storage_for(
         device_type, index
     )
@@ -4108,7 +4127,7 @@ async def git_set_note(
         )
 
     return RedirectResponse(
-        url=f"/git/{device_type}/{index}",
+        url=f"/device/{device_id}/git",
         status_code=303,
     )
 
@@ -4117,11 +4136,10 @@ async def git_set_note(
 # =========================================================
 
 @app.post(
-    "/git/{device_type}/{index}/mark-delete",
+    "/device/{device_id}/git/mark-delete",
 )
 async def git_mark_delete(
-    device_type: str,
-    index: int,
+    device_id: str,
     request: Request,
     user: str = Depends(require_auth),
 ):
@@ -4133,6 +4151,7 @@ async def git_mark_delete(
     изменения сразу (строки станут приглушёнными).
     Реальное удаление — через /sweep.
     """
+    device_type, index = _device_ref(device_id)
     router, backup_path, storage = _get_git_storage_for(
         device_type, index
     )
@@ -4159,17 +4178,16 @@ async def git_mark_delete(
         )
 
     return RedirectResponse(
-        url=f"/git/{device_type}/{index}",
+        url=f"/device/{device_id}/git",
         status_code=303,
     )
 
 
 @app.post(
-    "/git/{device_type}/{index}/unmark-delete",
+    "/device/{device_id}/git/unmark-delete",
 )
 async def git_unmark_delete(
-    device_type: str,
-    index: int,
+    device_id: str,
     request: Request,
     user: str = Depends(require_auth),
 ):
@@ -4177,6 +4195,7 @@ async def git_unmark_delete(
     Снимает пометки. scope=all — очищает всё.
     Иначе — по списку shas в поле.
     """
+    device_type, index = _device_ref(device_id)
     router, backup_path, storage = _get_git_storage_for(
         device_type, index
     )
@@ -4207,17 +4226,16 @@ async def git_unmark_delete(
         )
 
     return RedirectResponse(
-        url=f"/git/{device_type}/{index}",
+        url=f"/device/{device_id}/git",
         status_code=303,
     )
 
 
 @app.post(
-    "/git/{device_type}/{index}/sweep",
+    "/device/{device_id}/git/sweep",
 )
 async def git_sweep(
-    device_type: str,
-    index: int,
+    device_id: str,
     user: str = Depends(require_auth),
 ):
     """
@@ -4225,6 +4243,7 @@ async def git_sweep(
     коммиты, перепривязывает parent-указатели, освобождает
     объекты через git gc (если git есть в PATH).
     """
+    device_type, index = _device_ref(device_id)
     from urllib.parse import quote
 
     router, backup_path, storage = _get_git_storage_for(
@@ -4244,7 +4263,7 @@ async def git_sweep(
             device_type, index, msg, user,
         )
         return RedirectResponse(
-            url=f"/git/{device_type}/{index}",
+            url=f"/device/{device_id}/git",
             status_code=303,
         )
 
@@ -4255,7 +4274,7 @@ async def git_sweep(
 
     return RedirectResponse(
         url=(
-            f"/git/{device_type}/{index}"
+            f"/device/{device_id}/git"
             f"?sweep_error={quote(msg)}"
         ),
         status_code=303,
@@ -4263,11 +4282,10 @@ async def git_sweep(
 
 
 @app.post(
-    "/git/{device_type}/{index}/mark-older-than",
+    "/device/{device_id}/git/mark-older-than",
 )
 async def git_mark_older_than(
-    device_type: str,
-    index: int,
+    device_id: str,
     request: Request,
     user: str = Depends(require_auth),
 ):
@@ -4279,6 +4297,7 @@ async def git_mark_older_than(
         keep_last        — int, минимум сохраняемых
         keep_with_notes  — 'true' | отсутствует
     """
+    device_type, index = _device_ref(device_id)
     router, backup_path, storage = _get_git_storage_for(
         device_type, index
     )
@@ -4307,13 +4326,13 @@ async def git_mark_older_than(
                 device_type, index, older_than_str,
             )
             return RedirectResponse(
-                url=f"/git/{device_type}/{index}",
+                url=f"/device/{device_id}/git",
                 status_code=303,
             )
 
     if older_than_date is None:
         return RedirectResponse(
-            url=f"/git/{device_type}/{index}",
+            url=f"/device/{device_id}/git",
             status_code=303,
         )
 
@@ -4345,7 +4364,7 @@ async def git_mark_older_than(
     )
 
     return RedirectResponse(
-        url=f"/git/{device_type}/{index}",
+        url=f"/device/{device_id}/git",
         status_code=303,
     )
 
@@ -4354,17 +4373,17 @@ async def git_mark_older_than(
 # =========================================================
 
 @app.get(
-    "/git/{device_type}/{index}/diff/{sha_a}/{sha_b}",
+    "/device/{device_id}/git/diff/{sha_a}/{sha_b}",
     response_class=HTMLResponse,
 )
 def git_diff_page(
     request: Request,
-    device_type: str,
-    index: int,
+    device_id: str,
     sha_a: str,
     sha_b: str,
     user: str = Depends(require_auth),
 ):
+    device_type, index = _device_ref(device_id)
     router, backup_path, storage = _get_git_storage_for(
         device_type, index
     )
@@ -4462,6 +4481,7 @@ def git_diff_page(
         {
             "device_type": device_type,
             "index": index,
+            "device_id": device_id,
             "host": host,
             "name": name,
             "commit_a": commit_a,
@@ -4583,14 +4603,12 @@ def logs_service_endpoint(
 # =========================================================
 
 @app.get(
-    "/logs/device/"
-    "{device_type}/{index}",
+    "/device/{device_id}/logs",
     response_class=HTMLResponse,
 )
 def device_logs(
     request: Request,
-    device_type: str,
-    index: int,
+    device_id: str,
     limit: str = "100",
     raw: bool = False,
     focus_date: str = "",
@@ -4598,6 +4616,7 @@ def device_logs(
         require_auth
     ),
 ):
+    device_type, index = _device_ref(device_id)
 
     # Нормализуем регистр: ключи _plugins — lower-case.
     # URL может прийти как /logs/device/Mikrotik/0.
@@ -4691,7 +4710,7 @@ def device_logs(
                 focus_line_index,
                 
             "back_url":
-                f"/?selected={device_type}/{index}",
+                f"/?selected={device_id}",
         },
     )
 
@@ -4701,17 +4720,17 @@ def device_logs(
 # =========================================================
 
 @app.get(
-    "/edit/{device_type}/{index}",
+    "/device/{device_id}/edit",
     response_class=HTMLResponse,
 )
 def edit_router(
     request: Request,
-    device_type: str,
-    index: int,
+    device_id: str,
     user: str = Depends(
         require_auth
     ),
 ):
+    device_type, index = _device_ref(device_id)
 
     plugin = (
         plugin_manager
@@ -4751,6 +4770,9 @@ def edit_router(
             "index":
                 index,
 
+            "device_id":
+                device_id,
+
             "router":
                 router,
 
@@ -4768,17 +4790,16 @@ def edit_router(
 # =========================================================
 
 @app.post(
-    "/update-router/"
-    "{device_type}/{index}"
+    "/device/{device_id}/update"
 )
 async def update_router(
-    device_type: str,
-    index: int,
+    device_id: str,
     request: Request,
     user: str = Depends(
         require_auth
     ),
 ):
+    device_type, index = _device_ref(device_id)
     form = await request.form()
 
     device_name = (form.get("name") or "").strip()[:100]
@@ -5016,6 +5037,7 @@ def _collect_maintenance_stats() -> list:
             "device_id": device_id,
             "device_type": device_type,
             "index": idx,
+            "device_id": plugin_manager.router_id(router),
             "name": router.get("name") or "",
             "host": router.get("host") or router.get("ip") or "",
             "total": 0,
@@ -5437,10 +5459,9 @@ def _local_key_path(device_type: str, key_name: str) -> Path | None:
     return device_store.local_key_path(device_type, key_name)
 
 
-@app.post("/delete-device/{device_type}/{index}")
+@app.post("/device/{device_id}/delete")
 async def delete_device(
-    device_type: str,
-    index: int,
+    device_id: str,
     request: Request,
     user: str = Depends(require_auth),
 ):
@@ -5459,6 +5480,7 @@ async def delete_device(
         4. Удалить директорию бэкапов.
         5. Удалить SSH-ключ (если разрешено).
     """
+    device_type, index = _device_ref(device_id)
     import shutil
 
     if not plugin_manager or device_type not in plugin_manager._plugins:
@@ -5480,8 +5502,8 @@ async def delete_device(
     # синхронизация: задача допишет файлы в удалённый каталог
     # и запишет результат по сдвинувшемуся индексу.
     if (
-        is_backup_running_for(f"{device_type}/{index}")
-        or is_sync_running_for(f"{device_type}/{index}")
+        is_backup_running_for(device_id)
+        or is_sync_running_for(device_id)
     ):
         raise HTTPException(
             409,
@@ -5496,7 +5518,6 @@ async def delete_device(
         or f"#{index}"
     )
     device_name = router.get("name") or host
-    device_id = f"{device_type}/{index}"
 
     # ---- 1. Статистика (для лога) ----
 
@@ -5587,28 +5608,12 @@ async def delete_device(
     # ---- 3. Обновить state.json ----
 
     try:
+        # Ключ — постоянный id: у остальных устройств ничего
+        # не сдвигается, убираем только запись удалённого.
         state = load_json(STATE_FILE, {})
-        if not isinstance(state, dict):
-            state = {}
-
-        other_devices = {
-            k: v for k, v in state.items()
-            if not k.startswith(f"{device_type}/")
-        }
-
-        # Было: A(0), B(1), C(2). Удалили B(1).
-        # Стало: A(0), C(1). Для A old_idx=0, для C old_idx=2.
-        # Правило: new_i < deleted_index → old_i = new_i;
-        #         new_i >= deleted_index → old_i = new_i + 1
-        new_devices = {}
-        for new_i in range(len(routers)):
-            old_i = new_i if new_i < index else new_i + 1
-            old_key = f"{device_type}/{old_i}"
-            if old_key in state:
-                new_devices[f"{device_type}/{new_i}"] = state[old_key]
-
-        final_state = {**other_devices, **new_devices}
-        save_json(STATE_FILE, final_state)
+        if isinstance(state, dict) and device_id in state:
+            del state[device_id]
+            save_json(STATE_FILE, state)
 
     except Exception as exc:
         logging.error(

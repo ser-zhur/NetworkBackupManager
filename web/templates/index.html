@@ -274,7 +274,7 @@
                                                 transition-opacity duration-150">
                                         {% if not d.disabled %}
                                         <form method="POST"
-                                              action="/run-progress/{{ d.type }}/{{ d.index }}"
+                                              action="/device/{{ d.id }}/run"
                                               data-row-run-backup="{{ d.id }}"
                                               class="inline-flex">
                                             <button type="submit"
@@ -294,7 +294,7 @@
                                         </form>
                                         {% endif %}
 
-                                        <a href="/logs/device/{{ d.type }}/{{ d.index }}"
+                                        <a href="/device/{{ d.id }}/logs"
                                            title="Открыть логи"
                                            aria-label="Открыть логи"
                                            class="inline-flex p-1.5 rounded-md
@@ -306,7 +306,7 @@
                                         </a>
                                     </div>
                                     <form method="POST"
-                                          action="/toggle-pin/{{ d.type }}/{{ d.index }}"
+                                          action="/device/{{ d.id }}/toggle-pin"
                                           class="absolute top-1/2 -translate-y-1/2 right-2 z-10
                                                  {% if d.pinned %}opacity-100{% else %}opacity-0 group-hover:opacity-100{% endif %}
                                                  transition-opacity duration-150">
@@ -411,8 +411,7 @@ async function selectDevice(id) {
     panel.style.transition = 'opacity .12s ease';
 
     try {
-        const [type, idx] = id.split('/');
-        const res = await fetch(`/api/device/${type}/${idx}`);
+        const res = await fetch(`/api/device/${encodeURIComponent(id)}`);
         if (!res.ok) throw new Error('HTTP ' + res.status);
         panel.innerHTML = await res.text();
     } catch (e) {
@@ -1396,7 +1395,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // 4. Перехват отправки форм бэкапа (AJAX вместо перехода)
     document.addEventListener('submit', async (e) => {
         const form = e.target;
-        if (form.action.includes('/run-progress/') || form.action.includes('/run-now')) {
+        if (/\/device\/[^/]+\/run$/.test(new URL(form.action).pathname) || form.action.includes('/run-now')) {
             e.preventDefault();
             
             const submitBtn = form.querySelector('button[type="submit"]');

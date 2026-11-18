@@ -211,7 +211,7 @@ def test_hung_worker_keeps_device_busy_after_timeout(tmp_path, monkeypatch):
     pm = PluginManager()
     pm._plugins["fake"] = {
         "func": hanging_plugin,
-        "routers": [{"host": "10.0.0.1", "backup_path": str(tmp_path)}],
+        "routers": [{"id": "00000000000f", "host": "10.0.0.1", "backup_path": str(tmp_path)}],
         "dir": str(tmp_path),
     }
 
@@ -224,9 +224,9 @@ def test_hung_worker_keeps_device_busy_after_timeout(tmp_path, monkeypatch):
     try:
         # Поток ещё работает — устройство занято, новый прогон
         # и бэкап этого устройства не стартуют
-        assert backup_state.is_backup_running_for("fake/0") is True
+        assert backup_state.is_backup_running_for("00000000000f") is True
         assert backup_state.try_start_mass() is False
-        assert backup_state.try_start_device("fake/0") is False
+        assert backup_state.try_start_device("00000000000f") is False
     finally:
         release.set()
 

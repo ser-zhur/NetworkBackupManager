@@ -165,7 +165,7 @@ def test_delete_keeps_dir_containing_other_device(client, fake_devices, tmp_path
     fake_devices("A", parent)
     fake_devices("B", parent / "child")
 
-    r = client.post("/delete-device/fake/0", data={}, follow_redirects=False)
+    r = client.post(f"/device/{s.plugin_manager.device_id('fake', 0)}/delete", data={}, follow_redirects=False)
 
     assert r.status_code == 303
     assert (parent / "child" / "config.rsc").exists()     # бэкапы B целы
@@ -181,7 +181,8 @@ def test_delete_removes_own_dir_and_local_key(client, fake_devices, tmp_path):
     fake_devices("A", own, ssh_key="dev.key")
 
     r = client.post(
-        "/delete-device/fake/0", data={"remove_key": "true"},
+        f"/device/{s.plugin_manager.device_id('fake', 0)}/delete",
+        data={"remove_key": "true"},
         follow_redirects=False,
     )
 
@@ -198,7 +199,8 @@ def test_delete_does_not_remove_key_outside_plugin(client, fake_devices, tmp_pat
     fake_devices("A", own, ssh_key="../outside.key")
 
     r = client.post(
-        "/delete-device/fake/0", data={"remove_key": "true"},
+        f"/device/{s.plugin_manager.device_id('fake', 0)}/delete",
+        data={"remove_key": "true"},
         follow_redirects=False,
     )
 

@@ -111,7 +111,7 @@ def _iter_devices(plugin_manager):
             backup_path = resolve_backup_path(raw)
 
             yield (
-                f"{device_type}/{idx}",
+                plugin_manager.router_id(router),
                 device_type,
                 idx,
                 router,

@@ -6,7 +6,7 @@
 # бэкапы не запускаются, история хранится и не очищается
 # автоматически.
 #
-# Устройства фиктивные, routers.json не пишется.
+# Устройства фиктивные, devices.json не пишется.
 #
 # =========================================================
 
@@ -17,10 +17,14 @@ import pytest
 from core.plugin_manager import PluginManager, is_device_disabled
 
 
+A = "0000000000aa"      # id активного устройства
+R = "0000000000bb"      # id отключённого
+
+
 def _routers(tmp_path):
     return [
-        {"host": "10.0.0.1", "name": "Active", "backup_path": str(tmp_path / "a")},
-        {"host": "10.0.0.2", "name": "Retired", "backup_path": str(tmp_path / "r"),
+        {"id": A, "host": "10.0.0.1", "name": "Active", "backup_path": str(tmp_path / "a")},
+        {"id": R, "host": "10.0.0.2", "name": "Retired", "backup_path": str(tmp_path / "r"),
          "disabled": True},
     ]
 
@@ -84,7 +88,7 @@ def web(tmp_path, monkeypatch):
     monkeypatch.setattr(s.plugin_manager, "_plugins", {
         "fake": {"func": lambda r: [], "routers": routers, "dir": str(tmp_path)},
     })
-    monkeypatch.setattr(s.plugin_manager, "save_routers", lambda t: None)
+    monkeypatch.setattr(s.plugin_manager, "save_routers", lambda *a: None)
     s.app.dependency_overrides[s.require_auth] = lambda: "test"
     yield s, routers
     s.app.dependency_overrides.clear()
@@ -99,7 +103,7 @@ def _client(s):
 def test_status_disabled_without_warnings(web):
     s, routers = web
     row = s._build_device_summary("fake", 1, routers[1], {
-        "fake/1": {"last_run": "2020-01-01 00:00:00",
+        R: {"last_run": "2020-01-01 00:00:00",
                    "backends": {"git": {"ok": False}}},
     })
     assert row["status"] == "disabled"
@@ -119,16 +123,16 @@ def test_single_backup_refused(web, monkeypatch):
     monkeypatch.setattr(s, "execute_device_backup_task", lambda *a: started.append(a))
     c = _client(s)
 
-    r = c.post("/run-progress/fake/1", headers={"X-Requested-With": "XMLHttpRequest"})
+    r = c.post(f"/device/{R}/run", headers={"X-Requested-With": "XMLHttpRequest"})
     assert r.status_code == 409
     assert started == []
-    assert s.is_backup_running_for("fake/1") is False   # слот не занят
+    assert s.is_backup_running_for(R) is False   # слот не занят
 
     from core import backup_state
-    r = c.post("/run-progress/fake/0", headers={"X-Requested-With": "XMLHttpRequest"})
+    r = c.post(f"/device/{A}/run", headers={"X-Requested-With": "XMLHttpRequest"})
     assert r.status_code == 204
     assert len(started) == 1
-    backup_state.finish_device("fake/0")
+    backup_state.finish_device(A)
 
 
 def test_prune_all_skips_disabled(web, monkeypatch):
@@ -157,20 +161,20 @@ def test_toggle_switch(web):
     current = lambda: s.plugin_manager._plugins["fake"]["routers"][0]
 
     # Ползунок выключен: маркер есть, чекбокса нет → отключено
-    r = c.post("/update-router/fake/0", data={**form, "active_field": "1"},
+    r = c.post(f"/device/{A}/update", data={**form, "active_field": "1"},
                follow_redirects=False)
     assert r.status_code == 303
     assert current()["disabled"] is True
 
     # Ползунок включён → активно, ключа нет
-    r = c.post("/update-router/fake/0",
+    r = c.post(f"/device/{A}/update",
                data={**form, "active_field": "1", "active": "true"},
                follow_redirects=False)
     assert r.status_code == 303
     assert "disabled" not in current()
 
     # Запрос без поля статуса устройство НЕ отключает
-    r = c.post("/update-router/fake/0", data=form, follow_redirects=False)
+    r = c.post(f"/device/{A}/update", data=form, follow_redirects=False)
     assert r.status_code == 303
     assert "disabled" not in current()
 
@@ -178,8 +182,8 @@ def test_toggle_switch(web):
 def test_toggle_rendered_state(web):
     s, _ = web
     c = _client(s)
-    active = c.get("/edit/fake/0").text
-    retired = c.get("/edit/fake/1").text
+    active = c.get(f"/device/{A}/edit").text
+    retired = c.get(f"/device/{R}/edit").text
 
     assert 'name="active_field"' in active
     assert _toggle_checked(active) is True        # по умолчанию включён
@@ -192,12 +196,12 @@ def test_edit_sets_and_clears_flag(web):
     c = _client(s)
     form = {"ip": "10.0.0.1", "backup_path": routers[0]["backup_path"]}
 
-    r = c.post("/update-router/fake/0", data={**form, "disabled": "true"},
+    r = c.post(f"/device/{A}/update", data={**form, "disabled": "true"},
                follow_redirects=False)
     assert r.status_code == 303
     assert s.plugin_manager._plugins["fake"]["routers"][0]["disabled"] is True
 
-    r = c.post("/update-router/fake/0", data=form, follow_redirects=False)
+    r = c.post(f"/device/{A}/update", data=form, follow_redirects=False)
     assert r.status_code == 303
     assert "disabled" not in s.plugin_manager._plugins["fake"]["routers"][0]
 
@@ -206,15 +210,15 @@ def test_pages_render(web):
     s, _ = web
     c = _client(s)
 
-    page = c.get("/?selected=fake/1").text
-    assert 'data-row-run-backup="fake/0"' in page        # активное — кнопка есть
-    assert 'data-row-run-backup="fake/1"' not in page    # отключённое — нет
+    page = c.get(f"/?selected={R}").text
+    assert f'data-row-run-backup="{A}"' in page          # активное — кнопка есть
+    assert f'data-row-run-backup="{R}"' not in page      # отключённое — нет
     assert 'data-filter-status="disabled"' in page
     assert 'data-disabled="1"' in page
 
-    card = c.get("/api/device/fake/1").text
+    card = c.get(f"/api/device/{R}").text
     assert "⏸ Отключено" in card
     assert 'id="run-backup-form"' not in card
 
-    edit = c.get("/edit/fake/1").text
+    edit = c.get(f"/device/{R}/edit").text
     assert 'name="active"' in edit and _toggle_checked(edit) is False

@@ -91,7 +91,7 @@
                 🧹 Очистить старые…
             </button>
 
-            <a href="/?selected={{ device_type }}/{{ index }}"
+            <a href="/?selected={{ device_id }}"
                class="inline-flex items-center justify-center gap-2 px-4 h-9 rounded-lg text-sm font-medium
                       bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
                       border border-gray-200 dark:border-slate-700 transition">
@@ -128,7 +128,7 @@
             Файлы ещё на месте — удаление произойдёт только после применения.
         </div>
 
-        <form action="/git/{{ device_type }}/{{ index }}/unmark-delete"
+        <form action="/device/{{ device_id }}/git/unmark-delete"
               method="POST"
               class="inline">
             <input type="hidden" name="scope" value="all">
@@ -141,7 +141,7 @@
             </button>
         </form>
 
-        <form action="/git/{{ device_type }}/{{ index }}/sweep"
+        <form action="/device/{{ device_id }}/git/sweep"
               method="POST"
               class="inline"
               onsubmit="return confirm('Удалить {{ total_marked }} версий?\n\nДействие необратимо. Файлы этих версий будут удалены из истории.');">
@@ -172,7 +172,7 @@
             <p class="text-sm text-gray-500 dark:text-slate-400 mb-5">
                 Запустите бэкап устройства, чтобы создать первую версию.
             </p>
-            <a href="/?selected={{ device_type }}/{{ index }}"
+            <a href="/?selected={{ device_id }}"
                class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
                       bg-brand-600 hover:bg-brand-700 text-white shadow-sm transition">
                 ← Вернуться к устройству
@@ -253,7 +253,7 @@
                                 <div class="mt-2 flex flex-wrap items-center gap-2
                                             {% if c.marked %}opacity-60{% endif %}">
                                     {% for f in c.files %}
-                                    <a href="/git/{{ device_type }}/{{ index }}/download/{{ c.sha }}/{{ f }}"
+                                    <a href="/device/{{ device_id }}/git/download/{{ c.sha }}/{{ f }}"
                                        class="inline-flex items-center gap-1 text-[11px] font-mono px-2 py-1 rounded
                                               bg-gray-100 dark:bg-slate-800
                                               text-gray-700 dark:text-slate-300
@@ -401,7 +401,7 @@
                border border-gray-200 dark:border-slate-700
                shadow-xl backdrop:bg-black/50">
     <form method="POST"
-          action="/git/{{ device_type }}/{{ index }}/mark-older-than">
+          action="/device/{{ device_id }}/git/mark-older-than">
         <h3 class="text-base font-semibold mb-1">Очистить старые версии</h3>
         <p class="text-xs text-gray-500 dark:text-slate-400 mb-4">
             Версии будут помечены к удалению. Удаление произойдёт
@@ -480,7 +480,7 @@
 <!-- Скрытая форма для отправки помеченных sha -->
 <form id="delete-form"
       method="POST"
-      action="/git/{{ device_type }}/{{ index }}/mark-delete"
+      action="/device/{{ device_id }}/git/mark-delete"
       class="hidden">
     <input type="hidden" name="shas" id="delete-form-shas" value="">
 </form>
@@ -495,7 +495,7 @@ function editNote(sha, currentNote) {
     const shaInput = document.getElementById('note-sha');
     const noteInput = document.getElementById('note-text');
 
-    form.action = '/git/{{ device_type }}/{{ index }}/note/' + sha;
+    form.action = '/device/{{ device_id }}/git/note/' + sha;
     shaInput.value = sha;
     noteInput.value = currentNote || '';
 
@@ -604,7 +604,7 @@ function compareSelected() {
     const newerCb = idx1 > idx2 ? trulyChecked[1] : trulyChecked[0];
 
     window.location.href =
-        `/git/{{ device_type }}/{{ index }}/diff/` +
+        `/device/{{ device_id }}/git/diff/` +
         `${olderCb.dataset.sha}/${newerCb.dataset.sha}`;
 }
 

@@ -85,10 +85,11 @@ def test_single_backup_uses_same_tag(server, monkeypatch):
     monkeypatch.setattr(server.plugin_manager, "_push_to_storages", lambda **kw: None)
 
     from core import backup_state
-    assert backup_state.try_start_device("mikrotik/0")
+    device_id = server.plugin_manager.device_id("mikrotik", 0)
+    assert backup_state.try_start_device(device_id)
     server.execute_device_backup_task(
         "mikrotik", 0, dict(server.plugin_manager._plugins["mikrotik"]["routers"][0]),
     )
 
     assert seen == [EXPECTED]
-    assert backup_state.is_backup_running_for("mikrotik/0") is False
+    assert backup_state.is_backup_running_for(device_id) is False

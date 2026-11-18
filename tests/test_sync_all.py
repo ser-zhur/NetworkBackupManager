@@ -21,6 +21,11 @@ from core.storage import global_config
 s = pytest.importorskip("web.server")
 
 
+def ID(n: int) -> str:
+    """id фиктивного устройства №n."""
+    return f"{n:012x}"
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     if s.plugin_manager is None or s.storage_manager is None:
@@ -35,10 +40,10 @@ def env(tmp_path, monkeypatch):
     s.storage_manager.reload_remotes()
 
     routers = [
-        {"host": "10.0.0.1", "storage": {"webdav": {"enabled": True}}},
-        {"host": "10.0.0.2", "storage": {"webdav": {"enabled": False}}},   # нечего
-        {"host": "10.0.0.3", "storage": {"webdav": {"enabled": True}}},
-        {"host": "10.0.0.4", "storage": {"webdav": {"enabled": True}}},
+        {"id": ID(0), "host": "10.0.0.1", "storage": {"webdav": {"enabled": True}}},
+        {"id": ID(1), "host": "10.0.0.2", "storage": {"webdav": {"enabled": False}}},   # нечего
+        {"id": ID(2), "host": "10.0.0.3", "storage": {"webdav": {"enabled": True}}},
+        {"id": ID(3), "host": "10.0.0.4", "storage": {"webdav": {"enabled": True}}},
     ]
     monkeypatch.setattr(s.plugin_manager, "_plugins", {
         "fake": {"func": None, "routers": routers, "dir": str(tmp_path)},
@@ -61,7 +66,7 @@ def env(tmp_path, monkeypatch):
             pushes.append([c.device_id for c in contexts])
             # Во время выгрузки слоты устройств уже свободны
             assert backup_state.get_sync_status()["devices"] == []
-            return [PushResult.failure("нет места") if c.device_id == "fake/3"
+            return [PushResult.failure("нет места") if c.device_id == ID(3)
                     else PushResult.success("ok", uploaded=1) for c in contexts]
 
     backend = FakeBackend()
@@ -69,12 +74,12 @@ def env(tmp_path, monkeypatch):
     def fake_prepare(device_type, index, folder, storages):
         synced.append(index)
         # Во время подготовки устройство занято
-        assert backup_state.is_sync_running_for(f"{device_type}/{index}")
+        assert backup_state.is_sync_running_for(ID(index))
         result = _sync_result()
         result["backends"]["webdav"] = {"ok": 0, "err": 0, "skip": 0}
         result["commits"] = 1
         ctx = PushContext(
-            device_id=f"{device_type}/{index}", device_host="h", device_type=device_type,
+            device_id=ID(index), device_host="h", device_type=device_type,
             backup_path=tmp_path / str(index), files={"f": tmp_path / "f"},
             changed=True, run_time=datetime.now(),
         )
@@ -100,14 +105,14 @@ def test_targets_only_devices_with_enabled_storage(env):
 
 def test_prepares_all_then_pushes_once_skips_busy_and_counts(env):
     synced, pushes = env
-    backup_state.try_start_device("fake/2")            # идёт бэкап устройства 2
+    backup_state.try_start_device(ID(2))            # идёт бэкап устройства 2
 
     with s._sync_all_lock:
         s._sync_all_running = True
     stats = s.execute_sync_all_task("test")
 
     assert synced == [0, 3]
-    assert pushes == [["fake/0", "fake/3"]]                 # одна выгрузка на хранилище
+    assert pushes == [[ID(0), ID(3)]]                 # одна выгрузка на хранилище
     assert stats == {"devices": 3, "ok": 1, "errors": 1, "skipped": 1}
     assert s.is_sync_all_running() is False                 # флаг сброшен
     assert backup_state.get_sync_status()["devices"] == []  # слоты освобождены

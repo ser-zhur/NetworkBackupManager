@@ -72,7 +72,7 @@
                 </span>
                 {% else %}
                 <form id="run-backup-form"
-                      action="/run-progress/{{ d.type }}/{{ d.index }}"
+                      action="/device/{{ d.id }}/run"
                       method="POST"
                       data-run-backup-device="{{ d.id }}"
                       class="inline-flex">
@@ -90,28 +90,28 @@
                     </button>
                 </form>
                 {% endif %}
-                <a href="/logs/device/{{ d.type }}/{{ d.index }}"
+                <a href="/device/{{ d.id }}/logs"
                     aria-label="Открыть логи устройства"
                    class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium
                           bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
                           border border-gray-200 dark:border-slate-700 transition">
                     📄 Логи
                 </a>
-                <a href="/edit/{{ d.type }}/{{ d.index }}"
+                <a href="/device/{{ d.id }}/edit"
                     aria-label="Редактировать устройство"
                    class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium
                           bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
                           border border-gray-200 dark:border-slate-700 transition">
                     ⚙ Редактировать
                 </a>
-                <a href="/git/{{ d.type }}/{{ d.index }}"
+                <a href="/device/{{ d.id }}/git"
                     aria-label="История версий"
                    class="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium
                           bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
                           border border-gray-200 dark:border-slate-700 transition">
                     📜 История версий
                 </a>
-                <form action="/toggle-pin/{{ d.type }}/{{ d.index }}"
+                <form action="/device/{{ d.id }}/toggle-pin"
                       method="POST"
                       class="inline-flex">
                     <button type="submit"
@@ -204,7 +204,7 @@
         </div>
 
         {% if d.has_syncable_storages %}
-        <form action="/sync-storages/{{ d.type }}/{{ d.index }}"
+        <form action="/device/{{ d.id }}/sync-storages"
               method="POST"
               class="inline">
             <button type="submit"
@@ -320,7 +320,7 @@
                         {% if c.files %}
                         <div class="mt-1 flex flex-wrap items-center gap-1.5">
                             {% for f in c.files %}
-                            <a href="/git/{{ d.type }}/{{ d.index }}/download/{{ c.sha }}/{{ f }}"
+                            <a href="/device/{{ d.id }}/git/download/{{ c.sha }}/{{ f }}"
                                class="inline-flex items-center gap-1 text-[11px] font-mono px-1.5 py-0.5 rounded
                                       bg-gray-100 dark:bg-slate-800
                                       text-gray-600 dark:text-slate-400
@@ -372,7 +372,7 @@
                shadow-xl backdrop:bg-black/50">
 
     <form method="POST"
-          action="/delete-device/{{ d.type }}/{{ d.index }}">
+          action="/device/{{ d.id }}/delete">
 
         <div class="flex items-start gap-3 mb-4">
             <div class="text-3xl shrink-0">⚠️</div>

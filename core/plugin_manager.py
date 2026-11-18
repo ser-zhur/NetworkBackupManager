@@ -165,6 +165,27 @@ class PluginManager:
                 "🔌 Плагин %s: устройств %s", dtype, len(pd["routers"]),
             )
 
+    def router_id(self, router: dict) -> str:
+        """
+        Постоянный id устройства. Устройству без id (только что
+        добавленному в памяти) выдаётся новый — в devices.json он
+        попадёт при ближайшем save_routers().
+        """
+        with self.routers_lock:
+            if not device_store.is_valid_id(router.get("id")):
+                taken = (
+                    r.get("id")
+                    for pd in self._plugins.values()
+                    for r in pd.get("routers", [])
+                )
+                router["id"] = device_store.new_id(taken)
+            return router["id"]
+
+    def device_id(self, device_type: str, index: int) -> str:
+        """(тип, текущий номер в списке) → постоянный id."""
+        with self.routers_lock:
+            return self.router_id(self._plugins[device_type]["routers"][index])
+
     @staticmethod
     def find_router_index(routers: list, router: dict) -> int | None:
         """
@@ -342,7 +363,7 @@ class PluginManager:
                 for b in backends
             }
             self._save_backend_state(
-                f"{device_type}/{index}",
+                self.router_id(router),
                 results,
                 backup_path=backup_path,
             )
@@ -377,7 +398,7 @@ class PluginManager:
         )
 
         ctx = PushContext(
-            device_id=f"{device_type}/{index}",
+            device_id=self.router_id(router),
             device_host=device_host,
             device_type=device_type,
             backup_path=Path(backup_path),
@@ -497,7 +518,7 @@ class PluginManager:
         """
         return self.sync_many_to_storages(
             [(device_type, index)],
-        )[f"{device_type}/{index}"]
+        )[self.device_id(device_type, index)]
 
     def sync_many_to_storages(
         self,
@@ -532,7 +553,7 @@ class PluginManager:
         with _tmp.TemporaryDirectory(prefix="nbm_sync_") as tmpdir:
             # ---- 1) подготовка ----
             for k, (device_type, index) in enumerate(targets):
-                device_id = f"{device_type}/{index}"
+                device_id = self.device_id(device_type, index)
                 if can_start is not None and not can_start(device_type, index):
                     continue
                 try:
@@ -747,7 +768,7 @@ class PluginManager:
             or f"#{index}"
         )
         job["ctx"] = PushContext(
-            device_id=f"{device_type}/{index}",
+            device_id=self.router_id(router),
             device_host=device_host,
             device_type=device_type,
             backup_path=backup_path,
@@ -1037,7 +1058,7 @@ class PluginManager:
             # Устройство занято, пока ЭТОТ поток реально
             # работает — даже если прогон уже завершился
             # по общему таймауту (finish_device в finally).
-            device_id = f"{device_type}/{task['index']}"
+            device_id = self.router_id(router)
             backup_state.mark_device_running(device_id)
 
             set_device_context(device_tag)

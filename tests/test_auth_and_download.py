@@ -135,12 +135,12 @@ def test_download_non_ascii_file_from_history(tmp_path, monkeypatch):
 
     monkeypatch.setattr(s.plugin_manager, "_plugins", {
         "mikrotik": {"func": None, "routers": [
-            {"host": "10.0.0.1", "backup_path": str(repo)},
+            {"id": "00000000000a", "host": "10.0.0.1", "backup_path": str(repo)},
         ], "dir": str(tmp_path)},
     })
     s.app.dependency_overrides[s.require_auth] = lambda: "test"
     try:
-        r = TestClient(s.app).get(f"/git/mikrotik/0/download/{sha}/конфиг.rsc")
+        r = TestClient(s.app).get(f"/device/00000000000a/git/download/{sha}/конфиг.rsc")
     finally:
         s.app.dependency_overrides.clear()
 
