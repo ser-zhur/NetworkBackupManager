@@ -92,14 +92,30 @@ def ensure_directories() -> None:
 # Копирование встроенных web-файлов (только для EXE)
 # =========================================================
 
-def _copy_tree_missing(source: Path, target: Path) -> None:
+def _same_file(a: Path, b: Path) -> bool:
+    try:
+        if a.stat().st_size != b.stat().st_size:
+            return False
+        return a.read_bytes() == b.read_bytes()
+    except OSError:
+        return False
+
+
+def _sync_tree(source: Path, target: Path) -> int:
     """
-    Рекурсивно копирует файлы из source в target,
-    не перезатирая уже существующие.
+    Рекурсивно копирует файлы из source в target: недостающие
+    и отличающиеся по содержимому. Возвращает число скопированных.
+
+    Отличающиеся перезаписываются: web/ рядом с EXE — копия из
+    сборки, и после обновления программы шаблоны должны
+    соответствовать новому коду (старый шаблон с новым
+    server.py — ошибки на страницах). Лишние файлы в target
+    не удаляются.
     """
     if not source.exists():
-        return
+        return 0
 
+    copied = 0
     for item in source.rglob("*"):
         rel = item.relative_to(source)
         dst = target / rel
@@ -108,21 +124,25 @@ def _copy_tree_missing(source: Path, target: Path) -> None:
             dst.mkdir(parents=True, exist_ok=True)
             continue
 
-        dst.parent.mkdir(parents=True, exist_ok=True)
+        if dst.is_file() and _same_file(item, dst):
+            continue
 
-        if not dst.exists():
-            try:
-                shutil.copy2(item, dst)
-            except OSError as exc:
-                logger.warning(
-                    "Не удалось скопировать %s → %s: %s",
-                    item, dst, exc,
-                )
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(item, dst)
+            copied += 1
+        except OSError as exc:
+            logger.warning(
+                "Не удалось скопировать %s → %s: %s",
+                item, dst, exc,
+            )
+    return copied
 
 
 def ensure_web_files() -> None:
     """
-    Распаковать встроенные web-файлы рядом с EXE при первом запуске.
+    Распаковать встроенные web-файлы рядом с EXE и обновить их
+    после обновления программы (недостающие и изменённые).
     В режиме исходников ничего не делает.
     """
 
@@ -141,14 +161,11 @@ def ensure_web_files() -> None:
         logger.warning("В бандле нет каталога web/: %s", source_web)
         return
 
-    _copy_tree_missing(
-        source_web / "templates",
-        WEB_DIR / "templates",
-    )
-    _copy_tree_missing(
-        source_web / "static",
-        WEB_DIR / "static",
-    )
+    copied = 0
+    for sub in ("templates", "static"):
+        copied += _sync_tree(source_web / sub, WEB_DIR / sub)
+    if copied:
+        logger.info("Обновлено web-файлов из сборки: %d", copied)
 
 
 # =========================================================
