@@ -107,9 +107,9 @@ def test_prepare_key_path(home):
     devices.prepare_key_path("Mikrotik", r)
     assert r["ssh_key"] == str(key.resolve())
 
-    r = {"ssh_key": "missing.key"}             # нет в data/keys — как было
-    devices.prepare_key_path("mikrotik", r)
-    assert r == {"ssh_key": "missing.key"}
+    r = {"ssh_key": "missing.key"}             # файла нет — путь всё равно
+    devices.prepare_key_path("mikrotik", r)    # в data/keys: туда и класть
+    assert r["ssh_key"] == str((key.parent / "missing.key").resolve())
 
     r = {"ssh_key": "../../secret.key"}
     devices.prepare_key_path("mikrotik", r)

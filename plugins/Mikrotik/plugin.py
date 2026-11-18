@@ -206,9 +206,10 @@ def _run_command(cmd, timeout=60, verbose=False):
 
 
 def _get_key_path(router):
-    # Ядро передаёт абсолютный путь из data/keys/mikrotik/.
-    # Относительное имя (ключа там нет) — ищем, как раньше,
-    # в папке плагина.
+    # Ядро передаёт абсолютный путь в data/keys/mikrotik/
+    # (core.devices.prepare_key_path). Относительное имя
+    # бывает только при запуске плагина в обход ядра —
+    # тогда ищем рядом с плагином.
     key_filename = router.get(
         "ssh_key",
         router.get("private_key", "id_rsa.key"),
@@ -230,9 +231,8 @@ def _get_key_path(router):
     if not os.path.exists(key_path):
         raise FileNotFoundError(
             f"SSH-ключ не найден: {key_path}. "
-            f"Положите ключ в data/keys/<тип устройства>/ "
-            f"или проверьте поле 'ssh_key' / 'private_key' "
-            f"устройства "
+            f"Положите файл ключа по этому пути или укажите "
+            f"другое имя ключа в настройках устройства "
             f"(host={router.get('host')})."
         )
 

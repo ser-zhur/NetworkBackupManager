@@ -12,9 +12,10 @@ def backup_pfsense_ssh(router):
     port = router.get("port", 22)
     username = router.get("username", "root")
 
-    # Ядро передаёт абсолютный путь из data/keys/pfsense/.
-    # Относительное имя (ключа там нет) — ищем, как раньше,
-    # в папке плагина.
+    # Ядро передаёт абсолютный путь в data/keys/pfsense/
+    # (core.devices.prepare_key_path). Относительное имя
+    # бывает только при запуске плагина в обход ядра —
+    # тогда ищем рядом с плагином.
     current_plugin_dir = os.path.dirname(os.path.abspath(__file__))
     key_filename = router.get(
         "ssh_key",
@@ -31,9 +32,8 @@ def backup_pfsense_ssh(router):
     if not os.path.exists(key_path):
         raise FileNotFoundError(
             f"SSH-ключ не найден: {key_path}. "
-            f"Положите ключ в data/keys/<тип устройства>/ "
-            f"или проверьте поле 'ssh_key' / 'private_key' "
-            f"устройства "
+            f"Положите файл ключа по этому пути или укажите "
+            f"другое имя ключа в настройках устройства "
             f"(host={router.get('host')})."
         )
 

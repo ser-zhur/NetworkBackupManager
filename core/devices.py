@@ -112,13 +112,19 @@ def prepare_key_path(device_type: str, router: dict) -> None:
     """
     Рабочая копия устройства для плагина: относительное имя
     ключа → абсолютный путь в data/keys/<type>/ (плагины
-    принимают абсолютный ssh_key как есть). Если файла там
-    нет — копию не трогаем: плагин ищет по-старому.
+    принимают абсолютный ssh_key как есть).
+
+    Путь передаётся, даже если файла нет: тогда плагин
+    сообщит «ключ не найден» именно по этому пути — туда
+    его и нужно положить. Абсолютный путь из настроек
+    устройства и имя, выходящее за папку ключей, не меняются.
     """
     path = local_key_path(device_type, key_name(router) or DEFAULT_KEY_NAME)
-    if path is not None and path.is_file():
+    if path is None:
+        return
+    if path.is_file():
         _restrict_key_permissions(path)
-        router["ssh_key"] = str(path)
+    router["ssh_key"] = str(path)
 
 
 def _restrict_key_permissions(path: Path) -> None:
