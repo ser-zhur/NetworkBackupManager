@@ -1,0 +1,14 @@
+{
+  "name": "Juniper Junos",
+  "description": "show configuration | display set.",
+  "mode": "exec",
+  "commands": [
+    {
+      "command": "show configuration | display set | no-more",
+      "file": "config.set",
+      "drop": [
+        "^## Last commit"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "name": "D-Link DGS (CLI в стиле Cisco)",
+  "description": "show running-config — DGS-1510, DGS-1210 (новые прошивки) и похожие.",
+  "mode": "shell",
+  "setup": [
+    "terminal length 0"
+  ],
+  "commands": [
+    {
+      "command": "show running-config",
+      "file": "running-config.cfg",
+      "start": "^\\s*Current configuration",
+      "end": "^end\\s*$"
+    }
+  ]
+}

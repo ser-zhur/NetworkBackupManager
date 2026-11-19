@@ -1,0 +1,12 @@
+{
+  "name": "VyOS / Ubiquiti EdgeOS",
+  "description": "show configuration commands.",
+  "mode": "exec",
+  "default_username": "vyos",
+  "commands": [
+    {
+      "command": "/opt/vyatta/bin/vyatta-op-cmd-wrapper show configuration commands",
+      "file": "config.commands"
+    }
+  ]
+}

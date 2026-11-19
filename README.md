@@ -2,7 +2,7 @@
 
 Резервное копирование конфигураций сетевых устройств по SSH с веб-интерфейсом.
 
-- **Устройства:** MikroTik (RouterOS 6/7), pfSense, D-Link DGS-1510. Новые типы добавляются плагинами в `plugins/`.
+- **Устройства:** MikroTik (RouterOS 6/7), pfSense, D-Link DGS-1510 и любое устройство, которое показывает конфигурацию командой по SSH: Cisco IOS, Huawei, HPE/H3C, Aruba, Juniper, VyOS, OpenWrt — готовыми профилями или своими командами. Новые типы добавляются плагинами ([docs/PLUGINS.md](docs/PLUGINS.md)).
 - **История:** каждая выгрузка сохраняется в git-репозиторий устройства. В интерфейсе можно посмотреть изменения между версиями.
 - **Внешние хранилища:** копии через rclone (WebDAV, облака и т. д.), с шифрованием 7z AES-256.
 - **Расписание и хранение:** автоматический запуск по расписанию, очистка старых версий.
@@ -50,6 +50,28 @@ venv/Scripts/python main.py --foreground
 | `NBM_API_TOKEN` | Токен мониторинга для `/api/status` (дополнительно к созданному в интерфейсе) |
 | `NBM_CONTAINER` | `1` — запуск в контейнере: службой управляет не программа |
 
+## Устройства по SSH без своего плагина
+
+Тип **«SSH (универсальный)»** выполняет команды по SSH и сохраняет их вывод. Что выполнять, задаёт профиль:
+
+| Профиль | Команда |
+|---|---|
+| Cisco IOS / IOS-XE | `show running-config` (при приглашении `>` — `enable` с паролем из настроек) |
+| D-Link DGS | `show running-config` |
+| Huawei VRP | `display current-configuration` |
+| HPE Comware / H3C | `display current-configuration` |
+| HPE Aruba OS-Switch / ProCurve | `show running-config` |
+| Juniper Junos | `show configuration \| display set` |
+| VyOS / Ubiquiti EdgeOS | `show configuration commands` |
+| OpenWrt | `uci export` |
+| Свои команды | список команд из настроек устройства |
+
+Профили проверены на имитации устройств, а не на реальном оборудовании. Если профиль не подошёл, пришлите текст ошибки из карточки устройства.
+
+Свой профиль — JSON-файл в `data/ssh_profiles/` (формат — [docs/PLUGINS.md](docs/PLUGINS.md#профили-ssh)). Файл с тем же именем, что у поставочного, заменяет его. Профили читаются при запуске программы.
+
+Вывод проверяется перед сохранением. Если у вывода нет начала или конца конфигурации (обрыв связи, мало времени на ответ) или устройство не приняло команду, бэкап считается неудачным, и прежняя версия не затирается.
+
 ## Уведомления
 
 **Настройки → Уведомления**: каналы Telegram (бот), почта (SMTP) и webhook (POST JSON; поле `text` подходит для входящих webhook Slack, Mattermost, Rocket.Chat). Для каждого канала выбирается, о чём сообщать:
@@ -84,6 +106,8 @@ venv/Scripts/python main.py --foreground
   data/state.json     результаты последних бэкапов
   data/events.jsonl   журнал событий
   data/notifications.json  каналы уведомлений
+  data/ssh_profiles/  свои профили SSH-устройств
+  data/known_hosts    запомненные ключи SSH-хостов
   backups/            выгрузки и их git-история
   logs/
 ```
@@ -97,6 +121,8 @@ pip install -r requirements-dev.txt
 pytest -q
 python tools/build_css.py    # после правки шаблонов: пересборка Tailwind CSS
 ```
+
+Как написать плагин для нового типа устройств — [docs/PLUGINS.md](docs/PLUGINS.md).
 
 Сборка EXE и установщика для Windows — `build_exe.bat` (нужны PyInstaller и Inno Setup).
 

@@ -1,0 +1,16 @@
+{
+  "name": "HPE Comware / H3C",
+  "description": "display current-configuration — HPE FlexNetwork (Comware 5/7), H3C.",
+  "mode": "shell",
+  "setup": [
+    "screen-length disable"
+  ],
+  "commands": [
+    {
+      "command": "display current-configuration",
+      "file": "current-configuration.cfg",
+      "start": "^\\s*#",
+      "end": "^return\\s*$"
+    }
+  ]
+}

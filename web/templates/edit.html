@@ -1,3 +1,4 @@
+{% from "_plugin_fields.html" import plugin_fields %}
 <!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -18,7 +19,7 @@
                 ⚙ Редактирование устройства
             </h1>
             <p class="text-sm text-gray-500 dark:text-slate-400 mt-1 flex items-center gap-2">
-                <span class="px-1.5 py-0.5 rounded bg-brand-100 dark:bg-brand-900/60 text-brand-700 dark:text-brand-300 text-xs font-semibold uppercase">{{ device_type }}</span>
+                <span class="px-1.5 py-0.5 rounded bg-brand-100 dark:bg-brand-900/60 text-brand-700 dark:text-brand-300 text-xs font-semibold">{{ info.title if info else device_type }}</span>
                 <span>устройство #{{ index }}</span>
             </p>
         </div>
@@ -152,7 +153,7 @@
                                   border border-gray-200 dark:border-slate-800
                                   focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
                 </div>
-                <div>
+                <div {% if info and not info.uses_password %}hidden{% endif %}>
                     <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Пароль SSH:</label>
                     <input type="password" name="ssh_pass" value=""
                            placeholder="Оставьте пустым, чтобы не менять"
@@ -165,13 +166,18 @@
             </div>
 
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Путь к SSH-ключу:</label>
+                <div {% if info and not info.uses_key %}hidden{% endif %}>
+                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Файл SSH-ключа:</label>
                 <input type="text" name="private_key"
                        value="{{ router.private_key or router.ssh_key or 'id_rsa.key' }}"
                        class="w-full rounded-lg px-3 py-2 text-sm font-mono
                               bg-gray-50 dark:bg-slate-950
                               border border-gray-200 dark:border-slate-800
                               focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+                <p class="mt-1 text-[11px] text-gray-500 dark:text-slate-400">
+                    Имя файла в <code class="font-mono">data/keys/{{ device_type }}/</code> или полный путь.
+                </p>
+                </div>
 
                 <label class="flex items-center gap-3 pt-1">
                     <input type="checkbox"
@@ -184,6 +190,12 @@
                     </span>
                 </label>
             </div>
+
+            {% if info and info.fields %}
+            <div class="pt-3 border-t border-gray-100 dark:border-slate-800">
+                {{ plugin_fields(info, router) }}
+            </div>
+            {% endif %}
         </section>
 
         <!-- 2. Локальное хранилище -->

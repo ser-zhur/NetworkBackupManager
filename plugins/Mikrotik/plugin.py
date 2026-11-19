@@ -781,6 +781,19 @@ def backup_router(router):
         "Не удалось подключиться ни по ROS6, ни по ROS7"
     )
 
+# Описание для ядра (контракт v1, core/plugin_api.py)
+PLUGIN = {
+    "api": 1,
+    "title": "MikroTik RouterOS",
+    "description": (
+        "Экспорт конфигурации (.rsc) и бинарный бэкап (.backup); "
+        "RouterOS 6 и 7 определяются сами. Вход по SSH-ключу."
+    ),
+    "auth": ["key", "password"],
+    "default_username": "admin",
+}
+
+
 def run_backup(router):
     """
     Точка входа PluginManager.

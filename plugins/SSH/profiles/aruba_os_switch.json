@@ -1,0 +1,19 @@
+{
+  "name": "HPE Aruba OS-Switch / ProCurve",
+  "description": "show running-config — коммутаторы ProCurve и Aruba 2530/2930 и т.п.",
+  "mode": "shell",
+  "default_username": "manager",
+  "setup": [
+    "no page"
+  ],
+  "commands": [
+    {
+      "command": "show running-config",
+      "file": "running-config.cfg",
+      "start": "^Running configuration",
+      "drop": [
+        "^Running configuration"
+      ]
+    }
+  ]
+}

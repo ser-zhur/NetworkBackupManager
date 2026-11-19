@@ -1,0 +1,19 @@
+{
+  "name": "Huawei VRP",
+  "description": "display current-configuration — коммутаторы и маршрутизаторы Huawei.",
+  "mode": "shell",
+  "setup": [
+    "screen-length 0 temporary"
+  ],
+  "commands": [
+    {
+      "command": "display current-configuration",
+      "file": "current-configuration.cfg",
+      "start": "^(!Software Version|#)",
+      "end": "^return\\s*$",
+      "drop": [
+        "^!Last configuration was"
+      ]
+    }
+  ]
+}

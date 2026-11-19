@@ -19,6 +19,7 @@ from core import backup_state
 from core import devices as device_store
 from core import device_status
 from core import events
+from core import plugin_api
 from core.secure_storage import get_secure_storage
 from core.context import (
     PLUGINS_DIR,
@@ -73,6 +74,8 @@ class PluginManager:
     def __init__(self, storage_manager=None):
         self.plugins_dir = PLUGINS_DIR
         self._plugins = {}
+        # Плагины, не прошедшие загрузку: {папка: причина}
+        self.plugin_errors: dict[str, str] = {}
         # Устройства типов, чей плагин не загрузился: не теряем
         # их при сохранении devices.json.
         self._orphan_devices: list[dict] = []
@@ -184,6 +187,10 @@ class PluginManager:
                 "🔌 Плагин %s: устройств %s", dtype, len(pd["routers"]),
             )
 
+    def plugin_info(self, device_type: str):
+        """Описание плагина (core.plugin_api.PluginInfo) или None."""
+        return (self._plugins.get(device_type) or {}).get("info")
+
     def router_id(self, router: dict) -> str:
         """
         Постоянный id устройства. Устройству без id (только что
@@ -224,72 +231,56 @@ class PluginManager:
     # =====================================================
 
     def discover_and_load_plugins(self):
-        """Автоматический поиск и загрузка плагинов из папки plugins"""
-
+        """
+        Загрузка плагинов из plugins/<Имя>/plugin.py по контракту
+        v1 (core/plugin_api.py). Плагин, не соответствующий
+        контракту, не загружается: причина — в лог и в
+        plugin_errors (видна в настройках).
+        """
+        self.plugin_errors = {}
         items = (
-            os.listdir(self.plugins_dir)
+            sorted(os.listdir(self.plugins_dir), key=str.lower)
             if os.path.exists(self.plugins_dir) else []
         )
 
         for item in items:
-
             item_path = os.path.join(self.plugins_dir, item)
-
-            if not os.path.isdir(item_path):
-                continue
-
             plugin_file = os.path.join(item_path, "plugin.py")
-
-            if not os.path.exists(plugin_file):
+            if not os.path.isfile(plugin_file):
                 continue
 
             device_type = item.lower()
-
             try:
                 spec = importlib.util.spec_from_file_location(
-                    f"plugin_{item}",
-                    plugin_file,
+                    f"plugin_{item}", plugin_file,
                 )
-
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
-
-                if not hasattr(module, "run_backup"):
-                    continue
-
-                # Ищем нормализатор, объявленный плагином.
-                # Если его нет — используем identity.
-                normalize_fn = getattr(
-                    module, "normalize_for_compare", None,
-                )
-
-                if normalize_fn is None:
-                    normalize_fn = identity_normalize
-
-                elif not callable(normalize_fn):
-                    logging.warning(
-                        "🔌 %s: normalize_for_compare "
-                        "не callable, использую identity",
-                        device_type,
-                    )
-                    normalize_fn = identity_normalize
-
-                self._plugins[device_type] = {
-                    "func": module.run_backup,
-                    "routers": [],
-                    "normalize": normalize_fn,
-                    # Реальный каталог (с исходным регистром имени)
-                    "dir": item_path,
-                }
-
-                logging.info("🔌 Загружен плагин: %s", device_type)
-
+                info = plugin_api.load_info(module, item)
             except Exception as e:
-                logging.error(
-                    "❌ Ошибка загрузки плагина %s: %s",
-                    item,
-                    e,
+                reason = str(e) or e.__class__.__name__
+                self.plugin_errors[item] = reason
+                logging.error("❌ Плагин %s не загружен: %s", item, reason)
+                continue
+
+            # Нормализатор для сравнения версий (необязателен)
+            normalize_fn = getattr(module, "normalize_for_compare", None)
+            if normalize_fn is not None and not callable(normalize_fn):
+                logging.warning(
+                    "🔌 %s: normalize_for_compare не функция — не используется",
+                    device_type,
                 )
+                normalize_fn = None
+
+            self._plugins[device_type] = {
+                "func": module.run_backup,
+                "info": info,
+                "routers": [],
+                "normalize": normalize_fn or identity_normalize,
+                # Реальный каталог (с исходным регистром имени)
+                "dir": item_path,
+            }
+            logging.info("🔌 Загружен плагин: %s (%s)", device_type, info.title)
 
         self.load_devices()
 
@@ -1096,6 +1087,9 @@ class PluginManager:
                 secure_router["ssh_pass"] = self.storage.decrypt(
                     secure_router["ssh_pass"]
                 )
+            plugin_api.decrypt_fields(
+                plugin.get("info"), secure_router, self.storage.decrypt,
+            )
             device_store.prepare_key_path(device_type, secure_router)
 
             logging.info("🔄 Старт бэкапа: %s", host)

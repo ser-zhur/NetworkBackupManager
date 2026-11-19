@@ -1,0 +1,12 @@
+{
+  "name": "OpenWrt",
+  "description": "uci export — вся конфигурация UCI.",
+  "mode": "exec",
+  "default_username": "root",
+  "commands": [
+    {
+      "command": "uci export",
+      "file": "uci-export.txt"
+    }
+  ]
+}

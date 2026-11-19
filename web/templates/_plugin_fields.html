@@ -1,0 +1,42 @@
+{# Поля устройства, объявленные плагином (PLUGIN["fields"], core/plugin_api.py).
+   Имена в форме — opt_<поле>. values — текущие значения устройства. #}
+{% macro plugin_fields(info, values={}) %}
+{% set _in = "w-full rounded-lg px-3 py-2 text-sm bg-gray-50 dark:bg-slate-950 border border-gray-200 dark:border-slate-800 placeholder-gray-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition" %}
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+{% for f in info.fields %}
+    {% set v = values.get(f.name, f.default) %}
+    <div class="{{ 'md:col-span-2' if f.type == 'textarea' or (f.help | length) > 90 else '' }}">
+    {% if f.type == "checkbox" %}
+        <label class="flex items-center gap-3 md:pt-7">
+            <input type="checkbox" name="opt_{{ f.name }}" value="on" {% if v %}checked{% endif %} class="text-brand-600 focus:ring-brand-500">
+            <span class="text-sm text-gray-700 dark:text-slate-300">{{ f.label }}</span>
+        </label>
+    {% else %}
+        <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">
+            {{ f.label }}{% if f.required %} <span class="text-rose-500">*</span>{% endif %}
+        </label>
+        {% if f.type == "select" %}
+            <select name="opt_{{ f.name }}" class="{{ _in }}">
+                {% for value, label in f.choices %}
+                    <option value="{{ value }}" {% if v == value %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+            </select>
+        {% elif f.type == "textarea" %}
+            <textarea name="opt_{{ f.name }}" rows="4" placeholder="{{ f.placeholder }}"
+                      class="{{ _in }} font-mono">{{ v or '' }}</textarea>
+        {% elif f.type == "password" %}
+            <input type="password" name="opt_{{ f.name }}" autocomplete="new-password"
+                   placeholder="{{ '•••••• задан — оставьте пустым, чтобы не менять' if values.get(f.name) else f.placeholder }}"
+                   class="{{ _in }} font-mono">
+        {% else %}
+            <input type="{{ 'number' if f.type == 'number' else 'text' }}" name="opt_{{ f.name }}"
+                   value="{{ v if v is not none else '' }}" placeholder="{{ f.placeholder }}"
+                   {% if f.required %}required{% endif %}
+                   class="{{ _in }} {{ 'font-mono' if f.type == 'text' else '' }}">
+        {% endif %}
+    {% endif %}
+    {% if f.help %}<p class="mt-1 text-[11px] text-gray-500 dark:text-slate-400">{{ f.help }}</p>{% endif %}
+    </div>
+{% endfor %}
+</div>
+{% endmacro %}

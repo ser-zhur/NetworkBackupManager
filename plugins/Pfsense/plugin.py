@@ -108,6 +108,16 @@ def backup_pfsense_ssh(router):
                 pass
 
 
+# Описание для ядра (контракт v1, core/plugin_api.py)
+PLUGIN = {
+    "api": 1,
+    "title": "pfSense",
+    "description": "Файл /cf/conf/config.xml по SFTP. Вход по SSH-ключу.",
+    "auth": ["key"],
+    "default_username": "root",
+}
+
+
 def run_backup(router_config):
     """
     Точка входа PluginManager.

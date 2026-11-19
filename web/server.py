@@ -90,7 +90,7 @@ from core.context import (
 )
 from core.version import APP_NAME, __version__
 from core import devices as device_store
-from core import device_status, events, monitoring, notifications
+from core import device_status, events, monitoring, notifications, plugin_api
 
 from core.logger import (
     setup_logging,
@@ -3184,22 +3184,25 @@ def add_router_page(
     ),
 ):
 
-    plugins_list = (
-        list(
-            plugin_manager
-            ._plugins
-            .keys()
-        )
+    infos = (
+        [pd["info"] for pd in plugin_manager._plugins.values()]
         if plugin_manager
         else []
     )
+    infos.sort(key=lambda i: i.title.lower())
 
     return templates.TemplateResponse(
         request,
         "add.html",
         {
-            "plugins":
-                plugins_list,
+            "plugin_infos":
+                infos,
+
+            "plugin_errors":
+                plugin_manager.plugin_errors if plugin_manager else {},
+
+            "selected_type":
+                request.query_params.get("type") or "",
 
             "device_storages":
                 _device_storage_view("", None),
@@ -3208,6 +3211,27 @@ def add_router_page(
                 _all_existing_tags(),
         },
     )
+
+
+def _parse_port(form) -> int:
+    try:
+        port = int(form.get("port") or 22)
+    except (TypeError, ValueError):
+        port = 0
+    if not 1 <= port <= 65535:
+        raise HTTPException(status_code=400, detail="Порт SSH: число от 1 до 65535")
+    return port
+
+
+def _plugin_options(device_type: str, form, previous: dict) -> dict:
+    """Поля, объявленные плагином (opt_<поле>), → значения устройства."""
+    info = plugin_manager.plugin_info(device_type)
+    if info is None:
+        return {}
+    try:
+        return plugin_api.parse_field_values(info, form, previous, storage.encrypt)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
 
 
 # =========================================================
@@ -3255,6 +3279,9 @@ async def save_router_endpoint(
             detail="Указанный плагин не найден",
         )
 
+    port = _parse_port(form)
+    options = _plugin_options(device_type, form, {})
+
     encrypted_ssh_pass = (
         storage.encrypt(
             ssh_pass
@@ -3285,6 +3312,10 @@ async def save_router_endpoint(
         "max_backups":
             int(max_backups),
     }
+
+    if port != 22:
+        new_router["port"] = port
+    new_router.update(options)
 
     # Название — опционально. Не пишем пустую строку
     # в devices.json, чтобы файл оставался компактным.
@@ -4634,6 +4665,9 @@ def edit_router(
             "router":
                 router,
 
+            "info":
+                plugin_manager.plugin_info(device_type),
+
             "device_storages":
                 _device_storage_view(device_type, router),
 
@@ -4719,6 +4753,7 @@ async def update_router(
         )
 
     old_router = routers_list[index]
+    options = _plugin_options(device_type, form, old_router)
 
     if ssh_pass:
         ssh_pass_encrypted = storage.encrypt(ssh_pass)
@@ -4786,6 +4821,8 @@ async def update_router(
         updated_router[
             "port"
         ] = port
+
+    updated_router.update(options)
 
     old_storage = old_router.get("storage") or {}
     updated_router["storage"] = _parse_storage_form(form, old_storage)

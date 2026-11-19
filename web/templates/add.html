@@ -1,3 +1,4 @@
+{% from "_plugin_fields.html" import plugin_fields %}
 <!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -33,15 +34,27 @@
             </h3>
 
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Тип плагина:</label>
-                <select name="device_type" required
+                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Тип устройства:</label>
+                <select name="device_type" id="device_type" required
                         class="w-full rounded-lg px-3 py-2 text-sm bg-gray-50 dark:bg-slate-950
                                border border-gray-200 dark:border-slate-800
                                focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
-                    {% for plugin in plugins %}
-                        <option value="{{ plugin }}">{{ plugin }}</option>
+                    {% for p in plugin_infos %}
+                        <option value="{{ p.type }}" data-auth="{{ p.auth | join(',') }}"
+                                data-user="{{ p.default_username }}" data-port="{{ p.default_port }}"
+                                {% if p.type == selected_type %}selected{% endif %}>{{ p.title }}</option>
                     {% endfor %}
                 </select>
+                {% for p in plugin_infos %}
+                    {% if p.description %}
+                    <p class="mt-1 text-[11px] text-gray-500 dark:text-slate-400" data-plugin-block="{{ p.type }}" hidden>{{ p.description }}</p>
+                    {% endif %}
+                {% endfor %}
+                {% if plugin_errors %}
+                <p class="mt-1 text-[11px] text-rose-600 dark:text-rose-400">
+                    Не загружены: {% for name, reason in plugin_errors.items() %}{{ name }} — {{ reason }}{{ '; ' if not loop.last }}{% endfor %}
+                </p>
+                {% endif %}
             </div>
 
             <div>
@@ -82,24 +95,34 @@
                     Через запятую. Пример: <code class="font-mono">office, warehouse, critical</code>.
                 </p>
             </div>
-            <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">IP-адрес / Хост:</label>
-                <input type="text" name="ip" placeholder="192.168.88.1" required
-                       class="w-full rounded-lg px-3 py-2 text-sm font-mono
-                              bg-gray-50 dark:bg-slate-950
-                              border border-gray-200 dark:border-slate-800
-                              focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
-            </div>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div class="grid grid-cols-1 md:grid-cols-[1fr_8rem] gap-4">
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Пользователь SSH:</label>
-                    <input type="text" name="username" value="admin" required
-                           class="w-full rounded-lg px-3 py-2 text-sm
+                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">IP-адрес / Хост:</label>
+                    <input type="text" name="ip" placeholder="192.168.88.1" required
+                           class="w-full rounded-lg px-3 py-2 text-sm font-mono
                                   bg-gray-50 dark:bg-slate-950
                                   border border-gray-200 dark:border-slate-800
                                   focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
                 </div>
                 <div>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Порт SSH:</label>
+                    <input type="number" name="port" id="port" value="22" min="1" max="65535" required
+                           class="w-full rounded-lg px-3 py-2 text-sm
+                                  bg-gray-50 dark:bg-slate-950
+                                  border border-gray-200 dark:border-slate-800
+                                  focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+                </div>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Пользователь SSH:</label>
+                    <input type="text" name="username" id="username" value="admin" required
+                           class="w-full rounded-lg px-3 py-2 text-sm
+                                  bg-gray-50 dark:bg-slate-950
+                                  border border-gray-200 dark:border-slate-800
+                                  focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+                </div>
+                <div data-auth="password">
                     <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Пароль SSH (зашифруется):</label>
                     <input type="password" name="ssh_pass" placeholder="••••••••"
                            class="w-full rounded-lg px-3 py-2 text-sm
@@ -110,12 +133,17 @@
             </div>
 
             <div>
-                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Путь к SSH-ключу (опционально):</label>
+                <div data-auth="key">
+                <label class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Файл SSH-ключа (опционально):</label>
                 <input type="text" name="private_key" placeholder="id_rsa.key"
                        class="w-full rounded-lg px-3 py-2 text-sm font-mono
                               bg-gray-50 dark:bg-slate-950
                               border border-gray-200 dark:border-slate-800
                               focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
+                <p class="mt-1 text-[11px] text-gray-500 dark:text-slate-400">
+                    Имя файла в <code class="font-mono">data/keys/&lt;тип&gt;/</code> или полный путь.
+                </p>
+                </div>
                 <label class="flex items-center gap-3 pt-1">
                     <input type="checkbox"
                         name="debug_connection"
@@ -131,7 +159,12 @@
                     для отладки одного устройства — это очень многословно.
                 </p>
             </div>
-            
+
+            {% for p in plugin_infos if p.fields %}
+            <div data-plugin-block="{{ p.type }}" hidden class="pt-3 border-t border-gray-100 dark:border-slate-800">
+                {{ plugin_fields(p) }}
+            </div>
+            {% endfor %}
         </section>
 
         <!-- 2. Локальное хранилище -->
@@ -179,5 +212,34 @@
     </form>
 </main>
 
+<script>
+(function () {
+    const sel = document.getElementById("device_type");
+    const user = document.getElementById("username");
+    const port = document.getElementById("port");
+    let userTouched = false, portTouched = false;
+    user.addEventListener("input", () => { userTouched = true; });
+    port.addEventListener("input", () => { portTouched = true; });
+
+    function apply() {
+        const opt = sel.selectedOptions[0];
+        if (!opt) return;
+        const auth = (opt.dataset.auth || "").split(",");
+        // Поля других типов скрыты и не отправляются
+        document.querySelectorAll("[data-plugin-block]").forEach((b) => {
+            const on = b.dataset.pluginBlock === sel.value;
+            b.hidden = !on;
+            b.querySelectorAll("input, select, textarea").forEach((i) => { i.disabled = !on; });
+        });
+        document.querySelectorAll("[data-auth]").forEach((el) => {
+            el.hidden = !auth.includes(el.dataset.auth);
+        });
+        if (!userTouched) user.value = opt.dataset.user || "admin";
+        if (!portTouched) port.value = opt.dataset.port || "22";
+    }
+    sel.addEventListener("change", apply);
+    apply();
+})();
+</script>
 </body>
 </html>

@@ -150,6 +150,16 @@ def backup_dlink_ssh(router):
             pass
 
 
+# Описание для ядра (контракт v1, core/plugin_api.py)
+PLUGIN = {
+    "api": 1,
+    "title": "D-Link DGS-1510",
+    "description": "show running-config по SSH. Вход по паролю.",
+    "auth": ["password"],
+    "default_username": "admin",
+}
+
+
 def run_backup(router_config):
     """
     Точка входа PluginManager.

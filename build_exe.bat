@@ -294,6 +294,8 @@ python -m PyInstaller ^
   --hidden-import core.secure_storage ^
   --hidden-import core.scheduler ^
   --hidden-import core.host_keys ^
+  --hidden-import core.plugin_api ^
+  --hidden-import core.ssh ^
   --hidden-import web ^
   --hidden-import web.server ^
   --hidden-import fastapi ^
@@ -429,15 +431,27 @@ for /d %%P in ("plugins\*") do (
         )
         echo   [OK] %%P\plugin.py
         >>"%LOG_FILE%" echo   [OK] %%P\plugin.py
+        REM Профили устройств (универсальный SSH-плагин)
+        if exist "%%P\profiles\*.json" (
+            xcopy /Y /I /Q "%%P\profiles\*.json" "dist\NetworkBackupManager\plugins\%%~nxP\profiles\" >nul
+            if errorlevel 1 (
+                echo ERROR copying %%P\profiles
+                >>"%LOG_FILE%" echo ERROR copying %%P\profiles
+                pause
+                exit /b 1
+            )
+            echo   [OK] %%P\profiles\*.json
+            >>"%LOG_FILE%" echo   [OK] %%P\profiles\*.json
+        )
     )
 )
 
 echo.
-echo Only plugin.py files were copied.
+echo Only plugin.py and profiles\*.json files were copied.
 echo Devices and SSH keys live in data\ and were NOT copied.
 echo.
 >>"%LOG_FILE%" echo.
->>"%LOG_FILE%" echo Only plugin.py files were copied.
+>>"%LOG_FILE%" echo Only plugin.py and profiles\*.json files were copied.
 >>"%LOG_FILE%" echo Devices and SSH keys live in data\ and were NOT copied.
 >>"%LOG_FILE%" echo.
 

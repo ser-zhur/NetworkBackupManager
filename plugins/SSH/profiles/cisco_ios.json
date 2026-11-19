@@ -1,0 +1,26 @@
+{
+  "name": "Cisco IOS / IOS-XE",
+  "description": "show running-config. Пользователю без privilege 15 нужен пароль enable.",
+  "mode": "shell",
+  "enable": "enable",
+  "setup": [
+    "terminal length 0",
+    "terminal width 0"
+  ],
+  "commands": [
+    {
+      "command": "show running-config",
+      "file": "running-config.cfg",
+      "start": "^(Building configuration|Current configuration)",
+      "end": "^end\\s*$",
+      "drop": [
+        "^Building configuration",
+        "^Current configuration :",
+        "^! Last configuration change at",
+        "^! NVRAM config last updated at",
+        "^! No configuration change since last restart",
+        "^ntp clock-period"
+      ]
+    }
+  ]
+}
