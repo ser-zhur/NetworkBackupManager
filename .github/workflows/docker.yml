@@ -45,7 +45,16 @@ jobs:
         run: sh docker/smoke-test.sh nbm:test
 
       - name: Image size
-        run: docker image ls nbm:test
+        run: echo "nbm:test — $(( $(docker image inspect -f '{{.Size}}' nbm:test) / 1048576 )) МБ"
+
+      - name: Compose files (оба варианта)
+        run: |
+          cp .env.example .env
+          echo "NBM_ADMIN_PASSWORD=x" >> .env
+          docker compose config -q
+          docker compose config | grep -q "image: ghcr.io/ser-zhur/networkbackupmanager:latest"
+          COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml docker compose config | grep -q "image: networkbackupmanager:local"
+          COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml docker compose config | grep -q "context:"
 
   arm64:
     # Сборка под arm64 (Raspberry Pi, ARM-серверы) через эмуляцию —

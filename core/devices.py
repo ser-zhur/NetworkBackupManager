@@ -13,6 +13,12 @@
 # • порядок в списке — порядок на экране.
 #
 # SSH-ключи устройств — data/keys/<type>/<имя файла>.
+#
+# backup_path внутри папки данных хранится относительным
+# («backups/R1»): папку данных можно перенести в другое место,
+# на другой компьютер или в Docker. Абсолютный путь прежней
+# установки при загрузке находится в backups/ текущей
+# (locate_backup_path).
 # Плагин получает уже абсолютный путь (prepare_key_path).
 #
 # Прежние версии хранили устройства в plugins/<Тип>/routers.json,
@@ -37,6 +43,9 @@ from core.context import load_json, save_json
 logger = logging.getLogger(__name__)
 
 DEFAULT_KEY_NAME = "id_rsa.key"
+
+# Абсолютный путь Windows («D:\\…», «D:/…»)
+_WINDOWS_ABS_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 _ID_RE = re.compile(r"^[0-9a-f]{12}$")
 
@@ -81,6 +90,57 @@ def load_devices(path: Path | None = None) -> list[dict]:
 
 def save_devices(devices: list[dict], path: Path | None = None) -> None:
     save_json(Path(path or context.DEVICES_FILE), {"devices": devices})
+
+
+# =========================================================
+# Путь к бэкапам устройства
+# =========================================================
+
+def stored_backup_path(path) -> str:
+    """
+    backup_path для devices.json: внутри папки данных —
+    относительный в виде «backups/R1», иначе абсолютный.
+    """
+    resolved = context.resolve_backup_path(path)
+    try:
+        return resolved.relative_to(context.HOME_DIR.resolve()).as_posix()
+    except ValueError:
+        return str(resolved)
+
+
+def locate_backup_path(raw) -> Path:
+    """
+    backup_path из devices.json → абсолютный путь.
+
+    Абсолютный путь другой установки (папку данных перенесли
+    или переехали с Windows в Docker/Linux) не существует
+    здесь — тогда ищем ту же папку в backups/ текущей папки
+    данных: «D:\\NBM\\backups\\R1» → <NBM_HOME>/backups/R1.
+    """
+    text = str(raw).strip()
+    foreign = os.name != "nt" and bool(_WINDOWS_ABS_RE.match(text))
+    if not foreign:
+        path = context.resolve_backup_path(text)
+        if path.exists() or not Path(text).is_absolute():
+            return path
+
+    parts = [p for p in re.split(r"[\\/]+", text) if p]
+    lowered = [p.lower() for p in parts]
+    if "backups" in lowered:
+        last = len(lowered) - 1 - lowered[::-1].index("backups")
+        tail = parts[last + 1:]
+        if tail:
+            candidate = context.BACKUPS_DIR.joinpath(*tail).resolve()
+            if foreign or candidate.exists():
+                logger.info("Путь бэкапов %s → %s (другая установка)", text, candidate)
+                return candidate
+
+    if foreign:
+        # Путь Windows на Linux без папки backups — имя последней папки
+        candidate = (context.BACKUPS_DIR / (parts[-1] if parts else "device")).resolve()
+        logger.warning("Путь бэкапов %s → %s (другая установка)", text, candidate)
+        return candidate
+    return context.resolve_backup_path(text)
 
 
 # =========================================================

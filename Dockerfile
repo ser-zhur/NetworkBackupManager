@@ -71,10 +71,13 @@ COPY storages ./storages
 COPY docker/entrypoint.sh /usr/local/bin/nbm-entrypoint
 RUN chmod 0755 /usr/local/bin/nbm-entrypoint
 
+# NBM_RCLONE важнее config.json: путь rclone.exe, перенесённый
+# вместе с data/ из установки на Windows, здесь не сработал бы.
 ENV NBM_HOME=/nbm \
     NBM_HOST=0.0.0.0 \
     NBM_PORT=8080 \
     NBM_CONTAINER=1 \
+    NBM_RCLONE=/usr/local/bin/rclone \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 

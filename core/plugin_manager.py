@@ -131,6 +131,12 @@ class PluginManager:
                 for router in pd["routers"]:
                     dev = copy.deepcopy(router)
                     dev.pop("type", None)
+                    # Внутри папки данных — относительный путь:
+                    # папку данных можно перенести (Docker и т.п.)
+                    if dev.get("backup_path"):
+                        dev["backup_path"] = device_store.stored_backup_path(
+                            dev["backup_path"]
+                        )
                     devices.append({"id": dev.pop("id"), "type": dtype, **dev})
             devices += copy.deepcopy(self._orphan_devices)
 
@@ -165,11 +171,15 @@ class PluginManager:
                     self._orphan_devices.append(dev)
                     continue
                 router = {k: v for k, v in dev.items() if k != "type"}
-                # Приводим относительные пути бэкапов к HOME_DIR
+                # В памяти — абсолютный путь; путь другой
+                # установки находится в backups/ текущей.
                 if router.get("backup_path"):
+                    raw = router["backup_path"]
                     router["backup_path"] = str(
-                        resolve_backup_path(router["backup_path"])
+                        device_store.locate_backup_path(raw)
                     )
+                    if raw != device_store.stored_backup_path(router["backup_path"]):
+                        need_save = True
                 plugin["routers"].append(router)
 
             if self._orphan_devices:
