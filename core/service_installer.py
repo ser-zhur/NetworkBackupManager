@@ -58,6 +58,29 @@ def is_admin() -> bool:
 
 
 # =========================================================
+# ВНЕШНЕЕ УПРАВЛЕНИЕ (Docker, install.sh)
+# =========================================================
+
+def _managed_refusal() -> tuple[bool, str] | None:
+    """
+    Отказ для действий со службой, которой управляет не
+    программа (Docker, служба install.sh). None — можно.
+    """
+    from core import settings
+
+    manager = settings.service_manager()
+    if manager == "docker":
+        return False, "В контейнере службой управляет Docker (docker compose stop / restart)."
+    if manager == "systemd":
+        return False, (
+            f"Служба установлена install.sh — управляйте ею на сервере: "
+            f"sudo systemctl stop|start {LINUX_UNIT}; "
+            f"удаление — sudo ./install.sh --uninstall."
+        )
+    return None
+
+
+# =========================================================
 # SERVICE PROCESS
 # =========================================================
 
@@ -560,10 +583,13 @@ def get_status(use_cache: bool = True) -> dict:
 
     from core import settings
 
+    manager = settings.service_manager()
+
     # В контейнере службой управляет Docker: кнопки службы
     # не показываем, systemctl/nssm не вызываем.
-    if settings.in_container():
+    if manager == "docker":
         result = {
+            "managed_by": "docker",
             "registered": False,
             "os_running": False,
             "http_up": True,
@@ -587,7 +613,33 @@ def get_status(use_cache: bool = True) -> dict:
     # ---- один опрос вместо трёх ----
     registered, running, task_state = _get_service_state_snapshot()
 
+    # Служба install.sh: состояние показываем, перезапуск —
+    # самозавершением (systemd поднимет), остальное — systemctl.
+    if manager == "systemd":
+        result = {
+            "managed_by": "systemd",
+            "container": False,
+            "registered": registered,
+            "os_running": running,
+            "http_up": True,
+            "service_mode": True,
+            "can_install": False,
+            "can_restart": True,
+            "can_stop": False,
+            "can_start": False,
+            "can_uninstall": False,
+            "is_admin": is_admin(),
+            "task_state": task_state,
+            "service_name": LINUX_UNIT,
+            "base_dir": str(BASE_DIR.resolve()),
+        }
+        with _status_cache_lock:
+            _status_cache_value = result
+            _status_cache_time = now
+        return result
+
     result = {
+        "managed_by": "",
         "container": False,
         "registered": registered,
         "os_running": running,
@@ -679,10 +731,9 @@ def relaunch_elevated(args: list[str]) -> bool:
 
 def install_service() -> tuple[bool, str]:
 
-    from core import settings
-
-    if settings.in_container():
-        return False, "В контейнере службой управляет Docker."
+    refusal = _managed_refusal()
+    if refusal:
+        return refusal
 
     if not is_admin():
         return (
@@ -708,6 +759,10 @@ def install_service() -> tuple[bool, str]:
 # =========================================================
 
 def start_service() -> tuple[bool, str]:
+
+    refusal = _managed_refusal()
+    if refusal:
+        return refusal
 
     if not is_service_registered():
         return False, "Служба не зарегистрирована."
@@ -756,6 +811,10 @@ def start_service() -> tuple[bool, str]:
 
 def stop_service() -> tuple[bool, str]:
 
+    refusal = _managed_refusal()
+    if refusal:
+        return refusal
+
     if not is_service_registered():
         return False, "Служба не зарегистрирована."
 
@@ -803,6 +862,10 @@ def stop_service() -> tuple[bool, str]:
 # =========================================================
 
 def uninstall_service() -> tuple[bool, str]:
+
+    refusal = _managed_refusal()
+    if refusal:
+        return refusal
 
     if not is_admin():
         return (
@@ -870,6 +933,10 @@ def uninstall_service() -> tuple[bool, str]:
 # =========================================================
 def schedule_stop() -> tuple[bool, str]:
 
+    refusal = _managed_refusal()
+    if refusal:
+        return refusal
+
     # -----------------------------------------------------
     # Если текущий процесс — служба, останавливаем службу.
     # -----------------------------------------------------
@@ -933,6 +1000,30 @@ def schedule_stop() -> tuple[bool, str]:
 # =========================================================
 
 def schedule_restart() -> tuple[bool, str]:
+
+    from core import settings
+
+    manager = settings.service_manager()
+    if manager == "docker":
+        return _managed_refusal()
+
+    # Служба install.sh: программа работает не от root и
+    # systemctl restart вызвать не может. Завершаемся с кодом 1 —
+    # systemd (Restart=on-failure) запустит её заново.
+    if manager == "systemd":
+
+        def _exit_for_restart():
+            time.sleep(2)
+            logging.info("Перезапуск службы: выход с кодом 1, systemd запустит снова")
+            logging.shutdown()
+            os._exit(1)
+
+        threading.Thread(target=_exit_for_restart, daemon=True).start()
+        return (
+            True,
+            "Служба перезапускается. Подождите несколько секунд "
+            "и обновите страницу.",
+        )
 
     if not is_service_registered():
         return (
@@ -1031,6 +1122,10 @@ def schedule_uninstall() -> tuple[bool, str]:
     самого процесса службы: прямая остановка задачи убила бы
     нас до отправки HTTP-ответа.
     """
+
+    refusal = _managed_refusal()
+    if refusal:
+        return refusal
 
     if not is_service_registered():
         return False, "Служба не зарегистрирована."

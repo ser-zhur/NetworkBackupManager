@@ -1,0 +1,109 @@
+# =========================================================
+# install.sh на настоящем systemd (Ubuntu)
+# =========================================================
+#
+# Установка → служба от пользователя nbm → вход → перезапуск
+# кнопкой интерфейса → обновление с сохранением данных →
+# сломанное обновление откатывается → удаление (данные
+# остаются) → удаление с --purge.
+#
+# =========================================================
+
+name: linux-install
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  URL: http://127.0.0.1:8090
+  PASS: 'p&ss|w"or\d'
+  UNIT: networkbackupmanager.service
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install
+        run: sudo NBM_ADMIN_PASSWORD="$PASS" ./install.sh --port 8090
+
+      - name: Service runs as nbm, login works, password removed from env
+        run: |
+          set -x
+          systemctl is-active "$UNIT"
+          pid=$(systemctl show -p MainPID --value "$UNIT")
+          [ "$(ps -o user= -p "$pid")" = nbm ]
+          curl -fsS "$URL/api/health"
+          [ "$(curl -s -o /dev/null -w '%{http_code}' "$URL/add")" = 401 ]
+          curl -fsS -u "admin:$PASS" "$URL/add" | grep -q "SSH (универсальный)"
+          ! sudo grep -q '^NBM_ADMIN_PASSWORD=' /etc/nbm/nbm.env || exit 1
+          sudo grep -q '^NBM_MANAGED_BY=systemd' /etc/nbm/nbm.env
+          [ "$(sudo stat -c '%U %a' /var/lib/nbm/data)" = "nbm 700" ]
+          [ "$(stat -c '%U' /opt/nbm/app/main.py)" = root ]
+          command -v rclone && command -v ssh && command -v scp
+
+      - name: Service tab shows systemd mode
+        run: |
+          page=$(curl -fsS -u "admin:$PASS" "$URL/settings?tab=service")
+          echo "$page" | grep -q "install.sh"
+          ! echo "$page" | grep -q 'action="/service/uninstall"' || exit 1
+
+      - name: Restart from web interface
+        run: |
+          before=$(systemctl show -p MainPID --value "$UNIT")
+          curl -fsS -u "admin:$PASS" -H "Origin: $URL" -X POST "$URL/service/restart" | grep -q "перезапускается"
+          for i in $(seq 1 40); do
+            now=$(systemctl show -p MainPID --value "$UNIT")
+            if [ "$now" != "$before" ] && [ "$now" != 0 ] && curl -fsS "$URL/api/health" >/dev/null 2>&1; then
+              echo "restarted: $before → $now"; exit 0
+            fi
+            sleep 1
+          done
+          journalctl -u "$UNIT" -n 30 --no-pager; exit 1
+
+      - name: Add a device
+        run: |
+          curl -fsS -u "admin:$PASS" -H "Origin: $URL" -o /dev/null -w '%{http_code}\n' \
+            --data-urlencode device_type=ssh --data-urlencode ip=192.0.2.10 --data-urlencode port=22 \
+            --data-urlencode username=admin --data-urlencode ssh_pass=x --data-urlencode backup_path=backups/sw1 \
+            --data-urlencode max_backups=5 --data-urlencode opt_profile=cisco_ios --data-urlencode opt_mode=shell \
+            "$URL/save-router"
+          sudo grep -q '"backup_path": "backups/sw1"' /var/lib/nbm/data/devices.json
+
+      - name: Update keeps data and login
+        run: |
+          sudo ./install.sh
+          [ -d /opt/nbm/app.prev ]
+          sudo grep -q '192.0.2.10' /var/lib/nbm/data/devices.json
+          curl -fsS -u "admin:$PASS" "$URL/add" >/dev/null
+          sudo grep -q '^NBM_PORT=8090' /etc/nbm/nbm.env
+
+      - name: Broken update rolls back
+        run: |
+          broken=$(mktemp -d)
+          cp -a . "$broken/src"
+          sed -i '1i raise SystemExit("broken build")' "$broken/src/main.py"
+          if sudo "$broken/src/install.sh"; then echo "должно было упасть"; exit 1; fi
+          [ -d /opt/nbm/app.failed ]
+          ! grep -q "broken build" /opt/nbm/app/main.py || exit 1
+          curl -fsS -u "admin:$PASS" "$URL/api/health"
+
+      - name: Uninstall keeps data, purge removes it
+        run: |
+          sudo ./install.sh --uninstall
+          ! systemctl cat "$UNIT" >/dev/null 2>&1 || exit 1
+          [ ! -d /opt/nbm ] && [ ! -d /etc/nbm ]
+          sudo test -f /var/lib/nbm/data/devices.json
+          sudo ./install.sh --uninstall --purge
+          [ ! -d /var/lib/nbm ]
+          ! id nbm || exit 1
+
+      - name: Logs on failure
+        if: failure()
+        run: |
+          sudo journalctl -u "$UNIT" -n 80 --no-pager || true
+          sudo cat /etc/nbm/nbm.env 2>/dev/null | grep -v PASSWORD || true

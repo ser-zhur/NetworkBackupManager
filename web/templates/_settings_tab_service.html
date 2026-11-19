@@ -9,10 +9,18 @@
         </button>
     </div>
 
-    {% if service.container %}
+    {% if service.managed_by == "docker" %}
     <div class="mb-4 p-3 rounded-lg bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 border border-brand-200 dark:border-brand-900 text-sm">
         🐳 Программа работает в контейнере: запуском, остановкой и
         перезапуском управляет Docker (<code>docker compose restart</code>).
+    </div>
+    {% elif service.managed_by == "systemd" %}
+    <div class="mb-4 p-3 rounded-lg bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 border border-brand-200 dark:border-brand-900 text-sm space-y-1">
+        <p>🐧 Служба systemd установлена скриптом <code>install.sh</code>. Перезапустить её можно здесь,
+           остальное — на сервере:</p>
+        <p class="font-mono text-xs">sudo systemctl stop|start|status {{ service.service_name }}</p>
+        <p class="font-mono text-xs">sudo journalctl -u {{ service.service_name }} -f</p>
+        <p>Обновление — <code>sudo ./install.sh</code> из новой версии, удаление — <code>sudo ./install.sh --uninstall</code>.</p>
     </div>
     {% endif %}
 
@@ -108,7 +116,7 @@
 <!-- Действия -->
 <div class="space-y-3">
 
-    {% if not service.registered %}
+    {% if not service.registered and not service.managed_by %}
     <form action="/service/install" method="POST"
           onsubmit="return confirm('Зарегистрировать Network Backup Manager как службу Windows?');">
         <button type="submit"
@@ -126,7 +134,7 @@
     {% endif %}
     {% endif %}
 
-    {% if service.registered and not service.os_running %}
+    {% if service.can_start and not service.os_running %}
     <form action="/service/start" method="POST"
           onsubmit="return confirm('Запустить службу?');">
         <button type="submit"
@@ -159,7 +167,7 @@
     </form>
     {% endif %}
 
-    {% if service.registered %}
+    {% if service.can_uninstall %}
     <form action="/service/uninstall" method="POST"
           onsubmit="return confirm('ВНИМАНИЕ! Удалить службу Network Backup Manager из Windows?');">
         <button type="submit"
@@ -179,6 +187,7 @@
 </div>
 
 <!-- Информация -->
+{% if not service.managed_by %}
 <div class="mt-2 p-5 bg-brand-50 dark:bg-brand-950/40 border border-brand-200 dark:border-brand-900 rounded-2xl">
     <h3 class="font-semibold text-brand-900 dark:text-brand-100 mb-3">Информация</h3>
     <ul class="text-xs text-brand-800 dark:text-brand-200 space-y-2 leading-relaxed">
@@ -189,6 +198,7 @@
         <li>• Рабочий каталог службы: <code class="font-mono bg-brand-100 dark:bg-brand-900/60 px-1 rounded break-all">{{ service.base_dir }}</code></li>
     </ul>
 </div>
+{% endif %}
 
 {% if service.registered %}
 <script>

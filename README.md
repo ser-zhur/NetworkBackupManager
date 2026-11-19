@@ -6,7 +6,7 @@
 - **История:** каждая выгрузка сохраняется в git-репозиторий устройства. В интерфейсе можно посмотреть изменения между версиями.
 - **Внешние хранилища:** копии через rclone (WebDAV, облака и т. д.), с шифрованием 7z AES-256.
 - **Расписание и хранение:** автоматический запуск по расписанию, очистка старых версий.
-- **Запуск:** служба Windows, systemd в Linux или Docker ([docs/DOCKER.md](docs/DOCKER.md)).
+- **Запуск:** служба Windows, служба systemd в Linux ([docs/LINUX.md](docs/LINUX.md)) или Docker ([docs/DOCKER.md](docs/DOCKER.md)).
 - **Уведомления:** Telegram, почта, webhook — об ошибках, восстановлении и изменениях конфигурации.
 - **Мониторинг:** `/api/health` и `/api/status` для Zabbix и аналогов, готовый шаблон Zabbix, журнал событий.
 
@@ -21,9 +21,19 @@ docker compose pull && docker compose up -d
 
 Интерфейс откроется на `http://<сервер>:8080`. Данные лежат в `./nbm` на сервере. Образ из GitHub Container Registry, для amd64 и arm64. Можно также собирать образ на сервере из исходников. Установка, обновление, откат и переезд с Windows описаны в [docs/DOCKER.md](docs/DOCKER.md).
 
+## Linux (служба systemd)
+
+```bash
+git clone https://github.com/ser-zhur/NetworkBackupManager.git
+cd NetworkBackupManager
+sudo ./install.sh
+```
+
+Скрипт ставит недостающие пакеты и rclone, создаёт пользователя `nbm` и службу `networkbackupmanager`, а в конце выводит адрес и пароль первого входа. Данные лежат в `/var/lib/nbm`. Повторный запуск `sudo ./install.sh` из новой версии обновляет программу; если новая версия не запустилась, возвращается прежняя. Подробно — [docs/LINUX.md](docs/LINUX.md).
+
 ## Быстрый старт (из исходников)
 
-Нужен Python 3.12 или новее.
+Нужен Python 3.11 или новее.
 
 ```bash
 python -m venv venv

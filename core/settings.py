@@ -18,6 +18,8 @@
 #                        с созданным в Настройки → Мониторинг)
 #   NBM_CONTAINER        1 — запуск в контейнере: службой ОС
 #                        управляет не программа (Docker и т.п.)
+#   NBM_MANAGED_BY       systemd — служба установлена install.sh:
+#                        остановка и удаление — через systemctl
 #
 # =========================================================
 
@@ -129,6 +131,22 @@ def in_container() -> bool:
     if flag is not None:
         return flag
     return Path("/.dockerenv").exists()
+
+
+def service_manager() -> str:
+    """
+    Кто управляет запуском программы:
+      "docker"  — контейнер;
+      "systemd" — служба, установленная install.sh (программа
+                  работает не от root и не может остановить
+                  или удалить свою службу);
+      ""        — сама программа (служба Windows, --install-service).
+    """
+    if in_container():
+        return "docker"
+    if env("NBM_MANAGED_BY").lower() == "systemd":
+        return "systemd"
+    return ""
 
 
 # =========================================================
