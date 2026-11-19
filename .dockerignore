@@ -1,0 +1,17 @@
+# В образ — только код (см. COPY в Dockerfile). Всё остальное,
+# особенно данные и секреты, в контекст сборки не передаётся.
+*
+!requirements.txt
+!main.py
+!core/
+!web/
+!plugins/
+!storages/
+!docker/entrypoint.sh
+**/__pycache__
+**/*.pyc
+plugins/**/routers.json
+plugins/**/*.key
+plugins/**/*.pem
+plugins/**/*.ppk
+plugins/**/id_*

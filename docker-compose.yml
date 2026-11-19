@@ -1,0 +1,37 @@
+# =========================================================
+# Network Backup Manager — Docker Compose
+# =========================================================
+#
+# Готовый образ из GitHub Container Registry (вариант А):
+#
+#     docker compose pull && docker compose up -d
+#
+# Сборка из исходников на сервере (вариант Б) — добавьте в .env
+#     COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml
+# и запускайте
+#     docker compose up -d --build
+#
+# Настройки — в .env (образец: .env.example). Подробно — README.
+#
+# =========================================================
+
+services:
+  nbm:
+    image: ghcr.io/ser-zhur/networkbackupmanager:${NBM_VERSION:-latest}
+    container_name: nbm
+    restart: unless-stopped
+    ports:
+      # Только с этого сервера: "127.0.0.1:8080:8080"
+      - "${NBM_LISTEN:-8080}:8080"
+    environment:
+      NBM_ADMIN_USER: ${NBM_ADMIN_USER:-admin}
+      NBM_ADMIN_PASSWORD: ${NBM_ADMIN_PASSWORD:-}
+      NBM_UID: ${NBM_UID:-1000}
+      NBM_GID: ${NBM_GID:-1000}
+      NBM_TRUSTED_PROXIES: ${NBM_TRUSTED_PROXIES:-}
+      NBM_API_TOKEN: ${NBM_API_TOKEN:-}
+      TZ: ${TZ:-Europe/Kyiv}
+    volumes:
+      # Всё изменяемое: data/ (устройства, ключи, настройки),
+      # backups/ (выгрузки и их история), logs/
+      - ${NBM_DATA:-./nbm}:/nbm

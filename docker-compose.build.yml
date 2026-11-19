@@ -1,0 +1,22 @@
+# =========================================================
+# Сборка образа из исходников на сервере (вариант Б)
+# =========================================================
+#
+# Подключается вместе с docker-compose.yml — в .env:
+#     COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml
+#
+#     git pull && docker compose up -d --build
+#
+# Образ получает локальное имя и не путается с образом из
+# реестра.
+#
+# =========================================================
+
+services:
+  nbm:
+    image: networkbackupmanager:local
+    pull_policy: build
+    build:
+      context: .
+      args:
+        VERSION: local
