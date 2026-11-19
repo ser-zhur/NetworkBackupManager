@@ -10,6 +10,8 @@
 - **Уведомления:** Telegram, почта, webhook — об ошибках, восстановлении и изменениях конфигурации.
 - **Мониторинг:** `/api/health` и `/api/status` для Zabbix и аналогов, готовый шаблон Zabbix, журнал событий.
 
+Готовые сборки — на странице [Releases](https://github.com/ser-zhur/NetworkBackupManager/releases): установщик Windows, образ Docker, архив исходников для Linux. Что изменилось — [CHANGELOG.md](CHANGELOG.md).
+
 ## Docker
 
 ```bash

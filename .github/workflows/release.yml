@@ -1,0 +1,79 @@
+# =========================================================
+# Релиз по тегу версии
+# =========================================================
+#
+#   git tag v2.0.0 && git push origin v2.0.0
+#
+# 1. Тег совпадает с core/version.py, в CHANGELOG.md есть раздел
+#    этой версии — иначе релиза нет.
+# 2. Установщик Windows собирается и проверяется
+#    (windows-installer.yml).
+# 3. Релиз на GitHub: описание из CHANGELOG.md, установщик,
+#    docker-compose.yml и .env.example.
+#
+# Образ Docker по тому же тегу публикует docker.yml.
+#
+# =========================================================
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  check:
+    name: tag = version, CHANGELOG
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: |
+          v=$(python3 -c 'from core.version import __version__; print(__version__)')
+          if [ "$GITHUB_REF_NAME" != "v$v" ]; then
+            echo "::error::Тег $GITHUB_REF_NAME не совпадает с версией $v в core/version.py"
+            exit 1
+          fi
+          python3 tools/release_notes.py "$v" > /dev/null
+
+  windows:
+    needs: check
+    uses: ./.github/workflows/windows-installer.yml
+
+  release:
+    needs: windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.windows.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: NetworkBackupManager-${{ needs.windows.outputs.version }}-Setup
+          path: dist
+
+      - name: Release notes
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/networkbackupmanager"
+          {
+            echo "## Установка"
+            echo
+            echo "- **Windows 10/11:** \`NetworkBackupManager-${VERSION}-Setup.exe\` ниже. Обновление — запустить поверх установленной версии, данные сохраняются."
+            echo "- **Docker:** образ \`${image}:${VERSION}\` (amd64, arm64); \`docker-compose.yml\` и \`.env.example\` ниже — [docs/DOCKER.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/docs/DOCKER.md)."
+            echo "- **Linux (systemd):** архив исходников ниже, затем \`sudo ./install.sh\` — [docs/LINUX.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/docs/LINUX.md)."
+            echo
+            python3 tools/release_notes.py "$VERSION"
+          } > notes.md
+          cat notes.md
+
+      - name: Create release
+        run: |
+          mv dist/NetworkBackupManager-Setup.exe "dist/NetworkBackupManager-${VERSION}-Setup.exe"
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Network Backup Manager ${VERSION}" \
+            --notes-file notes.md \
+            "dist/NetworkBackupManager-${VERSION}-Setup.exe" \
+            docker-compose.yml docker-compose.build.yml .env.example

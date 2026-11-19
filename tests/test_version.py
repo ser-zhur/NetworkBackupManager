@@ -62,3 +62,18 @@ def test_header_shows_version():
     html = s.templates.get_template("_header.html").render()
     assert f"v{version.__version__}" in html
     assert s.app.version == version.__version__
+
+
+def test_changelog_has_current_version():
+    """Версию без записи в CHANGELOG.md не выпускаем (release.yml)."""
+    sys.path.insert(0, str(ROOT / "tools"))
+    try:
+        import release_notes
+    finally:
+        sys.path.pop(0)
+
+    text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    notes = release_notes.section(version.__version__, text)
+    assert notes and "###" in notes
+    assert "## [" not in notes                       # только свой раздел
+    assert release_notes.section("0.0.1", text) is None

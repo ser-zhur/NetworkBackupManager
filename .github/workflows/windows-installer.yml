@@ -8,7 +8,8 @@
 # прежней версии убран) → тихое удаление (данные остаются).
 #
 # Установщик — в артефактах прогона (Actions → прогон →
-# Artifacts); по тегу v* — ещё и в релизе (release.yml).
+# Artifacts). По тегу v* этот workflow вызывает release.yml
+# и прикладывает установщик к релизу.
 #
 # =========================================================
 
@@ -17,9 +18,13 @@ name: windows-installer
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    outputs:
+      version:
+        description: Версия программы (core/version.py)
+        value: ${{ jobs.build.outputs.version }}
 
 jobs:
   build:
