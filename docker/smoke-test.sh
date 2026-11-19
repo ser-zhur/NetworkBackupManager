@@ -66,8 +66,8 @@ curl -fsS -u admin:smoke-pass "http://127.0.0.1:$PORT/add" | grep -q "SSH (ун�
 echo "✅ веб-интерфейс и вход"
 
 # Процесс программы — не root, а NBM_UID
-docker top "$NAME" -eo uid,args | grep "main.py" | grep -v tini | awk '{print $1}' | grep -qx "$UID_HOST" \
-    || { docker top "$NAME" -eo uid,args; fail "программа работает не от uid $UID_HOST"; }
+docker top "$NAME" -eo pid,uid,args | grep "main.py" | grep -v tini | awk '{print $2}' | grep -qx "$UID_HOST" \
+    || { docker top "$NAME" -eo pid,uid,args; fail "программа работает не от uid $UID_HOST"; }
 [ "$(stat -c %u "$DATA/data/auth.json")" = "$UID_HOST" ] || fail "владелец data/auth.json"
 [ "$(stat -c %u "$DATA/data/keys/mikrotik/id_rsa.key")" = "$UID_HOST" ] || fail "владелец ключа не исправлен"
 [ "$(stat -c %a "$DATA/data")" = "700" ] || fail "права data/ не 700"
