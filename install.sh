@@ -298,7 +298,8 @@ say "Устанавливаю зависимости (pip)…"
 "$VENV/bin/python" -m pip install -q --disable-pip-version-check --upgrade pip
 "$VENV/bin/python" -m pip install -q --disable-pip-version-check -r "$PREFIX/app.new/requirements.txt"
 "$VENV/bin/python" -m compileall -q "$PREFIX/app.new" >/dev/null || true
-VERSION="$("$VENV/bin/python" "$PREFIX/app.new/main.py" --version 2>/dev/null | tail -1 || echo '?')"
+VERSION="$("$VENV/bin/python" "$PREFIX/app.new/main.py" --version 2>/dev/null | tail -1 | awk '{print $NF}')"
+VERSION="${VERSION:-?}"
 ok "Версия: $VERSION"
 
 # =========================================================
