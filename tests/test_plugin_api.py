@@ -3,6 +3,7 @@
 # =========================================================
 
 import json
+import re
 import types
 
 import pytest
@@ -151,6 +152,11 @@ def test_add_page_lists_plugins_and_fields(web):
     assert "SSH (универсальный)" in page and "MikroTik RouterOS" in page
     assert 'name="opt_profile"' in page and "Huawei VRP" in page
     assert 'data-plugin-block="ssh"' in page
+    # Скрипт формы скрывает все [data-auth] не того способа входа:
+    # на пунктах списка типов этого атрибута быть не должно, иначе
+    # в списке остаётся только выбранный тип.
+    assert not re.search(r"<option[^>]*\bdata-auth=", page)
+    assert page.count("data-methods=") == len(re.findall(r'<option value="[^"]*" data-methods', page)) >= 4
 
 
 def test_save_and_edit_ssh_device(web, tmp_path):

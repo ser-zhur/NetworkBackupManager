@@ -40,7 +40,7 @@
                                border border-gray-200 dark:border-slate-800
                                focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition">
                     {% for p in plugin_infos %}
-                        <option value="{{ p.type }}" data-auth="{{ p.auth | join(',') }}"
+                        <option value="{{ p.type }}" data-methods="{{ p.auth | join(',') }}"
                                 data-user="{{ p.default_username }}" data-port="{{ p.default_port }}"
                                 {% if p.type == selected_type %}selected{% endif %}>{{ p.title }}</option>
                     {% endfor %}
@@ -224,7 +224,7 @@
     function apply() {
         const opt = sel.selectedOptions[0];
         if (!opt) return;
-        const auth = (opt.dataset.auth || "").split(",");
+        const auth = (opt.dataset.methods || "").split(",");
         // Поля других типов скрыты и не отправляются
         document.querySelectorAll("[data-plugin-block]").forEach((b) => {
             const on = b.dataset.pluginBlock === sel.value;
