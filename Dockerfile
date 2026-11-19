@@ -17,7 +17,9 @@ ARG PYTHON_VERSION=3.14
 # ---------------------------------------------------------
 FROM python:${PYTHON_VERSION}-slim AS rclone
 
-ARG RCLONE_VERSION=v1.72.0
+# Не RCLONE_*: аргумент виден в RUN как переменная окружения,
+# а rclone читает RCLONE_* как свои ключи (RCLONE_VERSION = --version).
+ARG NBM_RCLONE_VERSION=v1.72.0
 ARG TARGETARCH
 
 RUN apt-get update \
@@ -27,12 +29,12 @@ RUN apt-get update \
 WORKDIR /tmp/rclone
 RUN set -eux; \
     arch="${TARGETARCH:-amd64}"; \
-    zip="rclone-${RCLONE_VERSION}-linux-${arch}.zip"; \
-    curl -fsSLO "https://downloads.rclone.org/${RCLONE_VERSION}/${zip}"; \
-    curl -fsSL "https://downloads.rclone.org/${RCLONE_VERSION}/SHA256SUMS" -o SHA256SUMS; \
+    zip="rclone-${NBM_RCLONE_VERSION}-linux-${arch}.zip"; \
+    curl -fsSLO "https://downloads.rclone.org/${NBM_RCLONE_VERSION}/${zip}"; \
+    curl -fsSL "https://downloads.rclone.org/${NBM_RCLONE_VERSION}/SHA256SUMS" -o SHA256SUMS; \
     grep " ${zip}\$" SHA256SUMS | sha256sum -c -; \
     python -m zipfile -e "${zip}" .; \
-    install -m 0755 "rclone-${RCLONE_VERSION}-linux-${arch}/rclone" /usr/local/bin/rclone; \
+    install -m 0755 "rclone-${NBM_RCLONE_VERSION}-linux-${arch}/rclone" /usr/local/bin/rclone; \
     /usr/local/bin/rclone version
 
 # ---------------------------------------------------------
