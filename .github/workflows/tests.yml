@@ -29,6 +29,11 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest]
         python: ["3.14"]
+        include:
+          # Самый старый поддерживаемый: системный Python Debian 12
+          # (install.sh ставит программу на системный Python)
+          - os: ubuntu-latest
+            python: "3.11"
 
     steps:
       - uses: actions/checkout@v5
