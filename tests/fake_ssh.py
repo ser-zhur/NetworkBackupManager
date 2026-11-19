@@ -85,6 +85,11 @@ class FakeSSHServer:
         threading.Thread(target=self._accept, daemon=True).start()
 
     def close(self):
+        # shutdown будит accept() в потоке (Linux: одного close мало)
+        try:
+            self._sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         try:
             self._sock.close()
         except OSError:

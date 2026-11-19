@@ -10,6 +10,7 @@
 
 import importlib.util
 import json
+import socket
 
 import pytest
 
@@ -191,8 +192,11 @@ def test_no_password_no_key(tmp_path):
 
 
 def test_no_connection(tmp_path):
-    with FakeSSHServer() as srv:
-        port = srv.port
+    # Свободный порт, который никто не слушает
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
     with pytest.raises(PluginError, match="нет связи|нет ответа"):
         ssh.connect({"host": "127.0.0.1", "port": port, "ssh_pass": "pw", "timeout": 3})
 
