@@ -40,3 +40,5 @@ data/
 *.log
 *.tmp
 nbm/
+*.spec
+build.log

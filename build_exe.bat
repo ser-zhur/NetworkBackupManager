@@ -13,10 +13,15 @@ REM
 REM Весь вывод build.bat дублируется в build.log.
 REM Файл перезаписывается при каждом запуске.
 REM
-REM Для запуска без паузы передайте --no-pause.
+REM Для запуска без паузы передайте --no-pause (в CI — само:
+REM GitHub Actions задаёт CI=true).
 REM
 
 set "LOG_FILE=%~dp0build.log"
+
+set "PAUSE=pause"
+if /i "%~1"=="--no-pause" set "PAUSE=rem"
+if defined CI set "PAUSE=rem"
 
 REM Очищаем лог
 > "%LOG_FILE%" echo ========================================
@@ -50,14 +55,14 @@ echo [0/9] Checking project files...
 if not exist "main.py" (
     echo ERROR: main.py not found in %CD%
     >>"%LOG_FILE%" echo ERROR: main.py not found in %CD%
-    pause
+    %PAUSE%
     exit /b 1
 )
 
 if not exist "web" (
     echo ERROR: web\ directory not found in %CD%
     >>"%LOG_FILE%" echo ERROR: web\ directory not found in %CD%
-    pause
+    %PAUSE%
     exit /b 1
 )
 
@@ -74,7 +79,7 @@ if not exist "web\static" (
 if not exist "core" (
     echo ERROR: core\ directory not found in %CD%
     >>"%LOG_FILE%" echo ERROR: core\ directory not found in %CD%
-    pause
+    %PAUSE%
     exit /b 1
 )
 
@@ -87,7 +92,7 @@ if not exist "core\__init__.py" (
 if not exist "installer.iss" (
     echo ERROR: installer.iss not found in %CD%
     >>"%LOG_FILE%" echo ERROR: installer.iss not found in %CD%
-    pause
+    %PAUSE%
     exit /b 1
 )
 
@@ -99,24 +104,25 @@ if not exist "bin\nssm.exe" (
     echo        nssm.exe [win64] into bin\nssm.exe.
     >>"%LOG_FILE%" echo ERROR: bin\nssm.exe not found.
     >>"%LOG_FILE%" echo NSSM is required for Windows service installation.
-    pause
+    %PAUSE%
     exit /b 1
 )
 
-REM Inno Setup 7 — для сборки инсталлятора.
-set "ISCC="
-if exist "%LOCALAPPDATA%\Programs\Inno Setup 7\ISCC.exe" (
-    set "ISCC=%LOCALAPPDATA%\Programs\Inno Setup 7\ISCC.exe"
-)
-if not defined ISCC if exist "%ProgramFiles%\Inno Setup 7\ISCC.exe" (
-    set "ISCC=%ProgramFiles%\Inno Setup 7\ISCC.exe"
-)
+REM Inno Setup (6.3+ или 7) — для сборки инсталлятора.
+REM Путь можно задать переменной ISCC (так делает CI).
+if defined ISCC if not exist "%ISCC%" set "ISCC="
+if not defined ISCC if exist "%LOCALAPPDATA%\Programs\Inno Setup 7\ISCC.exe" set "ISCC=%LOCALAPPDATA%\Programs\Inno Setup 7\ISCC.exe"
+if not defined ISCC if exist "%ProgramFiles%\Inno Setup 7\ISCC.exe" set "ISCC=%ProgramFiles%\Inno Setup 7\ISCC.exe"
+if not defined ISCC if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
+if not defined ISCC if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe"
+if not defined ISCC for /f "delims=" %%I in ('where ISCC.exe 2^>nul') do if not defined ISCC set "ISCC=%%I"
 
 if not defined ISCC (
-    echo ERROR: Inno Setup 7 not found.
+    echo ERROR: Inno Setup not found.
     echo        Install from https://jrsoftware.org/isdl.php
-    >>"%LOG_FILE%" echo ERROR: Inno Setup 7 not found.
-    pause
+    echo        or set ISCC=full\path\to\ISCC.exe
+    >>"%LOG_FILE%" echo ERROR: Inno Setup not found.
+    %PAUSE%
     exit /b 1
 )
 
@@ -163,7 +169,7 @@ python --version
 if errorlevel 1 (
     echo ERROR: Python is not available in PATH.
     >>"%LOG_FILE%" echo ERROR: Python is not available in PATH.
-    pause
+    %PAUSE%
     exit /b 1
 )
 
@@ -196,7 +202,7 @@ if errorlevel 1 (
     >>"%LOG_FILE%" echo ERROR: Some Python dependencies are missing.
     >>"%LOG_FILE%" echo Run: pip install -r requirements.txt
     >>"%LOG_FILE%" echo.
-    pause
+    %PAUSE%
     exit /b 1
 )
 
@@ -226,7 +232,7 @@ if errorlevel 1 (
     >>"%LOG_FILE%" echo ERROR: PyInstaller is not available for this Python.
     >>"%LOG_FILE%" echo Install it with: pip install pyinstaller
     >>"%LOG_FILE%" echo.
-    pause
+    %PAUSE%
     exit /b 1
 )
 
@@ -265,7 +271,7 @@ for /f "delims=" %%V in ('python tools\version_info.py "build\version_info.txt"'
 if not defined APP_VERSION (
     echo ERROR: tools\version_info.py failed.
     >>"%LOG_FILE%" echo ERROR: tools\version_info.py failed.
-    pause
+    %PAUSE%
     exit /b 1
 )
 set VERSION_ARG=--version-file "build\version_info.txt"
@@ -346,7 +352,7 @@ if not "%PYI_EXIT%"=="0" (
     echo   build\NetworkBackupManager\warn-NetworkBackupManager.txt
     echo.
     >>"%LOG_FILE%" echo build\ kept for diagnostics: build\NetworkBackupManager\warn-NetworkBackupManager.txt
-    pause
+    %PAUSE%
     exit /b 1
 )
 
@@ -366,7 +372,7 @@ echo [6/9] Checking executable...
 if not exist "dist\NetworkBackupManager\NetworkBackupManager.exe" (
     echo ERROR: NetworkBackupManager.exe was not created.
     >>"%LOG_FILE%" echo ERROR: NetworkBackupManager.exe was not created.
-    pause
+    %PAUSE%
     exit /b 1
 )
 
@@ -426,7 +432,7 @@ for /d %%P in ("plugins\*") do (
         if errorlevel 1 (
             echo ERROR copying %%P\plugin.py
             >>"%LOG_FILE%" echo ERROR copying %%P\plugin.py
-            pause
+            %PAUSE%
             exit /b 1
         )
         echo   [OK] %%P\plugin.py
@@ -437,7 +443,7 @@ for /d %%P in ("plugins\*") do (
             if errorlevel 1 (
                 echo ERROR copying %%P\profiles
                 >>"%LOG_FILE%" echo ERROR copying %%P\profiles
-                pause
+                %PAUSE%
                 exit /b 1
             )
             echo   [OK] %%P\profiles\*.json
@@ -468,7 +474,7 @@ for %%F in (storages\*.py) do (
         if errorlevel 1 (
             echo ERROR copying %%F
             >>"%LOG_FILE%" echo ERROR copying %%F
-            pause
+            %PAUSE%
             exit /b 1
         )
         echo   [OK] storages\%%~nxF
@@ -486,14 +492,14 @@ echo Copying web files...
 if not exist "web\templates" (
     echo ERROR: web\templates not found in project
     >>"%LOG_FILE%" echo ERROR: web\templates not found in project
-    pause
+    %PAUSE%
     exit /b 1
 )
 
 if not exist "web\static" (
     echo ERROR: web\static not found in project
     >>"%LOG_FILE%" echo ERROR: web\static not found in project
-    pause
+    %PAUSE%
     exit /b 1
 )
 
@@ -501,7 +507,7 @@ xcopy /E /I /Y "web\templates" "dist\NetworkBackupManager\web\templates" >nul
 if errorlevel 1 (
     echo ERROR copying web\templates
     >>"%LOG_FILE%" echo ERROR copying web\templates
-    pause
+    %PAUSE%
     exit /b 1
 )
 echo   [OK] web\templates
@@ -511,7 +517,7 @@ xcopy /E /I /Y "web\static" "dist\NetworkBackupManager\web\static" >nul
 if errorlevel 1 (
     echo ERROR copying web\static
     >>"%LOG_FILE%" echo ERROR copying web\static
-    pause
+    %PAUSE%
     exit /b 1
 )
 echo   [OK] web\static
@@ -571,14 +577,14 @@ if not "%ISCC_EXIT%"=="0" (
     >>"%LOG_FILE%" echo   INSTALLER BUILD FAILED
     >>"%LOG_FILE%" echo ========================================
     >>"%LOG_FILE%" echo.
-    pause
+    %PAUSE%
     exit /b 1
 )
 
 if not exist "dist\NetworkBackupManager-Setup.exe" (
     echo ERROR: Installer was not created.
     >>"%LOG_FILE%" echo ERROR: Installer was not created.
-    pause
+    %PAUSE%
     exit /b 1
 )
 
@@ -672,9 +678,5 @@ echo Лог сохранён в:
 echo   %LOG_FILE%
 echo.
 
-if /i "%~1"=="--no-pause" (
-    exit /b 0
-)
-
-pause
+%PAUSE%
 exit /b 0

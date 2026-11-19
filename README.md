@@ -147,6 +147,6 @@ python tools/build_css.py    # после правки шаблонов: пер�
 
 Как написать плагин для нового типа устройств — [docs/PLUGINS.md](docs/PLUGINS.md).
 
-Сборка EXE и установщика для Windows — `build_exe.bat` (нужны PyInstaller и Inno Setup).
+Сборка EXE и установщика для Windows — `build_exe.bat` (нужны PyInstaller и Inno Setup 6.3+ или 7). GitHub Actions собирает установщик при каждом изменении и проверяет установку, обновление и удаление (workflow `windows-installer`); готовый `NetworkBackupManager-Setup.exe` — в артефактах прогона.
 
 Скрипты в `tools/debug/` — ручная проверка SSH-подключения к устройству. Перед запуском впишите в них свой адрес и логин.

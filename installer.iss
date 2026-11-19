@@ -39,7 +39,8 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 SetupLogging=yes
 CloseApplications=no
 RestartApplications=no
-MinVersion=6.1sp1
+; Python 3.13+ (внутри EXE) — только Windows 10 и новее
+MinVersion=10.0
 
 [Languages]
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
@@ -49,16 +50,21 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Создать ярлык на рабочем столе"; GroupDescription: "Ярлыки:"; Flags: unchecked
 
 [Dirs]
-; Рабочие каталоги приложения. Пользовательские данные
-; (data/, backups/, logs/, routers.json, ключи) создаются
-; самим приложением и НЕ отслеживаются Inno Setup — они
-; переживают uninstall, пока пользователь явно не согласится
-; их удалить (см. CurUninstallStepChanged → usPostUninstall).
-Name: "{app}\data"
-Name: "{app}\logs"
-Name: "{app}\backups"
+; Пользовательские данные: data\ (устройства, SSH-ключи, настройки,
+; secret.key), backups\, logs\. Обновление их не трогает, удаление
+; программы — только по явному согласию (usPostUninstall).
+Name: "{app}\data";    Flags: uninsneveruninstall
+Name: "{app}\logs";    Flags: uninsneveruninstall
+Name: "{app}\backups"; Flags: uninsneveruninstall
 Name: "{app}\plugins"
 Name: "{app}\storages"
+
+[InstallDelete]
+; Обновление: код прежней версии убираем целиком. Иначе в _internal\
+; остались бы библиотеки старой сборки PyInstaller (смесь версий —
+; частая причина падений после обновления). Данные не затрагиваются.
+Type: filesandordirs; Name: "{app}\_internal"
+Type: filesandordirs; Name: "{app}\web"
 
 [Files]
 ; Основной исполняемый файл и его окружение
@@ -71,10 +77,8 @@ Source: "dist\NetworkBackupManager\web\*";                DestDir: "{app}\web"; 
 ; Storage-бэкенды: git.py, ftp.py и будущие
 Source: "dist\NetworkBackupManager\storages\*";           DestDir: "{app}\storages";  Flags: ignoreversion recursesubdirs createallsubdirs
 
-; Плагины устройств. build_exe.bat кладёт в dist только plugin.py —
-; routers.json и SSH-ключи пользователя НЕ попадают в дистрибутив.
-; Wildcard покрывает текущие (Mikrotik, Pfsense) и будущие плагины
-; без правок этого файла.
+; Плагины устройств: plugin.py и profiles\*.json каждого плагина
+; (build_exe.bat). Свои плагины пользователя в plugins\ не удаляются.
 Source: "dist\NetworkBackupManager\plugins\*";            DestDir: "{app}\plugins";   Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
@@ -91,23 +95,9 @@ Name: "{autodesktop}\{#MyAppName}";     Filename: "{app}\{#MyAppExeName}"; Tasks
 ; решает проблему.
 Filename: "http://127.0.0.1:8080"; Description: "Открыть веб-панель в браузере"; Flags: shellexec nowait postinstall skipifsilent
 
-; =========================================================
-; ВАЖНО: секция [UninstallDelete] удалена намеренно.
-;
-; Ранее здесь было:
-;     Type: files; Name: "{app}\secret.key"
-;
-; Это удаляло Fernet-ключ БЕЗУСЛОВНО, до показа диалога
-; «Удалить пользовательские данные?» в usPostUninstall.
-; Если пользователь отвечал «Нет» (хотел сохранить настройки
-; и backups для переустановки), routers.json оставался, но
-; все зашифрованные в нём ssh_pass теряли возможность
-; расшифровки — secret.key уже стёрт, Fernet.decrypt() вернёт "".
-;
-; Теперь secret.key удаляется только в usPostUninstall,
-; по явному согласию пользователя, вместе с остальными
-; пользовательскими данными (data/, backups/, logs/, ключи).
-; =========================================================
+; Секции [UninstallDelete] нет намеренно: data\secret.key (ключ
+; шифрования паролей) удаляется только вместе с остальными
+; данными и только по согласию пользователя (usPostUninstall).
 
 [Code]
 
@@ -152,9 +142,9 @@ begin
   Nssm := NssmPath();
   if not FileExists(Nssm) then
   begin
-    MsgBox('Не найден NSSM: ' + Nssm + #13#10 +
+    SuppressibleMsgBox('Не найден NSSM: ' + Nssm + #13#10 +
            'Установка службы невозможна. Запустите приложение вручную.',
-           mbError, MB_OK);
+           mbError, MB_OK, IDOK);
     Exit;
   end;
 
@@ -166,9 +156,9 @@ begin
   if (not RunNssm('install {#ServiceName} "' + ServiceExe + '" --service', ResultCode))
      or (ResultCode <> 0) then
   begin
-    MsgBox('Не удалось зарегистрировать службу через NSSM.' + #13#10 +
+    SuppressibleMsgBox('Не удалось зарегистрировать службу через NSSM.' + #13#10 +
            'Код возврата: ' + IntToStr(ResultCode),
-           mbError, MB_OK);
+           mbError, MB_OK, IDOK);
     Exit;
   end;
 
@@ -225,38 +215,27 @@ begin
   end
   else if CurUninstallStep = usPostUninstall then
   begin
-    if MsgBox(
-      'Удалить пользовательские данные?' + #13#10 + #13#10 +
-      'К ним относятся:' + #13#10 +
-      '  • data\          — настройки, состояние, пароль' + #13#10 +
-      '  • backups\       — все резервные копии (git-репозитории)' + #13#10 +
-      '  • logs\          — логи приложения' + #13#10 +
-      '  • secret.key     — ключ шифрования паролей' + #13#10 +
-      '  • plugins\*\routers.json — список устройств' + #13#10 +
-      '  • plugins\*\*.key        — SSH-ключи' + #13#10 + #13#10 +
-      'Если планируете переустановить — ответьте «Нет».',
-      mbConfirmation, MB_YESNO) = IDYES
+    // При тихом удалении (/VERYSILENT /SUPPRESSMSGBOXES) — «Нет»:
+    // данные сохраняются.
+    if SuppressibleMsgBox(
+      'Удалить данные программы?' + #13#10 + #13#10 +
+      '  • data\     — устройства, SSH-ключи, настройки, пароль входа' + #13#10 +
+      '                и ключ шифрования паролей (secret.key)' + #13#10 +
+      '  • backups\  — все резервные копии и их история' + #13#10 +
+      '  • logs\     — журналы' + #13#10 + #13#10 +
+      'Если планируете переустановить или перенести программу —' + #13#10 +
+      'ответьте «Нет»: данные останутся в папке программы.',
+      mbConfirmation, MB_YESNO, IDNO) = IDYES
     then
     begin
       DelTree(ExpandConstant('{app}\data'),    True, True, True);
       DelTree(ExpandConstant('{app}\backups'), True, True, True);
       DelTree(ExpandConstant('{app}\logs'),    True, True, True);
-
-      // secret.key удаляется ТОЛЬКО здесь, по явному согласию.
-      // Без него невозможно расшифровать ssh_pass в routers.json —
-      // поэтому при «Нет» ключ сохраняется вместе с конфигами.
+      // Ключ шифрования прежних версий (до переноса в data\)
       DeleteFile(ExpandConstant('{app}\secret.key'));
-
-      DeleteFile(ExpandConstant('{app}\plugins\Mikrotik\routers.json'));
-      DeleteFile(ExpandConstant('{app}\plugins\Pfsense\routers.json'));
-
-      // SSH-ключи (по маске)
-      DeleteFile(ExpandConstant('{app}\plugins\Mikrotik\*.key'));
-      DeleteFile(ExpandConstant('{app}\plugins\Mikrotik\*.pem'));
-      DeleteFile(ExpandConstant('{app}\plugins\Mikrotik\*.ppk'));
-      DeleteFile(ExpandConstant('{app}\plugins\Pfsense\*.key'));
-      DeleteFile(ExpandConstant('{app}\plugins\Pfsense\*.pem'));
-      DeleteFile(ExpandConstant('{app}\plugins\Pfsense\*.ppk'));
+      // Папка программы — если пуста (свои плагины пользователя
+      // в plugins\ не удаляем)
+      RemoveDir(ExpandConstant('{app}'));
     end;
   end;
 end;
