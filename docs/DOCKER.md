@@ -36,8 +36,9 @@
 2. На сервере:
    ```bash
    sudo mkdir -p /opt/nbm && cd /opt/nbm
-   # положите сюда docker-compose.yml и .env.example из репозитория или релиза
-   cp .env.example .env
+   # положите сюда docker-compose.yml и .env.example из репозитория
+   # или со страницы релиза (там он называется env.example)
+   cp .env.example .env          # из релиза: cp env.example .env
    nano .env          # NBM_ADMIN_PASSWORD, NBM_UID/NBM_GID, TZ
    docker login ghcr.io -u <логин GitHub>     # пароль — токен из п.1
    docker compose pull

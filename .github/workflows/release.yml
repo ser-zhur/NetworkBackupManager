@@ -9,7 +9,8 @@
 # 2. Установщик Windows собирается и проверяется
 #    (windows-installer.yml).
 # 3. Релиз на GitHub: описание из CHANGELOG.md, установщик,
-#    docker-compose.yml и .env.example.
+#    docker-compose.yml и env.example (GitHub не принимает имена
+#    файлов с точкой в начале — .env.example переименовывается).
 #
 # Образ Docker по тому же тегу публикует docker.yml.
 #
@@ -62,18 +63,21 @@ jobs:
             echo "## Установка"
             echo
             echo "- **Windows 10/11:** \`NetworkBackupManager-${VERSION}-Setup.exe\` ниже. Обновление — запустить поверх установленной версии, данные сохраняются."
-            echo "- **Docker:** образ \`${image}:${VERSION}\` (amd64, arm64); \`docker-compose.yml\` и \`.env.example\` ниже — [docs/DOCKER.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/docs/DOCKER.md)."
+            echo "- **Docker:** образ \`${image}:${VERSION}\` (amd64, arm64); \`docker-compose.yml\` и \`env.example\` (сохраните как \`.env\`) ниже — [docs/DOCKER.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/docs/DOCKER.md)."
             echo "- **Linux (systemd):** архив исходников ниже, затем \`sudo ./install.sh\` — [docs/LINUX.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/docs/LINUX.md)."
             echo
-            python3 tools/release_notes.py "$VERSION"
+            # Относительные ссылки CHANGELOG на странице релиза не работают
+            python3 tools/release_notes.py "$VERSION" |
+              sed "s#](\(docs/[^)]*\))#](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/\1)#g"
           } > notes.md
           cat notes.md
 
       - name: Create release
         run: |
           mv dist/NetworkBackupManager-Setup.exe "dist/NetworkBackupManager-${VERSION}-Setup.exe"
+          cp .env.example dist/env.example
           gh release create "$GITHUB_REF_NAME" \
             --title "Network Backup Manager ${VERSION}" \
             --notes-file notes.md \
             "dist/NetworkBackupManager-${VERSION}-Setup.exe" \
-            docker-compose.yml docker-compose.build.yml .env.example
+            docker-compose.yml docker-compose.build.yml dist/env.example
