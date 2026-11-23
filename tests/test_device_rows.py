@@ -80,3 +80,40 @@ def test_state_version_without_file(web):
     s, client, state = web
     assert client.get("/api/backup-status").json()["state_version"] == "0"
     assert row(client)["status"] == "none"
+
+
+def test_header_counts(web):
+    s, client, state = web
+    write_state(state, ok=False, error="нет связи")
+    assert client.get("/api/device-rows").json()["counts"] == {
+        "ok": 0, "warn": 0, "fail": 1, "none": 0, "disabled": 0, "total": 1}
+
+    write_state(state, ok=True)
+    page = client.get("/").text
+    # Плашек службы и автобэкапа больше нет — значки и счётчики
+    assert 'id="status-chips"' not in page
+    assert 'id="header-status"' in page
+    assert 'data-run-mode="' in page and 'data-scheduler="' in page
+    assert '<span data-hdr-count="total">1</span>' in page
+    assert '<span data-hdr-count="ok">1</span>' in page
+    assert '<span data-hdr-count="fail">0</span>' in page
+
+
+def test_run_mode(web, monkeypatch):
+    s, client, state = web
+    from core import settings
+    monkeypatch.setattr(settings, "service_manager", lambda: "docker")
+    assert s._run_mode()["kind"] == "docker"
+    monkeypatch.setattr(settings, "service_manager", lambda: "systemd")
+    assert s._run_mode()["kind"] == "systemd"
+    monkeypatch.setattr(settings, "service_manager", lambda: "")
+    monkeypatch.setattr(s, "is_service_process", lambda: True)
+    assert s._run_mode()["kind"] == "service"
+    monkeypatch.setattr(s, "is_service_process", lambda: False)
+    monkeypatch.setattr(s, "get_status", lambda: {"registered": False})
+    assert s._run_mode()["kind"] in ("script", "exe")
+
+
+def test_header_on_other_pages(web):
+    s, client, state = web
+    assert 'id="header-status"' in client.get("/add").text

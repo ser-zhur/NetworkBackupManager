@@ -112,7 +112,6 @@
 <body class="bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-slate-100 transition-colors">
 
 {% with
-    header_show_status  = True,
     header_show_run_all = True,
     header_show_add     = True,
     header_is_home      = True
@@ -515,7 +514,29 @@ async function refreshDeviceRows(busySet, mass) {
 
     applyRelTime();
     applyAll();
+    updateHeaderCounts(data.counts);
     if (refreshCard) selectDevice(selectedId);
+}
+
+// Счётчики устройств в шапке (_header.html)
+function updateHeaderCounts(counts) {
+    if (!counts) return;
+    document.querySelectorAll('[data-hdr-count]').forEach(el => {
+        el.textContent = counts[el.dataset.hdrCount] || 0;
+    });
+    document.querySelectorAll('[data-hdr-status]').forEach(a => {
+        const n = counts[a.dataset.hdrStatus] || 0;
+        const title = a.title.replace(/: \d+$/, `: ${n}`);
+        a.title = title;
+        a.setAttribute('aria-label', title);
+        const show = a.dataset.always === '1' || n > 0;
+        a.classList.toggle('hidden', !show);
+        a.classList.toggle('inline-flex', show);
+        const color = a.dataset.color.split(' ');
+        const grey = ['text-gray-400', 'dark:text-slate-500'];
+        color.forEach(c => a.classList.toggle(c, n > 0));
+        grey.forEach(c => a.classList.toggle(c, n === 0));
+    });
 }
 
 async function refreshBackupStatus() {
@@ -867,6 +888,10 @@ function _getFiltersFromStorage() {
 }
 
 function getActiveFilters() {
+    // ?status=all (ссылка «все устройства» в шапке) — сброс фильтров
+    if (new URLSearchParams(window.location.search).get('status') === 'all') {
+        return { status: null, tag: [] };
+    }
     const url = _getFiltersFromURL();
     // URL приоритетнее localStorage, если в нём есть хоть что-то
     if (url.status || url.tag.length) {

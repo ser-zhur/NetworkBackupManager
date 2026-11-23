@@ -1669,6 +1669,106 @@ def _state_version() -> str:
         return "0"
     return f"{st.st_mtime_ns}-{st.st_size}"
 
+
+# =========================================================
+# ШАПКА: режим запуска, планировщик, сводка устройств
+# =========================================================
+
+DEVICE_STATUSES = ("ok", "warn", "fail", "none", "disabled")
+
+
+def _device_counts(statuses=None) -> dict:
+    """Сколько устройств в каждом статусе (и всего)."""
+    if statuses is None:
+        state_all = load_json(STATE_FILE, {})
+        if not isinstance(state_all, dict):
+            state_all = {}
+        statuses = []
+        if plugin_manager and hasattr(plugin_manager, "_plugins"):
+            for device_type, plugin_data in plugin_manager._plugins.items():
+                for index, router in enumerate(plugin_data.get("routers", [])):
+                    st = state_all.get(_device_id(device_type, index))
+                    statuses.append(device_status.summarize(
+                        st if isinstance(st, dict) else {},
+                        disabled=is_device_disabled(router),
+                    )["status"])
+    counts = {k: 0 for k in DEVICE_STATUSES}
+    for status in statuses:
+        counts[status] = counts.get(status, 0) + 1
+    counts["total"] = len(statuses)
+    return counts
+
+
+def _run_mode() -> dict:
+    """Как запущена программа: значок и подсказка для шапки."""
+    from core import settings as nbm_settings
+    manager = nbm_settings.service_manager()
+    if manager == "docker":
+        return {"kind": "docker", "icon": "🐳", "label": "Docker",
+                "hint": "Работает в контейнере Docker. Перезапуск и "
+                        "обновление — через docker compose."}
+    if manager == "systemd":
+        return {"kind": "systemd", "icon": "🐧", "label": "Служба Linux",
+                "hint": "Работает как служба systemd "
+                        "(networkbackupmanager.service)."}
+    if is_service_process():
+        return {"kind": "service", "icon": "🪟", "label": "Служба Windows",
+                "hint": "Работает как служба Windows: запускается вместе "
+                        "с компьютером, без входа пользователя."}
+
+    import sys
+    frozen = getattr(sys, "frozen", False)
+    hint = ("Запущено вручную (EXE), не как служба. " if frozen
+            else "Запущено как скрипт Python (main.py), не как служба. ")
+    try:
+        registered = get_status().get("registered")
+    except Exception:
+        registered = False
+    hint += ("Служба установлена, но эта копия работает отдельно от неё."
+             if registered else
+             "Программа остановится при закрытии окна или выходе из системы.")
+    return {"kind": "exe" if frozen else "script",
+            "icon": "🖥️" if frozen else "🐍",
+            "label": "Приложение" if frozen else "Скрипт Python",
+            "hint": hint}
+
+
+def _scheduler_info() -> dict:
+    """Планировщик для шапки: включён ли, когда следующий запуск."""
+    cfg = scheduler.config or {}
+    if not cfg.get("enabled"):
+        return {"state": "off", "short": "выкл",
+                "hint": "Автобэкап выключен"}
+    if cfg.get("mode", "daily") == "interval":
+        short = f"{cfg.get('interval_hours', 24)} ч"
+        hint = f"Автобэкап: каждые {cfg.get('interval_hours', 24)} ч."
+    else:
+        short = cfg.get("daily_time", "03:00")
+        hint = f"Автобэкап: ежедневно в {short}"
+    if not scheduler.is_alive():
+        return {"state": "stopped", "short": short,
+                "hint": hint + ". Поток планировщика не работает — "
+                               "перезапустите программу."}
+    if scheduler.is_job_running():
+        hint += ". Сейчас идёт плановый бэкап"
+    else:
+        nxt = scheduler.next_run()
+        if nxt:
+            hint += ". Следующий запуск: " + nxt.strftime("%d.%m %H:%M")
+    return {"state": "on", "short": short, "hint": hint}
+
+
+def _header_info() -> dict:
+    return {
+        "run": _run_mode(),
+        "scheduler": _scheduler_info(),
+        "devices": _device_counts(),
+    }
+
+
+if templates is not None:
+    templates.env.globals["header_info"] = _header_info
+
 # =========================================================
 # STORAGE SYNC TASK
 # =========================================================
@@ -2165,8 +2265,11 @@ def api_device_rows(user: str = Depends(require_auth)):
     фильтров и сортировки.
     """
     row_template = templates.env.get_template("_device_row_body.html")
+    summaries = _all_device_summaries()
     return {
         "state_version": _state_version(),
+        # Счётчики в шапке
+        "counts": _device_counts([d["status"] for d in summaries]),
         "rows": [
             {
                 "id": d["id"],
@@ -2179,7 +2282,7 @@ def api_device_rows(user: str = Depends(require_auth)):
                 ),
                 "html": row_template.render(d=d),
             }
-            for d in _all_device_summaries()
+            for d in summaries
         ],
     }
 # =========================================================
@@ -5664,9 +5767,8 @@ def settings_page(
                    "monitoring", "notifications"):
         tab = "general"
 
-    # Шапка (_header.html с header_show_status=True) требует
-    # service, scheduler_config, logs_size, is_backup_running —
-    # без них Jinja падает с UndefinedError → 500 на всех вкладках.
+    # Вкладки используют service, scheduler_config, logs_size,
+    # is_backup_running — без них Jinja падает с UndefinedError.
     context: dict = {
         "active_tab": tab,
         "message": message,

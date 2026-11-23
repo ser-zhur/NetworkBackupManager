@@ -4,12 +4,11 @@
 {# Параметры (все опциональны):                               #}
 {#   header_subtitle     — подпись под логотипом              #}
 {#   header_is_home      — True скрывает ссылку «🏠 Главная»   #}
-{#   header_show_status  — показать чипы статуса              #}
 {#   header_show_run_all — показать кнопку «Запустить все»    #}
 {#   header_show_add     — показать ссылку «+ Добавить»       #}
 {#                                                            #}
-{# При header_show_status требуются в контексте:              #}
-{#   service, scheduler_config, logs_size, is_backup_running  #}
+{# Режим запуска, планировщик и счётчики устройств —         #}
+{#   из глобальной функции header_info() (web/server.py).     #}
 {# ========================================================= #}
 
 <header class="sticky top-0 z-20 bg-white/85 dark:bg-slate-900/85 backdrop-blur border-b border-gray-200 dark:border-slate-800">
@@ -27,49 +26,54 @@
             </div>
         </a>
 
-        {% if header_show_status %}
-        <div class="hidden md:flex items-center gap-2 text-[11px]" id="status-chips">
-            {% if service.container %}
-            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-900">
-                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                Контейнер
-            </span>
-            {% elif service.registered and service.os_running %}
-            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-900">
-                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                Служба работает
-            </span>
-            {% elif service.registered %}
-            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-900">
-                <span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
-                Служба остановлена
-            </span>
-            {% else %}
-            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-400 border border-gray-200 dark:border-slate-700">
-                <span class="w-1.5 h-1.5 rounded-full bg-gray-400"></span>
-                Служба не установлена
-            </span>
-            {% endif %}
+        {# Режим запуска · планировщик · сводка устройств.
+           Счётчики на главной обновляет refreshDeviceRows(). #}
+        {% set hi = header_info() %}
+        <div class="flex items-center gap-1 text-[11px]" id="header-status">
+            <a href="/settings?tab=service" title="{{ hi.run.label }}. {{ hi.run.hint }}"
+               aria-label="Режим запуска: {{ hi.run.label }}" data-run-mode="{{ hi.run.kind }}"
+               class="w-7 h-7 inline-flex items-center justify-center rounded-md text-base
+                      hover:bg-gray-100 dark:hover:bg-slate-800 transition">{{ hi.run.icon }}</a>
 
-            {% if scheduler_config.enabled %}
-                {% if scheduler_config.mode == 'daily' %}
-                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 border border-brand-200 dark:border-brand-900">
-                    ⏰ Автобэкап: ежедневно в {{ scheduler_config.daily_time }}
-                </span>
-                {% else %}
-                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 border border-brand-200 dark:border-brand-900">
-                    ⏰ Автобэкап: каждые {{ scheduler_config.interval_hours }} ч.
-                </span>
-                {% endif %}
-            {% else %}
-            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-400 border border-gray-200 dark:border-slate-700">
-                ⏰ Автобэкап выключен
-            </span>
-            {% endif %}
+            <a href="/settings?tab=scheduler" title="{{ hi.scheduler.hint }}"
+               aria-label="{{ hi.scheduler.hint }}" data-scheduler="{{ hi.scheduler.state }}"
+               class="h-7 px-1.5 inline-flex items-center gap-1 rounded-md
+                      hover:bg-gray-100 dark:hover:bg-slate-800 transition
+                      {% if hi.scheduler.state == 'on' %}text-brand-700 dark:text-brand-300
+                      {% elif hi.scheduler.state == 'stopped' %}text-amber-700 dark:text-amber-300
+                      {% else %}text-gray-400 dark:text-slate-500{% endif %}">
+                <span class="text-base {% if hi.scheduler.state == 'off' %}grayscale opacity-60{% endif %}">⏰</span>
+                <span class="font-medium tabular-nums {% if hi.scheduler.state == 'off' %}line-through{% endif %}">{{ hi.scheduler.short }}</span>
+                {% if hi.scheduler.state == 'stopped' %}<span aria-hidden="true">⚠</span>{% endif %}
+            </a>
 
+            <span class="w-px h-4 bg-gray-200 dark:bg-slate-700 mx-1"></span>
 
+            {% set dc = hi.devices %}
+            <a href="/?status=all" title="Устройств: {{ dc.total }}" aria-label="Устройств: {{ dc.total }}"
+               class="h-7 px-1.5 inline-flex items-center gap-1 rounded-md font-medium tabular-nums
+                      text-gray-700 dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-slate-800 transition">
+                <span class="text-base">📟</span><span data-hdr-count="total">{{ dc.total }}</span>
+            </a>
+            {% for key, mark, title, color in [
+                ('ok',       '✓', 'Актуально',                     'text-emerald-600 dark:text-emerald-400'),
+                ('warn',     '⚠', 'Просрочено',                    'text-amber-600 dark:text-amber-400'),
+                ('fail',     '✗', 'С ошибкой',                     'text-rose-600 dark:text-rose-400'),
+                ('none',     '—', 'Нет данных (бэкапа ещё не было)', 'text-gray-500 dark:text-slate-400'),
+                ('disabled', '⏸', 'Отключено',                     'text-slate-500 dark:text-slate-400'),
+            ] %}
+            {# ✓ и ✗ видны всегда, остальные — когда не ноль #}
+            <a href="/?status={{ key }}" title="{{ title }}: {{ dc[key] }}" aria-label="{{ title }}: {{ dc[key] }}"
+               data-hdr-status="{{ key }}" data-always="{{ 1 if key in ('ok', 'fail') else 0 }}"
+               class="h-7 px-1.5 items-center gap-0.5 rounded-md font-semibold tabular-nums
+                      hover:bg-gray-100 dark:hover:bg-slate-800 transition
+                      {{ 'inline-flex' if (key in ('ok', 'fail') or dc[key]) else 'hidden' }}
+                      {{ color if dc[key] else 'text-gray-400 dark:text-slate-500' }}"
+               data-color="{{ color }}">
+                <span aria-hidden="true">{{ mark }}</span><span data-hdr-count="{{ key }}">{{ dc[key] }}</span>
+            </a>
+            {% endfor %}
         </div>
-        {% endif %}
 
         <div class="flex-1"></div>
 
