@@ -54,6 +54,8 @@ RESERVED_FIELDS = frozenset({
     "id", "type", "name", "host", "ip", "port", "username", "ssh_pass",
     "ssh_key", "private_key", "backup_path", "max_backups", "storage",
     "tags", "disabled", "debug_connection",
+    # колонки импорта из CSV (core/csv_import.py)
+    "password", "key",
 })
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")

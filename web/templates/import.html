@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    {% include "_base_head.html" %}
+    <title>Импорт устройств — Network Backup Manager</title>
+</head>
+<body class="bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-slate-100 transition-colors min-h-screen">
+
+{% with header_subtitle = "Импорт устройств из CSV" %}
+    {% include "_header.html" %}
+{% endwith %}
+
+{% set card = "bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm p-6" %}
+{% set btn = "inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 transition" %}
+{% set btn_primary = "inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed" %}
+
+<main class="max-w-5xl mx-auto px-5 py-8 space-y-5">
+
+    <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+            <h1 class="text-2xl font-bold">📥 Импорт устройств из CSV</h1>
+            <p class="text-sm text-gray-500 dark:text-slate-400 mt-1">
+                Список устройств из файла. Сеть не сканируется, к устройствам при импорте никто не подключается.
+            </p>
+        </div>
+        <a href="/add" class="{{ btn }}">← Добавить вручную</a>
+    </div>
+
+    {% if error %}
+    <div class="rounded-xl border border-rose-200 dark:border-rose-900 bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 px-4 py-3 text-sm" role="alert">
+        {{ error }}
+    </div>
+    {% endif %}
+
+{% if result %}
+    {# ---------------- Шаг 3: итог ---------------- #}
+    <section class="{{ card }} space-y-4">
+        <h2 class="text-lg font-semibold">
+            {% if result.added %}✅ Добавлено устройств: {{ result.added | length }}{% else %}Ничего не добавлено{% endif %}
+        </h2>
+        {% if result.added %}
+        <ul class="text-sm space-y-1">
+            {% for it in result.added %}
+            <li><span class="text-gray-500 dark:text-slate-400">{{ it.title }}</span> · {{ it.name or it.ip }} <span class="text-gray-500 dark:text-slate-400">({{ it.ip }})</span></li>
+            {% endfor %}
+        </ul>
+        <p class="text-sm text-gray-500 dark:text-slate-400">
+            Проверьте подключение: запустите бэкап нового устройства на главной. Если вход по ключу, положите файл ключа в <code>data/keys/&lt;тип&gt;/</code>.
+        </p>
+        {% endif %}
+        {% if result.failed %}
+        <div>
+            <h3 class="text-sm font-semibold text-rose-700 dark:text-rose-300 mb-1">Не добавлены: {{ result.failed | length }}</h3>
+            <ul class="text-sm space-y-1">
+                {% for it in result.failed %}
+                <li>Строка {{ it.line }} · {{ it.name or it.ip }} — {{ it.message }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+        <div class="flex flex-wrap gap-2">
+            <a href="/" class="{{ btn_primary }}">На главную</a>
+            <a href="/import" class="{{ btn }}">Импортировать ещё</a>
+        </div>
+    </section>
+
+{% elif plan %}
+    {# ---------------- Шаг 2: что будет добавлено ---------------- #}
+    <form action="/import/apply" method="POST" class="{{ card }} space-y-4" id="import-form">
+        <input type="hidden" name="csv_b64" value="{{ csv_b64 }}">
+
+        <div class="flex flex-wrap items-center gap-2 text-sm">
+            <span class="font-semibold mr-1">Строк в файле: {{ plan | length }}</span>
+            <span class="px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300">можно добавить: {{ counts.ok }}</span>
+            {% if counts.dup %}<span class="px-2 py-0.5 rounded-full bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-400">уже есть: {{ counts.dup }}</span>{% endif %}
+            {% if counts.error %}<span class="px-2 py-0.5 rounded-full bg-rose-100 dark:bg-rose-900/60 text-rose-700 dark:text-rose-300">с ошибкой: {{ counts.error }}</span>{% endif %}
+        </div>
+
+        <div class="overflow-x-auto -mx-6 px-6">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="text-left text-xs text-gray-500 dark:text-slate-400 border-b border-gray-200 dark:border-slate-800">
+                        <th class="py-2 pr-2 w-8">
+                            {% if counts.ok %}<input type="checkbox" id="check-all" checked aria-label="Выбрать все" class="rounded">{% endif %}
+                        </th>
+                        <th class="py-2 pr-3">Строка</th>
+                        <th class="py-2 pr-3">Тип</th>
+                        <th class="py-2 pr-3">Название</th>
+                        <th class="py-2 pr-3">Адрес</th>
+                        <th class="py-2">Результат проверки</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for it in plan %}
+                    <tr class="border-b border-gray-100 dark:border-slate-800/70 align-top">
+                        <td class="py-2 pr-2">
+                            {% if it.status == 'ok' %}
+                            <input type="checkbox" name="line" value="{{ it.line }}" checked class="row-check rounded"
+                                   aria-label="Добавить строку {{ it.line }}">
+                            {% endif %}
+                        </td>
+                        <td class="py-2 pr-3 tabular-nums text-gray-500 dark:text-slate-400">{{ it.line }}</td>
+                        <td class="py-2 pr-3">{{ it.title }}</td>
+                        <td class="py-2 pr-3">{{ it.name or '—' }}</td>
+                        <td class="py-2 pr-3 font-mono text-xs">{{ it.ip }}{% if it.router and it.router.port %}:{{ it.router.port }}{% endif %}</td>
+                        <td class="py-2">
+                            {% if it.status == 'ok' %}
+                            <span class="text-emerald-700 dark:text-emerald-300">✓ Будет добавлено</span>
+                            <span class="block text-[11px] text-gray-500 dark:text-slate-400">
+                                {{ it.router.username }} ·
+                                {% if it.router.ssh_pass %}пароль{% else %}ключ {{ it.router.ssh_key or it.router.private_key }}{% endif %}
+                                · {{ it.folder }}
+                                {% if it.router.tags %}· {{ it.router.tags | join(', ') }}{% endif %}
+                                {% if it.router.disabled %}· отключено{% endif %}
+                            </span>
+                            {% elif it.status == 'dup' %}
+                            <span class="text-gray-500 dark:text-slate-400">— {{ it.message }}</span>
+                            {% else %}
+                            <span class="text-rose-700 dark:text-rose-300">✗ {{ it.message }}</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="flex flex-wrap gap-2">
+            <button type="submit" id="apply-btn" class="{{ btn_primary }}" {% if not counts.ok %}disabled{% endif %}><span>Добавить выбранные (<span id="apply-count">{{ counts.ok }}</span>)</span></button>
+            <a href="/import" class="{{ btn }}">Загрузить другой файл</a>
+        </div>
+        {% if counts.error %}
+        <p class="text-xs text-gray-500 dark:text-slate-400">Строки с ошибкой можно исправить в файле и загрузить его снова: уже добавленные устройства повторно не добавятся.</p>
+        {% endif %}
+    </form>
+
+    <script>
+        (function () {
+            const all = document.getElementById('check-all');
+            const checks = Array.from(document.querySelectorAll('.row-check'));
+            const btn = document.getElementById('apply-btn');
+            const cnt = document.getElementById('apply-count');
+            function update() {
+                const n = checks.filter(c => c.checked).length;
+                cnt.textContent = n;
+                btn.disabled = n === 0;
+                if (all) all.checked = n === checks.length;
+            }
+            if (all) all.addEventListener('change', () => { checks.forEach(c => c.checked = all.checked); update(); });
+            checks.forEach(c => c.addEventListener('change', update));
+            document.getElementById('import-form').addEventListener('submit', () => { btn.disabled = true; });
+        })();
+    </script>
+
+{% else %}
+    {# ---------------- Шаг 1: файл ---------------- #}
+    <form action="/import/preview" method="POST" enctype="multipart/form-data" class="{{ card }} space-y-4">
+        <div>
+            <label for="csv-file" class="block text-sm font-medium mb-1">Файл CSV</label>
+            <input type="file" id="csv-file" name="file" accept=".csv,.txt,text/csv"
+                   class="block w-full text-sm file:mr-3 file:px-3 file:py-2 file:rounded-lg file:border-0
+                          file:bg-brand-50 file:text-brand-700 dark:file:bg-brand-950 dark:file:text-brand-300">
+        </div>
+        <details>
+            <summary class="cursor-pointer text-sm text-gray-600 dark:text-slate-400">…или вставить текст</summary>
+            <textarea name="text" rows="6" spellcheck="false"
+                      placeholder="type;name;ip;username;password&#10;ssh;SW-Core;192.0.2.10;admin;secret"
+                      class="mt-2 w-full rounded-lg px-3 py-2 font-mono text-xs bg-gray-50 dark:bg-slate-950
+                             border border-gray-200 dark:border-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-500"></textarea>
+        </details>
+        <div class="flex flex-wrap gap-2">
+            <button type="submit" class="{{ btn_primary }}">Проверить</button>
+            <a href="/import/template.csv" class="{{ btn }}">⬇ Скачать образец</a>
+        </div>
+        <p class="text-xs text-gray-500 dark:text-slate-400">
+            Сначала программа покажет, что будет добавлено, — ничего не сохраняется до подтверждения.
+            Не больше {{ max_rows }} устройств в файле.
+        </p>
+    </form>
+
+    <section class="{{ card }} space-y-4 text-sm">
+        <h2 class="text-base font-semibold">Формат файла</h2>
+        <ul class="list-disc pl-5 space-y-1 text-gray-600 dark:text-slate-300">
+            <li>Первая строка — названия колонок, порядок любой. Обязательны только <code>type</code> и <code>ip</code>.</li>
+            <li>Разделитель — «;», «,» или табуляция; кодировка UTF-8 или Windows-1251. Подходит файл, сохранённый из Excel как «CSV (разделители — точка с запятой)».</li>
+            <li>Строки, начинающиеся с <code>#</code>, и пустые строки пропускаются.</li>
+            <li>Устройство с тем же типом, адресом и портом, что уже есть в списке, не добавляется повторно.</li>
+            <li>Пароли в программе хранятся зашифрованными. Удалите файл CSV после импорта — в нём пароли открытым текстом.</li>
+        </ul>
+
+        <div class="overflow-x-auto">
+            <table class="w-full">
+                <tbody>
+                {% for name, help in columns %}
+                <tr class="border-b border-gray-100 dark:border-slate-800/70 align-top">
+                    <td class="py-1.5 pr-4 font-mono text-xs whitespace-nowrap">{{ name }}</td>
+                    <td class="py-1.5 text-gray-600 dark:text-slate-300">{{ help }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <h3 class="text-sm font-semibold pt-2">Типы устройств и их колонки</h3>
+        <div class="space-y-3">
+            {% for p in plugin_infos %}
+            <div class="rounded-lg border border-gray-200 dark:border-slate-800 p-3">
+                <div class="flex flex-wrap items-baseline gap-x-3">
+                    <code class="font-semibold">{{ p.type }}</code>
+                    <span>{{ p.title }}</span>
+                    <span class="text-xs text-gray-500 dark:text-slate-400">
+                        логин {{ p.default_username }}, порт {{ p.default_port }},
+                        вход: {% for a in p.auth %}{{ 'пароль' if a == 'password' else 'ключ' }}{{ ', ' if not loop.last }}{% endfor %}
+                    </span>
+                </div>
+                {% if p.fields %}
+                <ul class="mt-1 text-xs text-gray-600 dark:text-slate-300 space-y-0.5">
+                    {% for f in p.fields %}
+                    <li>
+                        <code>{{ f.name }}</code> — {{ f.label }}{% if f.required %} (обязательно){% endif %}
+                        {%- if f.choices %}: {% for v, l in f.choices %}<code>{{ v }}</code>{{ ', ' if not loop.last }}{% endfor %}{% endif %}
+                        {%- if f.default not in ('', None, False) %}; по умолчанию <code>{{ f.default }}</code>{% endif %}
+                    </li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+    </section>
+{% endif %}
+
+</main>
+</body>
+</html>

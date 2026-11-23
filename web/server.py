@@ -91,6 +91,7 @@ from core.context import (
 from core.version import APP_NAME, __version__
 from core import devices as device_store
 from core import device_status, events, monitoring, notifications, plugin_api
+from core import csv_import
 
 from core.logger import (
     setup_logging,
@@ -3388,17 +3389,12 @@ def _plugin_options(device_type: str, form, previous: dict) -> dict:
 # SAVE ROUTER
 # =========================================================
 
-@app.post(
-    "/save-router"
-)
-async def save_router_endpoint(
-    request: Request,
-    user: str = Depends(
-        require_auth
-    ),
-):
-    form = await request.form()
-
+def _build_new_router(form) -> tuple[str, dict]:
+    """
+    Новое устройство из полей формы «Добавить устройство»
+    (или строки импорта CSV в том же виде). Ничего не
+    сохраняет. HTTPException(400) — значение не подходит.
+    """
     device_type = (form.get("device_type") or "").strip()
     device_name = (form.get("name") or "").strip()[:100]
     ip = (form.get("ip") or "").strip()
@@ -3506,6 +3502,22 @@ async def save_router_endpoint(
     if form.get("debug_connection") == "true":
         new_router["debug_connection"] = True
 
+
+    return device_type, new_router
+
+
+@app.post(
+    "/save-router"
+)
+async def save_router_endpoint(
+    request: Request,
+    user: str = Depends(
+        require_auth
+    ),
+):
+    form = await request.form()
+    device_type, new_router = _build_new_router(form)
+
     routers = plugin_manager._plugins[device_type]["routers"]
 
     with plugin_manager.routers_lock:
@@ -3523,7 +3535,7 @@ async def save_router_endpoint(
         "➕ Добавлено новое устройство "
         "(%s): %s",
         device_type,
-        ip,
+        new_router["host"],
     )
 
     invalidate_status_cache()
@@ -3532,6 +3544,214 @@ async def save_router_endpoint(
         url="/",
         status_code=303,
     )
+
+
+# =========================================================
+# ИМПОРТ УСТРОЙСТВ ИЗ CSV
+# =========================================================
+#
+# Только из файла: сеть не сканируется, к устройствам при
+# импорте никто не подключается. Порядок: загрузить файл →
+# посмотреть, что будет добавлено → подтвердить.
+
+def _plugin_infos() -> list:
+    infos = (
+        [pd["info"] for pd in plugin_manager._plugins.values()]
+        if plugin_manager else []
+    )
+    return sorted(infos, key=lambda i: i.title.lower())
+
+
+def _host_key(device_type: str, router: dict) -> tuple:
+    try:
+        port = int(router.get("port") or 22)
+    except (TypeError, ValueError):
+        port = 22
+    return (device_type, _device_host(router).strip().lower(), port)
+
+
+def _path_key(router: dict) -> str:
+    return str(_resolve_backup_path(router.get("backup_path") or "")).lower()
+
+
+def _import_plan(text: str) -> list[dict]:
+    """
+    Что будет с каждой строкой файла: status ok (можно
+    добавить), dup (такое устройство уже есть) или error.
+    csv_import.CsvImportError — файл не читается целиком.
+    """
+    rows = csv_import.read_rows(text)
+    infos = _plugin_infos()
+    defaults = (
+        storage_manager.defaults_for_new_router() if storage_manager else {}
+    )
+
+    hosts: dict = {}
+    paths: dict = {}
+    if plugin_manager:
+        for device_type, plugin_data in plugin_manager._plugins.items():
+            for router in plugin_data.get("routers", []):
+                label = router.get("name") or _device_host(router)
+                hosts[_host_key(device_type, router)] = f"уже есть: {label}"
+                paths[_path_key(router)] = label
+    storages = global_config.load_global()
+
+    plan = []
+    for line, row in rows:
+        item = {
+            "line": line, "name": row.get("name", ""), "ip": row.get("ip", ""),
+            "type": "", "title": row.get("type", ""),
+            "status": "error", "message": "", "router": None,
+        }
+        plan.append(item)
+
+        device_type = csv_import.find_type(row.get("type", ""), infos)
+        if device_type is None:
+            item["message"] = (
+                (f"Неизвестный тип «{row.get('type', '')}»" if row.get("type")
+                 else "Не указан тип")
+                + ". Допустимо: " + ", ".join(i.type for i in infos)
+            )
+            continue
+        info = plugin_manager.plugin_info(device_type)
+        item["type"], item["title"] = device_type, info.title
+
+        form = csv_import.to_form(row, info, defaults)
+        item["folder"] = form["backup_path"]      # как в файле — короче
+        try:
+            _, router = _build_new_router(form)
+        except HTTPException as exc:
+            item["message"] = str(exc.detail)
+            continue
+        if csv_import.is_yes(row.get("disabled")):
+            router["disabled"] = True
+        item["router"] = router
+
+        host_key = _host_key(device_type, router)
+        path_key = _path_key(router)
+        if host_key in hosts:
+            item["status"] = "dup"
+            message = hosts[host_key]
+            item["message"] = message[:1].upper() + message[1:]
+            continue
+        if path_key in paths:
+            item["message"] = (
+                f"Папка бэкапов {router['backup_path']} занята "
+                f"устройством {paths[path_key]} — укажите backup_path"
+            )
+            continue
+        conflict = _find_storage_conflict(storages, device_type, router)
+        if conflict:
+            item["message"] = conflict
+            continue
+
+        item["status"] = "ok"
+        hosts[host_key] = f"повторяется в файле (строка {line})"
+        paths[path_key] = item["name"] or item["ip"]
+    return plan
+
+
+def _import_page(request: Request, **context):
+    infos = _plugin_infos()
+    return templates.TemplateResponse(request, "import.html", {
+        "plugin_infos": infos,
+        "columns": csv_import.COLUMNS,
+        "max_rows": csv_import.MAX_ROWS,
+        **context,
+    })
+
+
+@app.get("/import", response_class=HTMLResponse)
+def import_page(request: Request, user: str = Depends(require_auth)):
+    return _import_page(request)
+
+
+@app.get("/import/template.csv")
+def import_template(user: str = Depends(require_auth)):
+    # BOM — чтобы Excel открыл кириллицу правильно
+    data = "\ufeff" + csv_import.template_csv(_plugin_infos())
+    return Response(
+        content=data.encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="devices.csv"'},
+    )
+
+
+@app.post("/import/preview", response_class=HTMLResponse)
+async def import_preview(request: Request, user: str = Depends(require_auth)):
+    form = await request.form()
+    upload = form.get("file")
+    data = b""
+    if upload is not None and hasattr(upload, "read"):
+        data = await upload.read(csv_import.MAX_BYTES + 1)
+    if not data.strip():
+        data = (form.get("text") or "").encode("utf-8")
+    try:
+        text = csv_import.decode(data)
+        plan = _import_plan(text)
+    except csv_import.CsvImportError as exc:
+        return _import_page(request, error=str(exc))
+    if not plan:
+        return _import_page(request, error="В файле нет ни одного устройства")
+    return _import_page(
+        request,
+        plan=plan,
+        csv_b64=base64.b64encode(text.encode("utf-8")).decode("ascii"),
+        counts={k: sum(1 for p in plan if p["status"] == k)
+                for k in ("ok", "dup", "error")},
+    )
+
+
+@app.post("/import/apply", response_class=HTMLResponse)
+async def import_apply(request: Request, user: str = Depends(require_auth)):
+    form = await request.form()
+    try:
+        text = base64.b64decode(form.get("csv_b64") or "").decode("utf-8")
+        plan = _import_plan(text)
+    except (csv_import.CsvImportError, ValueError, binascii.Error) as exc:
+        return _import_page(request, error=f"Не удалось прочитать список: {exc}")
+
+    wanted = {int(x) for x in form.getlist("line") if str(x).isdigit()}
+    added, failed = [], []
+    with plugin_manager.routers_lock:
+        storages = global_config.load_global()
+        new_by_type: dict = {}
+        for item in plan:
+            if item["line"] not in wanted or item["status"] != "ok":
+                continue
+            router = item["router"]
+            # Пересечение папок хранилищ с устройствами,
+            # добавленными выше из этого же файла
+            conflict = _find_storage_conflict(storages, item["type"], router)
+            if conflict:
+                item["message"] = conflict
+                failed.append(item)
+                continue
+            plugin_manager._plugins[item["type"]]["routers"].append(router)
+            new_by_type.setdefault(item["type"], []).append(item)
+
+        for device_type, items in new_by_type.items():
+            routers = plugin_manager._plugins[device_type]["routers"]
+            try:
+                plugin_manager.save_routers(device_type)
+                added.extend(items)
+            except Exception as exc:
+                logging.error("import: не удалось сохранить devices.json: %s",
+                              exc, exc_info=True)
+                for item in items:
+                    routers.remove(item["router"])
+                    item["message"] = f"Не удалось сохранить devices.json: {exc}"
+                    failed.append(item)
+
+    if added:
+        logging.info("📥 Импорт из CSV (%s): добавлено устройств: %d",
+                     user, len(added))
+        invalidate_status_cache()
+    by_line = lambda it: it["line"]   # noqa: E731 — порядок как в файле
+    return _import_page(request, result={
+        "added": sorted(added, key=by_line),
+        "failed": sorted(failed, key=by_line),
+    })
 
 
 # =========================================================

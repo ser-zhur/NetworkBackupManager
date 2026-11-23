@@ -18,11 +18,19 @@
             <h1 class="text-2xl font-bold text-gray-900 dark:text-slate-100">➕ Добавить новое устройство</h1>
             <p class="text-sm text-gray-500 dark:text-slate-400 mt-1">Заполните параметры подключения, хранения и внешней выгрузки.</p>
         </div>
-        <a href="/" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
-                          bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
-                          border border-gray-200 dark:border-slate-700 transition">
-            ← Назад
-        </a>
+        <div class="flex flex-wrap gap-2">
+            <a href="/import" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+                                    bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                                    border border-gray-200 dark:border-slate-700 transition"
+               title="Добавить сразу много устройств из файла CSV">
+                📥 Импорт из CSV
+            </a>
+            <a href="/" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+                              bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                              border border-gray-200 dark:border-slate-700 transition">
+                ← Назад
+            </a>
+        </div>
     </div>
 
     <form action="/save-router" method="POST" class="space-y-5">
