@@ -1636,7 +1636,38 @@ def _build_device_summary(
         "overdue": (
             not disabled and _is_overdue(health["success_age_days"])
         ),
+        # Отпечаток записи state.json: страница перерисовывает
+        # строку и карточку, только если он изменился.
+        "sig": hashlib.sha1(
+            json.dumps(st, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()[:12],
     }
+
+
+def _all_device_summaries() -> list[dict]:
+    """Строки списка устройств (state.json читается один раз)."""
+    state_all = load_json(STATE_FILE, {})
+    if not isinstance(state_all, dict):
+        state_all = {}
+
+    devices = []
+    if plugin_manager and hasattr(plugin_manager, "_plugins"):
+        for device_type, plugin_data in plugin_manager._plugins.items():
+            routers = plugin_data.get("routers", [])
+            for index, router in enumerate(routers):
+                devices.append(
+                    _build_device_summary(device_type, index, router, state_all)
+                )
+    return devices
+
+
+def _state_version() -> str:
+    """Меняется при каждой записи state.json (каждая попытка бэкапа)."""
+    try:
+        st = STATE_FILE.stat()
+    except OSError:
+        return "0"
+    return f"{st.st_mtime_ns}-{st.st_size}"
 
 # =========================================================
 # STORAGE SYNC TASK
@@ -1943,21 +1974,7 @@ def read_root(
     #
     # state.json читаем ОДИН раз и передаём во все summary.
     # Никаких _build_device_payload в цикле — только summary.
-    state_all = load_json(STATE_FILE, {})
-    if not isinstance(state_all, dict):
-        state_all = {}
-
-    devices = []
-
-    if plugin_manager and hasattr(plugin_manager, "_plugins"):
-        for device_type, plugin_data in plugin_manager._plugins.items():
-            routers = plugin_data.get("routers", [])
-            for index, router in enumerate(routers):
-                devices.append(
-                    _build_device_summary(
-                        device_type, index, router, state_all,
-                    )
-                )
+    devices = _all_device_summaries()
 
     selected_id = request.query_params.get("selected", "")
 
@@ -2134,6 +2151,36 @@ def api_backup_status(user: str = Depends(require_auth)):
     return {
         **get_backup_status(),
         "syncing": get_sync_status()["devices"],
+        # Изменилась — главная запрашивает свежие строки
+        # (/api/device-rows): статус после бэкапа без перезагрузки.
+        "state_version": _state_version(),
+    }
+
+
+@app.get("/api/device-rows")
+def api_device_rows(user: str = Depends(require_auth)):
+    """
+    Строки списка устройств главной страницы: HTML изменяемой
+    части (web/templates/_device_row_body.html) и поля для
+    фильтров и сортировки.
+    """
+    row_template = templates.env.get_template("_device_row_body.html")
+    return {
+        "state_version": _state_version(),
+        "rows": [
+            {
+                "id": d["id"],
+                "sig": d["sig"],
+                "status": d["status"],
+                "overdue": bool(d["overdue"]),
+                "last_attempt_age": (
+                    d["last_attempt_age_days"]
+                    if d["last_attempt_age_days"] is not None else 999999
+                ),
+                "html": row_template.render(d=d),
+            }
+            for d in _all_device_summaries()
+        ],
     }
 # =========================================================
 # ХРАНИЛИЩА RCLONE (Настройки → Хранилища)

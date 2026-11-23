@@ -209,63 +209,14 @@
                                             data-pinned="{{ '1' if d.pinned else '0' }}"
                                             data-disabled="{{ '1' if d.disabled else '0' }}"
                                             data-last-attempt-age="{{ d.last_attempt_age_days if d.last_attempt_age_days is not none else 999999 }}"
+                                            data-sig="{{ d.sig }}"
                                             class="device-item group w-full text-left px-4 py-3 border-l-2 transition
                                                     {% if d.overdue %}device-overdue{% endif %}
                                                     {% if d.disabled %}opacity-60{% endif %}
                                                    {{ 'bg-brand-50/60 dark:bg-brand-950/30 border-brand-600 hover:bg-brand-50 dark:hover:bg-brand-950/40'
                                                       if (selected and selected.id == d.id)
                                                       else 'border-transparent hover:bg-gray-50 dark:hover:bg-slate-800/60' }}">
-                                        <div class="flex items-start gap-3">
-                                            <span class="relative mt-1.5 w-2.5 h-2.5 shrink-0 inline-flex">
-                                                <span class="status-dot-ping absolute inline-flex h-full w-full rounded-full {{ m.dot }} {% if d.backup_in_progress or d.sync_in_progress %}animate-ping opacity-75{% else %}opacity-0{% endif %}"></span>
-                                                <span class="relative inline-flex w-2.5 h-2.5 rounded-full {{ m.dot }} ring-4 {{ m.ring }}"></span>
-                                            </span>
-                                            <div class="min-w-0 flex-1 pr-20">
-                                                <div class="flex items-center justify-between gap-2">
-                                                    <span class="text-[11px] uppercase tracking-wide font-semibold text-gray-500 dark:text-slate-400">
-                                                        {{ d.type }}
-                                                    </span>
-                                                    <span class="text-[10px] px-1.5 py-0.5 rounded font-medium {{ m.badge }}">{{ m.label }}</span>
-                                                </div>
-
-                                                <div class="mt-0.5 text-sm font-medium truncate flex items-center gap-1.5">
-                                                    <span class="truncate device-name">{{ d.name or d.host }}</span>
-
-                                                    {% if d.never_backed_up %}
-                                                    <span class="shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded
-                                                                 bg-amber-50 dark:bg-amber-950/40
-                                                                 text-amber-700 dark:text-amber-300
-                                                                 border border-amber-200 dark:border-amber-900"
-                                                          title="Ни разу не запускался бэкап">
-                                                        🚫 ни разу
-                                                    </span>
-                                                    {% endif %}
-
-                                                    {% if d.backends_error_count and d.backends_error_count > 0 %}
-                                                    <span class="shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded
-                                                                 bg-rose-100 dark:bg-rose-900/60
-                                                                 text-rose-700 dark:text-rose-300"
-                                                          title="{{ d.backends_error_count }} из хранилищ в ошибке">
-                                                        ⚠{{ d.backends_error_count }}
-                                                    </span>
-                                                    {% endif %}
-                                                </div>
-
-                                                <div class="mt-0.5 text-[11px] text-gray-500 dark:text-slate-400 truncate flex items-center gap-1">
-                                                    {% if d.last_attempt %}
-                                                        <span class="rel-time" data-time="{{ d.last_attempt }}" title="{{ d.last_attempt }}"></span>
-                                                        <span class="font-bold {{ 'text-emerald-600 dark:text-emerald-400' if d.last_attempt_ok else 'text-rose-600 dark:text-rose-400' }}"
-                                                              {% if d.last_error %}title="{{ d.last_error }}"{% endif %}>
-                                                            {{ '✓' if d.last_attempt_ok else '✗' }}{% if d.failures > 1 %}{{ d.failures }}{% endif %}
-                                                        </span>
-                                                        <span class="opacity-60">·</span>
-                                                        <span>{{ d.backup_count }} коп.</span>
-                                                    {% else %}
-                                                        <span class="italic">Бэкапы ещё не создавались</span>
-                                                    {% endif %}
-                                                </div>
-                                            </div>
-                                        </div>
+                                        {% include "_device_row_body.html" %}
                                     </button>
                                     <!-- Быстрые действия (появляются при наведении) -->
                                     <div class="quick-actions absolute top-1/2 -translate-y-1/2 right-10 z-10
@@ -531,6 +482,42 @@ function updateSyncStoragesButton(data) {
 // через «назад» или после bfcache-восстановления.
 
 const BACKUP_POLL_MS = 3000;
+let lastStateVersion = null;
+
+// Строки списка рисует сервер (_device_row_body.html). Меняем
+// содержимое кнопки строки — обработчики на самой кнопке остаются.
+async function refreshDeviceRows(busySet, mass) {
+    let data;
+    try {
+        const res = await fetch('/api/device-rows');
+        if (!res.ok) return;
+        data = await res.json();
+    } catch (e) {
+        return;
+    }
+    const selected = document.querySelector('.device-item.border-brand-600[data-device-id]');
+    const selectedId = selected ? selected.dataset.deviceId : null;
+    let refreshCard = false;
+
+    (data.rows || []).forEach(row => {
+        const btn = document.querySelector(`.device-item[data-device-id="${CSS.escape(row.id)}"]`);
+        if (!btn) return;
+        if (btn.dataset.sig === row.sig) return;
+        btn.innerHTML = row.html;
+        btn.dataset.status = row.status;
+        btn.dataset.lastAttemptAge = row.last_attempt_age;
+        btn.dataset.sig = row.sig;
+        btn.classList.toggle('device-overdue', !!row.overdue);
+        if (row.id === selectedId && !(mass || (busySet && busySet.has(row.id)))) {
+            refreshCard = true;
+        }
+    });
+
+    applyRelTime();
+    applyAll();
+    if (refreshCard) selectDevice(selectedId);
+}
+
 async function refreshBackupStatus() {
     let data;
     try {
@@ -545,6 +532,15 @@ async function refreshBackupStatus() {
     const mass = !!data.mass;
     const deviceSet = new Set(data.devices || []);
     const syncingSet = new Set(data.syncing || []);
+
+    // state.json изменился (бэкап закончился — здесь, по расписанию
+    // или из другой вкладки) — свежие строки списка и карточка.
+    if (data.state_version !== undefined) {
+        if (lastStateVersion !== null && data.state_version !== lastStateVersion) {
+            refreshDeviceRows(deviceSet, mass);
+        }
+        lastStateVersion = data.state_version;
+    }
 
     // ---- Пульс на точках статуса в списке устройств ----
     document.querySelectorAll('.device-item[data-device-id]').forEach(item => {

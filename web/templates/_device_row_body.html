@@ -1,0 +1,55 @@
+{# Изменяемая часть строки устройства в списке: статус, время и
+   исход последней попытки. Рисуется при загрузке главной и заново —
+   /api/device-rows, когда меняется state.json (бэкап закончился). #}
+{% set m = status_meta(d.status) %}
+<div class="flex items-start gap-3">
+    <span class="relative mt-1.5 w-2.5 h-2.5 shrink-0 inline-flex">
+        <span class="status-dot-ping absolute inline-flex h-full w-full rounded-full {{ m.dot }} {% if d.backup_in_progress or d.sync_in_progress %}animate-ping opacity-75{% else %}opacity-0{% endif %}"></span>
+        <span class="relative inline-flex w-2.5 h-2.5 rounded-full {{ m.dot }} ring-4 {{ m.ring }}"></span>
+    </span>
+    <div class="min-w-0 flex-1 pr-20">
+        <div class="flex items-center justify-between gap-2">
+            <span class="text-[11px] uppercase tracking-wide font-semibold text-gray-500 dark:text-slate-400">
+                {{ d.type }}
+            </span>
+            <span class="text-[10px] px-1.5 py-0.5 rounded font-medium {{ m.badge }}">{{ m.label }}</span>
+        </div>
+
+        <div class="mt-0.5 text-sm font-medium truncate flex items-center gap-1.5">
+            <span class="truncate device-name">{{ d.name or d.host }}</span>
+
+            {% if d.never_backed_up %}
+            <span class="shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded
+                         bg-amber-50 dark:bg-amber-950/40
+                         text-amber-700 dark:text-amber-300
+                         border border-amber-200 dark:border-amber-900"
+                  title="Ни разу не запускался бэкап">
+                🚫 ни разу
+            </span>
+            {% endif %}
+
+            {% if d.backends_error_count and d.backends_error_count > 0 %}
+            <span class="shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded
+                         bg-rose-100 dark:bg-rose-900/60
+                         text-rose-700 dark:text-rose-300"
+                  title="{{ d.backends_error_count }} из хранилищ в ошибке">
+                ⚠{{ d.backends_error_count }}
+            </span>
+            {% endif %}
+        </div>
+
+        <div class="mt-0.5 text-[11px] text-gray-500 dark:text-slate-400 truncate flex items-center gap-1">
+            {% if d.last_attempt %}
+                <span class="rel-time" data-time="{{ d.last_attempt }}" title="{{ d.last_attempt }}"></span>
+                <span class="font-bold {{ 'text-emerald-600 dark:text-emerald-400' if d.last_attempt_ok else 'text-rose-600 dark:text-rose-400' }}"
+                      {% if d.last_error %}title="{{ d.last_error }}"{% endif %}>
+                    {{ '✓' if d.last_attempt_ok else '✗' }}{% if d.failures > 1 %}{{ d.failures }}{% endif %}
+                </span>
+                <span class="opacity-60">·</span>
+                <span>{{ d.backup_count }} коп.</span>
+            {% else %}
+                <span class="italic">Бэкапы ещё не создавались</span>
+            {% endif %}
+        </div>
+    </div>
+</div>
