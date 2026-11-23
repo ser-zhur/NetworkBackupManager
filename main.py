@@ -135,7 +135,7 @@ from core.service_installer import (
 # -----------------------------------------------------
 
 from core import rclone as rclone_mod
-from core.version import APP_NAME, __version__
+from core.version import APP_NAME, COPYRIGHT, LICENSE_ID, SOURCE_URL, __version__
 
 logger.info("%s %s", APP_NAME, __version__)
 
@@ -847,7 +847,14 @@ def print_version() -> None:
     PowerShell). Новая консоль закрылась бы сразу вместе
     с выводом.
     """
-    text = f"{APP_NAME} {__version__}"
+    # Первая строка — имя и версия (её разбирает install.sh)
+    text = (
+        f"{APP_NAME} {__version__}\n"
+        f"{COPYRIGHT}\n"
+        f"Лицензия {LICENSE_ID}: программа предоставляется «как есть», "
+        f"без каких-либо гарантий.\n"
+        f"Исходный код: {SOURCE_URL}"
+    )
 
     if os.name == "nt" and sys.stdout is None:
         try:

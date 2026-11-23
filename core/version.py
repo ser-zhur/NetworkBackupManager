@@ -18,6 +18,12 @@ __version__ = "2.0.0"
 
 APP_NAME = "Network Backup Manager"
 
+# Лицензия: AGPL-3.0 (файл LICENSE). Автор вправе также
+# предоставлять программу по отдельной коммерческой лицензии.
+COPYRIGHT = "© 2026 Жураченко"
+LICENSE_ID = "AGPL-3.0-only"
+SOURCE_URL = "https://github.com/ser-zhur/NetworkBackupManager"
+
 
 def version_tuple() -> tuple[int, int, int]:
     """(major, minor, patch) — для сравнения версий."""

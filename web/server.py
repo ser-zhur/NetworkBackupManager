@@ -88,7 +88,9 @@ from core.context import (
     load_json,
     resolve_backup_path,
 )
-from core.version import APP_NAME, __version__
+from core.version import (
+    APP_NAME, COPYRIGHT, LICENSE_ID, SOURCE_URL, __version__,
+)
 from core import devices as device_store
 from core import device_status, events, monitoring, notifications, plugin_api
 from core import csv_import
@@ -506,6 +508,9 @@ def _static_version() -> str:
 if templates is not None:
     templates.env.globals["static_version"] = _static_version()
     templates.env.globals["app_version"] = __version__
+    templates.env.globals["app_copyright"] = COPYRIGHT
+    templates.env.globals["license_id"] = LICENSE_ID
+    templates.env.globals["source_url"] = SOURCE_URL
     templates.env.globals["status_meta"] = _status_meta
     templates.env.globals["age_label"] = _age_label
     templates.env.globals["age_class"] = _age_class
@@ -3544,6 +3549,62 @@ async def save_router_endpoint(
         url="/",
         status_code=303,
     )
+
+
+# =========================================================
+# ЛИЦЕНЗИЯ И СТОРОННИЕ КОМПОНЕНТЫ
+# =========================================================
+#
+# AGPL-3.0: пользователям веб-интерфейса — ссылка на исходный
+# код и текст лицензии (подвал страниц, _footer.html).
+# Файлы лежат рядом с программой: LICENSE в исходниках и в
+# Docker-образе, LICENSE.txt — в установке Windows.
+# THIRD_PARTY_LICENSES.txt создаёт при сборке
+# tools/third_party_licenses.py.
+
+def _app_text_file(*names: str) -> str | None:
+    for name in names:
+        try:
+            return (BASE_DIR / name).read_text(encoding="utf-8")
+        except OSError:
+            continue
+    return None
+
+
+def _plain_text(text: str) -> Response:
+    return Response(text, media_type="text/plain; charset=utf-8")
+
+
+@app.get("/license")
+def license_text(user: str = Depends(require_auth)):
+    text = _app_text_file("LICENSE", "LICENSE.txt")
+    if text is None:
+        text = f"GNU Affero General Public License v3.0: {SOURCE_URL}/blob/main/LICENSE\n"
+    return _plain_text(
+        f"{APP_NAME} {__version__}\n{COPYRIGHT}\n"
+        f"Исходный код: {SOURCE_URL}\n\n" + text
+    )
+
+
+@app.get("/third-party-licenses")
+def third_party_licenses(user: str = Depends(require_auth)):
+    text = _app_text_file("THIRD_PARTY_LICENSES.txt")
+    if text is None:
+        # Запуск из исходников: собираем список на лету
+        try:
+            import sys as _sys
+            tools_dir = str(BASE_DIR / "tools")
+            if tools_dir not in _sys.path:
+                _sys.path.insert(0, tools_dir)
+            import third_party_licenses as tpl
+            text = tpl.build()
+        except Exception as exc:
+            logging.warning("Список сторонних компонентов: %s", exc)
+            text = (
+                "Файл THIRD_PARTY_LICENSES.txt не найден.\n"
+                f"Список компонентов: {SOURCE_URL}\n"
+            )
+    return _plain_text(text)
 
 
 # =========================================================

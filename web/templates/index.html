@@ -18,7 +18,7 @@
 
     {# Готовый CSS (tools/build_css.py) — см. _base_head.html #}
     <link rel="stylesheet" href="/static/css/tailwind.css?v={{ static_version }}">
-    <link rel="icon" href="/static/favicon.ico">
+    <link rel="icon" href="/static/favicon.ico?v={{ static_version }}">
     
     <style>
         html, body { height: 100%; }
@@ -314,6 +314,7 @@
         </section>
     </div>
 </main>
+{% include "_footer.html" %}
 
 <script>
 

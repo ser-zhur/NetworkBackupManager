@@ -44,6 +44,7 @@ FROM python:${PYTHON_VERSION}-slim
 
 ARG VERSION=dev
 LABEL org.opencontainers.image.title="Network Backup Manager" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
       org.opencontainers.image.description="Резервное копирование конфигураций сетевых устройств по SSH" \
       org.opencontainers.image.source="https://github.com/ser-zhur/NetworkBackupManager" \
       org.opencontainers.image.version="${VERSION}"
@@ -68,6 +69,13 @@ COPY core ./core
 COPY web ./web
 COPY plugins ./plugins
 COPY storages ./storages
+COPY LICENSE ./LICENSE
+# Лицензии сторонних компонентов образа (генератор после
+# запуска удаляется)
+COPY tools/third_party_licenses.py ./tools/
+COPY tools/licenses ./tools/licenses
+RUN python tools/third_party_licenses.py THIRD_PARTY_LICENSES.txt --target docker \
+ && rm -rf tools
 COPY docker/entrypoint.sh /usr/local/bin/nbm-entrypoint
 RUN chmod 0755 /usr/local/bin/nbm-entrypoint
 

@@ -7,6 +7,9 @@
 !web/
 !plugins/
 !storages/
+!LICENSE
+!tools/third_party_licenses.py
+!tools/licenses/
 !docker/entrypoint.sh
 **/__pycache__
 **/*.pyc

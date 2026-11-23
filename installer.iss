@@ -22,6 +22,10 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
+AppPublisherURL=https://github.com/ser-zhur/NetworkBackupManager
+AppCopyright=© 2026 Жураченко. Лицензия AGPL-3.0
+; Текст лицензии на странице установщика (в тихом режиме не показывается)
+LicenseFile=LICENSE
 DefaultDirName={autopf}\NetworkBackupManager
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
@@ -69,6 +73,10 @@ Type: filesandordirs; Name: "{app}\web"
 [Files]
 ; Основной исполняемый файл и его окружение
 Source: "dist\NetworkBackupManager\NetworkBackupManager.exe"; DestDir: "{app}"; Flags: ignoreversion
+
+; Лицензия программы и лицензии сторонних компонентов
+Source: "dist\NetworkBackupManager\LICENSE.txt";              DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\NetworkBackupManager\THIRD_PARTY_LICENSES.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\NetworkBackupManager\_internal\*";          DestDir: "{app}\_internal"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 ; Web-UI: шаблоны Jinja2 и статика (tailwind.js, favicon.ico)

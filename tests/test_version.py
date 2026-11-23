@@ -51,9 +51,14 @@ def test_main_version_flag():
     r = subprocess.run(
         [sys.executable, str(ROOT / "main.py"), "--version"],
         capture_output=True, text=True, encoding="utf-8", cwd=ROOT, timeout=60,
+        # В канал Windows пишет в кодировке ANSI (cp1251); в окне
+        # консоли — Юникодом. Для проверки текста — UTF-8.
+        env={**__import__("os").environ, "PYTHONIOENCODING": "utf-8"},
     )
     assert r.returncode == 0, r.stderr
-    assert r.stdout.strip().endswith(version.__version__)
+    first, *rest = r.stdout.strip().splitlines()
+    assert first.endswith(version.__version__)      # install.sh: head -1
+    assert any(version.LICENSE_ID in line for line in rest)
 
 
 def test_header_shows_version():

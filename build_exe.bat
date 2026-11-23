@@ -523,6 +523,25 @@ if errorlevel 1 (
 echo   [OK] web\static
 >>"%LOG_FILE%" echo   [OK] web\static
 
+REM Лицензия программы (AGPL-3.0) и лицензии сторонних
+REM компонентов — их обязательно прикладывать к копиям.
+copy /Y "LICENSE" "dist\NetworkBackupManager\LICENSE.txt" >nul
+if errorlevel 1 (
+    echo ERROR copying LICENSE
+    >>"%LOG_FILE%" echo ERROR copying LICENSE
+    %PAUSE%
+    exit /b 1
+)
+python tools\third_party_licenses.py "dist\NetworkBackupManager\THIRD_PARTY_LICENSES.txt" --target windows >>"%LOG_FILE%" 2>&1
+if errorlevel 1 (
+    echo ERROR: tools\third_party_licenses.py failed - see build.log
+    >>"%LOG_FILE%" echo ERROR: tools\third_party_licenses.py failed
+    %PAUSE%
+    exit /b 1
+)
+echo   [OK] LICENSE.txt, THIRD_PARTY_LICENSES.txt
+>>"%LOG_FILE%" echo   [OK] LICENSE.txt, THIRD_PARTY_LICENSES.txt
+
 REM ========================================================
 REM REMOVE PYTHON CACHE
 REM ========================================================
