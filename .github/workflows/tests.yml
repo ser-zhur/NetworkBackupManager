@@ -20,6 +20,11 @@ on:
 env:
   CI_RCLONE_VERSION: v1.72.0
 
+# Токен Actions по умолчанию — только чтение; запись
+# разрешается отдельным заданиям.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: ${{ matrix.os }} / Python ${{ matrix.python }}

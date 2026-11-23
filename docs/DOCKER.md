@@ -9,7 +9,7 @@
 | Откуда берётся | `ghcr.io/ser-zhur/networkbackupmanager` (GitHub Container Registry) | собирается из исходников на сервере |
 | Обновление | `docker compose pull && docker compose up -d` (~30 с) | `git pull && docker compose up -d --build` (2–5 мин) |
 | Откат | указать прежнюю версию в `.env` | `git checkout v<версия>` и пересборка |
-| Нужно на сервере | Docker и токен GitHub (пока репозиторий приватный) | Docker, git и доступ к репозиторию |
+| Нужно на сервере | Docker | Docker и git |
 
 ## Что где лежит
 
@@ -32,15 +32,13 @@
 
 ### А. Готовый образ
 
-1. Создайте токен GitHub: **Settings → Developer settings → Personal access tokens → Tokens (classic)**, право только `read:packages`. Токен нужен, пока репозиторий приватный.
-2. На сервере:
+На сервере:
    ```bash
    sudo mkdir -p /opt/nbm && cd /opt/nbm
    # положите сюда docker-compose.yml и .env.example из репозитория
    # или со страницы релиза (там он называется env.example)
    cp .env.example .env          # из релиза: cp env.example .env
    nano .env          # NBM_ADMIN_PASSWORD, NBM_UID/NBM_GID, TZ
-   docker login ghcr.io -u <логин GitHub>     # пароль — токен из п.1
    docker compose pull
    docker compose up -d
    ```
@@ -55,7 +53,7 @@ nano .env          # NBM_ADMIN_PASSWORD и раскомментировать с
 docker compose up -d --build
 ```
 
-Строка `COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml` в `.env` включает сборку на месте. Образ получает локальное имя `networkbackupmanager:local`, поэтому вы не перепутаете его с образом из реестра. Для `git clone` из приватного репозитория нужен токен или deploy key (ключ только на чтение этого репозитория).
+Строка `COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml` в `.env` включает сборку на месте. Образ получает локальное имя `networkbackupmanager:local`, поэтому вы не перепутаете его с образом из реестра.
 
 ### Первый запуск
 
@@ -160,5 +158,5 @@ server {
 | `unhealthy` в `docker compose ps` | `docker compose logs --tail 50`; проверьте место на диске и права на `nbm/` |
 | `permission denied` в журнале | Совпадают ли `NBM_UID`/`NBM_GID` с владельцем `nbm/` (`ls -ln`)? |
 | В интерфейсе время на 2–3 часа отличается от местного | Проверьте `TZ` в `.env` |
-| `docker compose pull`: `denied` / `unauthorized` | Выполните `docker login ghcr.io` заново: токен истёк или у него нет права `read:packages` |
+| `docker compose pull`: `denied` / `unauthorized` | Выполните `docker logout ghcr.io`: образ публичный, а устаревший сохранённый токен мешает его скачать |
 | «Ключ хоста изменился» после переустановки устройства | Удалите строку устройства из `nbm/data/known_hosts` |

@@ -1,0 +1,32 @@
+# =========================================================
+# Pull request пока не принимаются (CONTRIBUTING.md):
+# закрываем с объяснением.
+#
+# pull_request_target работает с правами этого репозитория,
+# поэтому здесь НЕТ checkout и не запускается ничего из
+# присланного кода — только комментарий и закрытие.
+# =========================================================
+
+name: close pull requests
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  close:
+    if: github.event.pull_request.user.login != github.repository_owner
+    runs-on: ubuntu-latest
+    steps:
+      - name: Закрыть с комментарием
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.html_url }}
+          MESSAGE: |
+            Спасибо! Сейчас проект не принимает pull request с кодом: программа распространяется по AGPL-3.0 и по отдельной коммерческой лицензии, а для этого нужны права на весь код. Опишите, пожалуйста, исправление или идею в issue — подробности в CONTRIBUTING.md.
+
+            Thank you! This project does not accept code pull requests at the moment (AGPL-3.0 plus a separate commercial license). Please describe the fix or idea in an issue — see CONTRIBUTING.md.
+        run: gh pr close "$PR" --repo "$GITHUB_REPOSITORY" --comment "$MESSAGE"

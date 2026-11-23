@@ -22,6 +22,11 @@ env:
   PASS: 'p&ss|w"or\d'
   UNIT: networkbackupmanager.service
 
+# Токен Actions по умолчанию — только чтение; запись
+# разрешается отдельным заданиям.
+permissions:
+  contents: read
+
 jobs:
   install:
     runs-on: ubuntu-latest

@@ -1,0 +1,16 @@
+name: Предложение
+description: Новая функция или поддержка устройства
+labels: [enhancement]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: Что нужно
+      description: Какую задачу это решит
+    validations:
+      required: true
+  - type: textarea
+    id: device
+    attributes:
+      label: Для нового типа устройства
+      description: Модель, прошивка и команда, которой устройство показывает конфигурацию по SSH

@@ -22,6 +22,11 @@ on:
   push:
     tags: ["v*"]
 
+# Токен Actions по умолчанию — только чтение; запись
+# разрешается отдельным заданиям.
+permissions:
+  contents: read
+
 jobs:
   check:
     name: tag = version, CHANGELOG

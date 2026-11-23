@@ -1,0 +1,46 @@
+name: Ошибка
+description: Программа работает не так, как ожидалось
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Issue видят все.** Перед отправкой уберите из журналов и конфигураций пароли, ключи, токены, IP-адреса и имена, которые не должны попасть в открытый доступ.
+  - type: input
+    id: version
+    attributes:
+      label: Версия
+      description: Подвал веб-интерфейса или `--version`
+      placeholder: "2.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: runmode
+    attributes:
+      label: Как запущена программа
+      options:
+        - Служба Windows (установщик)
+        - Docker
+        - Служба Linux (install.sh)
+        - Из исходников
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Устройство
+      description: Тип устройства, модель и версия прошивки; для SSH — профиль
+      placeholder: "MikroTik hAP ac², RouterOS 7.16"
+  - type: textarea
+    id: what
+    attributes:
+      label: Что случилось
+      description: Что делали, что ожидали и что получилось
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Журнал
+      description: Фрагмент logs/app.log или журнала устройства (без паролей и адресов)
+      render: text

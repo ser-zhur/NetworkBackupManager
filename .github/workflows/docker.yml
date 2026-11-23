@@ -22,6 +22,11 @@ on:
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/networkbackupmanager
 
+# Токен Actions по умолчанию — только чтение; запись
+# разрешается отдельным заданиям.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: build & smoke test (amd64)

@@ -26,6 +26,11 @@ on:
         description: Версия программы (core/version.py)
         value: ${{ jobs.build.outputs.version }}
 
+# Токен Actions по умолчанию — только чтение; запись
+# разрешается отдельным заданиям.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: windows-latest
