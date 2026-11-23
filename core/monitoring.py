@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import secrets
 import time
 from datetime import datetime, timedelta
@@ -113,7 +114,10 @@ def health(scheduler=None) -> tuple[bool, dict]:
         probe.write_text("ok", encoding="utf-8")
         probe.unlink()
     except OSError as exc:
-        problems.append(f"Папка данных недоступна для записи: {exc}")
+        # /api/health открыт без пароля: путь и текст ошибки ОС —
+        # только в журнал
+        logging.getLogger(__name__).error("Папка данных недоступна для записи: %s", exc)
+        problems.append("Папка данных недоступна для записи (подробности в журнале)")
 
     return not problems, {
         "status": "ok" if not problems else "error",

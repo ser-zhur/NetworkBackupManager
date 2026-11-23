@@ -277,3 +277,22 @@ def test_stale_wizard_tmpdirs_are_swept(tmp_path, monkeypatch):
 
     rclone_oauth._gc()
     assert not stale.exists() and fresh.exists() and other.exists()
+
+
+def test_form_options_cannot_become_rclone_flags(tmp_path):
+    """Параметры из запроса — данные для rclone, а не его флаги."""
+    log = tmp_path / "injected.log"
+
+    flow = rclone_oauth.start("drive", {"--log-file": str(log)}, token=FAKE_TOKEN)
+    assert flow.view()["state"] == "error"
+    assert "Недопустимое имя параметра" in flow.view()["message"]
+
+    # Значение, похожее на флаг, остаётся значением параметра
+    flow = rclone_oauth.start("drive", {"scope": f"--log-file={log}"}, token=FAKE_TOKEN)
+    for _ in range(10):
+        v = flow.view()
+        if v["state"] != "question":
+            break
+        flow.answer(_wizard_answer(v["question"]))
+    flow.cancel()
+    assert not log.exists()

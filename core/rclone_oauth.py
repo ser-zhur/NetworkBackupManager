@@ -46,6 +46,12 @@ logger = logging.getLogger(__name__)
 FLOW_TTL_SECONDS = 30 * 60
 _WIZARD_NAME = "NBMOAUTH"
 
+# Имена параметров rclone: латиница, цифры, «_». Всё, что
+# пришло из формы, передаётся rclone после «--» — как данные,
+# а не как его флаги (иначе «--log-file» и т. п. из запроса
+# стали бы ключами rclone).
+_OPTION_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
+
 _URL_RE = re.compile(r"(http://127\.0\.0\.1:53682/auth\?state=\S+)")
 _TOKEN_RE = re.compile(r"--->\s*(\{.*?\})\s*<---", re.S)
 
@@ -82,10 +88,9 @@ class OAuthFlow:
             self._fail("rclone не найден")
             return
 
-        args = [binary, "authorize", self.type_name]
+        args = [binary, "authorize", "--auth-no-open-browser", "--", self.type_name]
         if self.options.get("client_id") and self.options.get("client_secret"):
-            args += [self.options["client_id"], self.options["client_secret"]]
-        args.append("--auth-no-open-browser")
+            args += [str(self.options["client_id"]), str(self.options["client_secret"])]
 
         # Приёмник на 127.0.0.1:53682 один — прочие входы отменяем
         cancel_authorizing(except_id=self.id)
@@ -158,12 +163,15 @@ class OAuthFlow:
         self._tmpdir = Path(tempfile.mkdtemp(prefix=_TMP_PREFIX))
         conf = self._tmpdir / "rclone.conf"
 
-        args = [binary, "config", "create", _WIZARD_NAME, self.type_name]
+        args = [binary, "config", "create", "--non-interactive", "--config", str(conf),
+                "--", _WIZARD_NAME, self.type_name]
         for k, v in self.options.items():
+            if not _OPTION_NAME_RE.match(str(k)):
+                self._fail(f"Недопустимое имя параметра: {k!r}")
+                return
             if isinstance(v, bool):
                 v = "true" if v else "false"
-            args += [k, str(v)]
-        args += ["--non-interactive", "--config", str(conf)]
+            args += [str(k), str(v)]
         self._step(args)
 
     def answer(self, result) -> None:
@@ -178,9 +186,11 @@ class OAuthFlow:
         binary = rclone_mod.resolve_binary()
         conf = self._tmpdir / "rclone.conf"
         self._step([
-            binary, "config", "update", _WIZARD_NAME,
-            "--continue", "--state", self._rclone_state, "--result", result,
+            binary, "config", "update", "--continue",
+            # «--ключ=значение»: значение не станет флагом rclone
+            f"--state={self._rclone_state}", f"--result={result}",
             "--non-interactive", "--config", str(conf),
+            "--", _WIZARD_NAME,
         ])
 
     def _step(self, args: list[str]) -> None:
