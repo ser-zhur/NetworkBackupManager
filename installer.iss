@@ -152,10 +152,14 @@ end;
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   Result := False;
-  // Обновление или переустановка с сохранёнными данными —
-  // пользователь уже есть
+  // Пропускаем:
+  //  • обновление или переустановку с сохранёнными данными —
+  //    пользователь уже есть;
+  //  • тихую установку — мастер в ней сам нажимает «Далее»,
+  //    и проверка пустого пароля (MsgBox) ждала бы ответа
+  //    вечно; пароль тогда — из окружения (CreateWebUser).
   if (UserPage <> nil) and (PageID = UserPage.ID) then
-    Result := FileExists(AuthFile());
+    Result := WizardSilent() or FileExists(AuthFile());
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -163,7 +167,7 @@ var
   Login: String;
 begin
   Result := True;
-  if (UserPage = nil) or (CurPageID <> UserPage.ID) then
+  if (UserPage = nil) or (CurPageID <> UserPage.ID) or WizardSilent() then
     Exit;
   Login := Trim(UserPage.Values[0]);
   if (Login = '') or (Length(Login) > 100) then
