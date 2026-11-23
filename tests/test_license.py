@@ -3,7 +3,9 @@
 # =========================================================
 
 import re
+import struct
 import sys
+import zlib
 from pathlib import Path
 
 import pytest
@@ -46,7 +48,20 @@ def test_targets():
 
 def test_favicon_is_generated_by_our_script():
     """Значок — из tools/make_favicon.py, а не чужая картинка."""
-    assert (ROOT / "web" / "static" / "favicon.ico").read_bytes() == make_favicon.ico()
+    # Сравниваем пиксели, а не байты: сжатие zlib на разных
+    # системах даёт разный результат для той же картинки.
+    def pixels(ico: bytes) -> list[bytes]:
+        count = struct.unpack_from("<H", ico, 4)[0]
+        out = []
+        for k in range(count):
+            size, offset = struct.unpack_from("<II", ico, 6 + 16 * k + 8)
+            png = ico[offset:offset + size]
+            idat = png.index(b"IDAT")
+            length = struct.unpack(">I", png[idat - 4:idat])[0]
+            out.append(zlib.decompress(png[idat + 4:idat + 4 + length]))
+        return out
+
+    assert pixels((ROOT / "web" / "static" / "favicon.ico").read_bytes()) == pixels(make_favicon.ico())
     assert not list((ROOT / "web" / "static").glob("icons8*"))
 
 
