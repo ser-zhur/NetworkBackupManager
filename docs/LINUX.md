@@ -21,10 +21,11 @@
 ```bash
 git clone https://github.com/ser-zhur/NetworkBackupManager.git
 cd NetworkBackupManager
+git checkout "$(git describe --tags --abbrev=0)"    # последний выпуск
 sudo ./install.sh
 ```
 
-Вместо `git clone` можно распаковать архив исходников из релиза. В конце скрипт выводит адрес веб-интерфейса и **пароль первого входа** (пользователь `admin`). Сохраните пароль: он показывается один раз. Задать свой пароль при установке: `sudo NBM_ADMIN_PASSWORD='…' ./install.sh`.
+Ставьте выпущенную версию: ветка `main` — текущая разработка. Вместо `git clone` можно скачать и распаковать архив исходников («Source code (tar.gz)») со страницы [последнего выпуска](https://github.com/ser-zhur/NetworkBackupManager/releases/latest). В конце скрипт выводит адрес веб-интерфейса и **пароль первого входа** (пользователь `admin`). Сохраните пароль: он показывается один раз. Задать свой пароль при установке: `sudo NBM_ADMIN_PASSWORD='…' ./install.sh`.
 
 Параметры:
 
@@ -79,15 +80,18 @@ sudo -u nbm env NBM_HOME=/var/lib/nbm /opt/nbm/venv/bin/python /opt/nbm/app/main
 
 ```bash
 cd NetworkBackupManager
-git pull
+git fetch --tags
+git checkout "$(git tag --sort=-v:refname | head -1)"    # новый выпуск
 sudo ./install.sh
 ```
+
+Если ставили из архива — распакуйте архив новой версии и запустите `sudo ./install.sh` из него.
 
 Настройки (`/etc/nbm/nbm.env`) и данные сохраняются, прежняя версия программы остаётся в `/opt/nbm/app.prev`. **Если новая версия не запустилась, скрипт сам возвращает прежнюю** и сообщает об ошибке; неудачная версия остаётся в `/opt/nbm/app.failed` для разбора.
 
 Вернуться к прежней версии вручную:
 ```bash
-git checkout v2.0.0      # нужная версия
+git checkout v2.1.0      # нужная версия
 sudo ./install.sh
 ```
 

@@ -6,34 +6,55 @@
 - **История:** каждая выгрузка сохраняется в git-репозиторий устройства. В интерфейсе можно посмотреть изменения между версиями.
 - **Внешние хранилища:** копии через rclone (WebDAV, облака и т. д.), с шифрованием 7z AES-256.
 - **Расписание и хранение:** автоматический запуск по расписанию, очистка старых версий.
-- **Запуск:** служба Windows, служба systemd в Linux ([docs/LINUX.md](docs/LINUX.md)) или Docker ([docs/DOCKER.md](docs/DOCKER.md)).
+- **Запуск:** служба Windows ([docs/WINDOWS.md](docs/WINDOWS.md)), служба systemd в Linux ([docs/LINUX.md](docs/LINUX.md)) или Docker ([docs/DOCKER.md](docs/DOCKER.md)).
 - **Уведомления:** Telegram, почта, webhook — об ошибках, восстановлении и изменениях конфигурации.
 - **Мониторинг:** `/api/health` и `/api/status` для Zabbix и аналогов, готовый шаблон Zabbix, журнал событий.
 
-Готовые сборки — на странице [Releases](https://github.com/ser-zhur/NetworkBackupManager/releases): установщик Windows, образ Docker, архив исходников для Linux. Что изменилось — [CHANGELOG.md](CHANGELOG.md).
+## Установка
 
-## Docker
+| Где | Как | Подробно |
+|---|---|---|
+| Windows 10/11, Windows Server 2016+ | Установщик, служба Windows | [docs/WINDOWS.md](docs/WINDOWS.md) |
+| Linux с Docker (amd64, arm64) | Готовый образ | [docs/DOCKER.md](docs/DOCKER.md) |
+| Linux без Docker | `install.sh`, служба systemd | [docs/LINUX.md](docs/LINUX.md) |
+
+Устанавливайте выпущенные версии со страницы [Releases](https://github.com/ser-zhur/NetworkBackupManager/releases). Ветка `main` — текущая разработка. Что изменилось — [CHANGELOG.md](CHANGELOG.md).
+
+### Windows
+
+1. Скачайте `NetworkBackupManager-<версия>-Setup.exe` из [последнего выпуска](https://github.com/ser-zhur/NetworkBackupManager/releases/latest) и запустите. Программа установится как служба Windows.
+2. Создайте пользователя веб-интерфейса — в командной строке **от имени администратора**:
+   ```bat
+   "C:\Program Files\NetworkBackupManager\NetworkBackupManager.exe" --create-user
+   ```
+3. Откройте `http://127.0.0.1:8080`.
+
+Доступ с других компьютеров, обновление и удаление — [docs/WINDOWS.md](docs/WINDOWS.md).
+
+### Docker
 
 ```bash
-mkdir -p /opt/nbm && cd /opt/nbm
-# docker-compose.yml и .env.example — из репозитория
-cp .env.example .env && nano .env      # пароль первого входа, часовой пояс
-docker compose pull && docker compose up -d
+sudo mkdir -p /opt/nbm && cd /opt/nbm
+sudo curl -fLO https://github.com/ser-zhur/NetworkBackupManager/releases/latest/download/docker-compose.yml
+sudo curl -fL -o .env https://github.com/ser-zhur/NetworkBackupManager/releases/latest/download/env.example
+sudo nano .env          # NBM_ADMIN_PASSWORD — пароль первого входа, TZ — часовой пояс
+sudo docker compose up -d
 ```
 
-Интерфейс откроется на `http://<сервер>:8080`. Данные лежат в `./nbm` на сервере. Образ из GitHub Container Registry, для amd64 и arm64. Можно также собирать образ на сервере из исходников. Установка, обновление, откат и переезд с Windows описаны в [docs/DOCKER.md](docs/DOCKER.md).
+Интерфейс — `http://<сервер>:8080`, пользователь `admin` и пароль из `.env`. Данные лежат в `/opt/nbm/nbm`. Обновление: `docker compose pull && docker compose up -d`. Сборка образа на сервере, откат, переезд с Windows — [docs/DOCKER.md](docs/DOCKER.md).
 
-## Linux (служба systemd)
+### Linux (служба systemd)
 
 ```bash
 git clone https://github.com/ser-zhur/NetworkBackupManager.git
 cd NetworkBackupManager
+git checkout "$(git describe --tags --abbrev=0)"    # последний выпуск
 sudo ./install.sh
 ```
 
-Скрипт ставит недостающие пакеты и rclone, создаёт пользователя `nbm` и службу `networkbackupmanager`, а в конце выводит адрес и пароль первого входа. Данные лежат в `/var/lib/nbm`. Повторный запуск `sudo ./install.sh` из новой версии обновляет программу; если новая версия не запустилась, возвращается прежняя. Подробно — [docs/LINUX.md](docs/LINUX.md).
+Скрипт ставит недостающие пакеты и rclone, создаёт пользователя `nbm` и службу `networkbackupmanager`, а в конце выводит адрес и **пароль первого входа**. Данные лежат в `/var/lib/nbm`. Обновление — тот же скрипт из новой версии; если она не запустилась, возвращается прежняя. Подробно — [docs/LINUX.md](docs/LINUX.md).
 
-## Быстрый старт (из исходников)
+### Из исходников (для разработки)
 
 Нужен Python 3.11 или новее.
 

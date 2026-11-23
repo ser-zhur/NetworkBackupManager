@@ -32,25 +32,25 @@
 
 ### А. Готовый образ
 
-На сервере:
-   ```bash
-   sudo mkdir -p /opt/nbm && cd /opt/nbm
-   # положите сюда docker-compose.yml и .env.example из репозитория
-   # или со страницы релиза (там он называется env.example)
-   cp .env.example .env          # из релиза: cp env.example .env
-   nano .env          # NBM_ADMIN_PASSWORD, NBM_UID/NBM_GID, TZ
-   docker compose pull
-   docker compose up -d
-   ```
+```bash
+sudo mkdir -p /opt/nbm && cd /opt/nbm
+sudo curl -fLO https://github.com/ser-zhur/NetworkBackupManager/releases/latest/download/docker-compose.yml
+sudo curl -fL -o .env https://github.com/ser-zhur/NetworkBackupManager/releases/latest/download/env.example
+sudo nano .env          # NBM_ADMIN_PASSWORD, NBM_UID/NBM_GID, TZ
+sudo docker compose up -d
+```
+
+Файлы берутся из последнего выпуска; их же можно скачать вручную со страницы [Releases](https://github.com/ser-zhur/NetworkBackupManager/releases).
 
 ### Б. Сборка на сервере
 
 ```bash
 sudo git clone https://github.com/ser-zhur/NetworkBackupManager.git /opt/nbm
 cd /opt/nbm
-cp .env.example .env
-nano .env          # NBM_ADMIN_PASSWORD и раскомментировать строку COMPOSE_FILE=…
-docker compose up -d --build
+sudo git checkout "$(sudo git describe --tags --abbrev=0)"    # последний выпуск
+sudo cp .env.example .env
+sudo nano .env          # NBM_ADMIN_PASSWORD и раскомментировать строку COMPOSE_FILE=…
+sudo docker compose up -d --build
 ```
 
 Строка `COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml` в `.env` включает сборку на месте. Образ получает локальное имя `networkbackupmanager:local`, поэтому вы не перепутаете его с образом из реестра.
@@ -66,7 +66,7 @@ docker compose up -d --build
 | Переменная | По умолчанию | Назначение |
 |---|---|---|
 | `NBM_ADMIN_USER`, `NBM_ADMIN_PASSWORD` | `admin`, пусто | Первый пользователь |
-| `NBM_VERSION` | `latest` | Версия образа (вариант А): `latest` или точная, например `2.0.0` |
+| `NBM_VERSION` | `latest` | Версия образа (вариант А): `latest` или точная, например `2.1.1` |
 | `NBM_LISTEN` | `8080` | Порт на сервере. `127.0.0.1:8080` — доступ только с самого сервера, например за обратным прокси |
 | `NBM_DATA` | `./nbm` | Папка данных на сервере |
 | `NBM_UID`, `NBM_GID` | `1000` | Владелец файлов в папке данных; узнать: `id -u`, `id -g` |
@@ -99,14 +99,15 @@ docker compose up -d --build
 cd /opt/nbm
 docker compose pull && docker compose up -d
 ```
-Откат: в `.env` укажите `NBM_VERSION=2.0.0` (прежнюю версию), затем `docker compose up -d`. Чтобы снова обновляться автоматически, верните `latest`.
+Откат: в `.env` укажите `NBM_VERSION=2.1.0` (прежнюю версию), затем `docker compose up -d`. Чтобы снова обновляться автоматически, верните `latest`.
 
 **Вариант Б:**
 ```bash
 cd /opt/nbm
-git pull && docker compose up -d --build
+sudo git fetch --tags && sudo git checkout "$(sudo git tag --sort=-v:refname | head -1)"
+sudo docker compose up -d --build
 ```
-Откат: `git checkout v2.0.0 && docker compose up -d --build`. Вернуться к последней версии: `git checkout main && git pull && docker compose up -d --build`.
+Откат: `git checkout v2.1.0 && docker compose up -d --build`. Вернуться к последней версии — команды обновления выше.
 
 Перед обновлением на новую основную версию (например, 2.x → 3.x) сделайте копию папки `nbm/`.
 
