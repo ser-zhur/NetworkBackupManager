@@ -206,6 +206,29 @@ def create_user_console() -> int:
     return 0
 
 
+def init_user_from_env() -> int:
+    """
+    --init-user: пользователь из NBM_ADMIN_USER / NBM_ADMIN_PASSWORD
+    без окон и вопросов. Так его создаёт установщик Windows: служба
+    запускается диспетчером служб и окружения установщика не видит.
+
+    Существующего пользователя не меняет.
+    Код выхода: 0 — создан или уже был; 2 — пароль не задан;
+    1 — ошибка.
+    """
+    if AUTH_FILE.exists():
+        return 0
+    if settings.admin_from_env() is None:
+        return 2
+    try:
+        ensure_directories()
+        ensure_user_from_env()
+    except Exception as exc:
+        logger.error("--init-user: не удалось создать пользователя: %s", exc)
+        return 1
+    return 0 if AUTH_FILE.exists() else 1
+
+
 def _has_gui() -> bool:
     if os.name == "nt":
         return True
@@ -877,6 +900,7 @@ def print_version() -> None:
 # FIX: список известных CLI-флагов, чтобы предупреждать о неизвестных.
 _KNOWN_FLAGS = {
     "--create-user",
+    "--init-user",
     "--service",
     "--install-service",
     "--uninstall-service",
@@ -923,6 +947,9 @@ def main() -> int:
 
     if "--create-user" in args:
         return create_user()
+
+    if "--init-user" in args:
+        return init_user_from_env()
 
     # -----------------------------------------------------
     # INSTALL SERVICE

@@ -109,6 +109,129 @@ Filename: "http://127.0.0.1:8080"; Description: "Открыть веб-пане�
 
 [Code]
 
+// ---------------------------------------------------------
+// Пользователь веб-интерфейса
+// ---------------------------------------------------------
+// Страница «Логин и пароль» — при первой установке (нет
+// data\auth.json). Пользователя создаёт сама программа
+// (--init-user) из NBM_ADMIN_USER / NBM_ADMIN_PASSWORD: пароль
+// передаётся через окружение, а не командной строкой, чтобы не
+// попасть в список процессов. Хэширует программа, как и везде.
+//
+// Тихая установка: страница не показывается; если в окружении
+// установщика задан NBM_ADMIN_PASSWORD (и, по желанию,
+// NBM_ADMIN_USER), пользователь создаётся из него.
+
+var
+  UserPage: TInputQueryWizardPage;
+
+function SetEnvironmentVariable(lpName: String; lpValue: String): Boolean;
+  external 'SetEnvironmentVariableW@kernel32.dll stdcall';
+// Второе объявление той же функции: lpValue = NULL удаляет переменную
+function DeleteEnvironmentVariable(lpName: String; lpValue: Cardinal): Boolean;
+  external 'SetEnvironmentVariableW@kernel32.dll stdcall';
+
+function AuthFile(): String;
+begin
+  Result := ExpandConstant('{app}\data\auth.json');
+end;
+
+procedure InitializeWizard();
+begin
+  UserPage := CreateInputQueryPage(wpSelectDir,
+    'Пользователь веб-интерфейса',
+    'Логин и пароль для входа в веб-интерфейс.',
+    'Пароль — не короче 8 символов. Сменить его потом можно в командной строке ' +
+    'от имени администратора: NetworkBackupManager.exe --create-user');
+  UserPage.Add('Логин:', False);
+  UserPage.Add('Пароль:', True);
+  UserPage.Add('Повторите пароль:', True);
+  UserPage.Values[0] := 'admin';
+end;
+
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := False;
+  // Обновление или переустановка с сохранёнными данными —
+  // пользователь уже есть
+  if (UserPage <> nil) and (PageID = UserPage.ID) then
+    Result := FileExists(AuthFile());
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  Login: String;
+begin
+  Result := True;
+  if (UserPage = nil) or (CurPageID <> UserPage.ID) then
+    Exit;
+  Login := Trim(UserPage.Values[0]);
+  if (Login = '') or (Length(Login) > 100) then
+  begin
+    MsgBox('Укажите логин (до 100 символов).', mbError, MB_OK);
+    Result := False;
+  end
+  else if Length(UserPage.Values[1]) < 8 then
+  begin
+    MsgBox('Пароль должен быть не короче 8 символов.', mbError, MB_OK);
+    Result := False;
+  end
+  else if UserPage.Values[1] <> UserPage.Values[2] then
+  begin
+    MsgBox('Пароли не совпадают.', mbError, MB_OK);
+    Result := False;
+  end;
+end;
+
+procedure CreateWebUser();
+var
+  Login, Password: String;
+  ResultCode: Integer;
+  Created: Boolean;
+begin
+  if FileExists(AuthFile()) then
+    Exit;
+
+  Password := '';
+  if UserPage <> nil then
+  begin
+    Login := Trim(UserPage.Values[0]);
+    Password := UserPage.Values[1];
+  end;
+
+  if Password <> '' then
+  begin
+    SetEnvironmentVariable('NBM_ADMIN_USER', Login);
+    SetEnvironmentVariable('NBM_ADMIN_PASSWORD', Password);
+  end
+  else if GetEnv('NBM_ADMIN_PASSWORD') = '' then
+  begin
+    // Тихая установка без пароля: пользователя создадут позже
+    Log('Пользователь веб-интерфейса не задан — нужен --create-user');
+    Exit;
+  end;
+
+  ResultCode := -1;
+  Created := Exec(ExpandConstant('{app}\{#MyAppExeName}'), '--init-user',
+                  ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode)
+             and (ResultCode = 0);
+
+  if Password <> '' then
+  begin
+    DeleteEnvironmentVariable('NBM_ADMIN_USER', 0);
+    DeleteEnvironmentVariable('NBM_ADMIN_PASSWORD', 0);
+  end;
+
+  if Created then
+    Log('Пользователь веб-интерфейса создан')
+  else
+    SuppressibleMsgBox(
+      'Не удалось создать пользователя веб-интерфейса (код ' + IntToStr(ResultCode) + ').' + #13#10 + #13#10 +
+      'Создайте его после установки в командной строке от имени администратора:' + #13#10 +
+      '"' + ExpandConstant('{app}\{#MyAppExeName}') + '" --create-user',
+      mbError, MB_OK, IDOK);
+end;
+
 function NssmPath(): String;
 begin
   Result := ExpandConstant('{app}\_internal\bin\nssm.exe');
@@ -201,6 +324,9 @@ begin
   end
   else if CurStep = ssPostInstall then
   begin
+    // Пользователь — до запуска службы: первая же страница
+    // в браузере спросит уже существующий логин
+    CreateWebUser();
     InstallAndStartService();
   end;
 end;

@@ -112,10 +112,29 @@ jobs:
             Get-Content "$app\logs\*.log" -Tail 60 -ErrorAction SilentlyContinue
             throw "служба не ответила за 90 с"
           }
+          function Get-Status($path, $user, $pass) {
+            $h = @{}
+            if ($user) {
+              $b = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("${user}:${pass}"))
+              $h = @{ Authorization = "Basic $b" }
+            }
+            try { (Invoke-WebRequest "http://127.0.0.1:8080$path" -Headers $h -UseBasicParsing -TimeoutSec 10).StatusCode }
+            catch { $_.Exception.Response.StatusCode.value__ }
+          }
+
+          # Тихая установка: пользователь из окружения установщика
+          $env:NBM_ADMIN_USER = "ci-admin"
+          $env:NBM_ADMIN_PASSWORD = 'p@ss w0rd "ci"'
           Install-Nbm
           (Get-Service NetworkBackupManager).Status
           Wait-Healthy
           Write-Host "✅ установка, служба отвечает"
+
+          if (-not (Test-Path "$app\data\auth.json")) { Get-Content install.log -Tail 40; throw "установщик не создал пользователя" }
+          if ((Get-Content "$app\data\auth.json" -Raw) -match "w0rd") { throw "пароль в auth.json открытым текстом" }
+          if ((Get-Status "/add" "ci-admin" 'p@ss w0rd "ci"') -ne 200) { throw "вход созданным пользователем не работает" }
+          if ((Get-Status "/add" "ci-admin" "wrong") -ne 401) { throw "пустило с неверным паролем" }
+          Write-Host "✅ пользователь веб-интерфейса создан установщиком"
 
           try { Invoke-WebRequest http://127.0.0.1:8080/add -UseBasicParsing | Out-Null; throw "без пароля пустило" }
           catch { if ($_.Exception.Response.StatusCode.value__ -ne 401) { throw } }
@@ -131,8 +150,11 @@ jobs:
           # --- Обновление поверх ---
           "keep me" | Set-Content "$app\data\marker.txt"
           "stale" | Set-Content "$app\_internal\stale-from-old-version.dll"
+          $env:NBM_ADMIN_PASSWORD = "other-password"     # существующего не меняет
           Install-Nbm
           Wait-Healthy
+          if ((Get-Status "/add" "ci-admin" 'p@ss w0rd "ci"') -ne 200) { throw "обновление сменило пароль пользователя" }
+          Remove-Item Env:NBM_ADMIN_USER, Env:NBM_ADMIN_PASSWORD
           if (-not (Test-Path "$app\data\marker.txt")) { throw "обновление потеряло данные" }
           if (Test-Path "$app\_internal\stale-from-old-version.dll") { throw "остались файлы прежней версии" }
           Write-Host "✅ обновление: данные на месте, код прежней версии убран"

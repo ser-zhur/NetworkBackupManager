@@ -22,14 +22,11 @@
 
 ### Windows
 
-1. Скачайте `NetworkBackupManager-<версия>-Setup.exe` из [последнего выпуска](https://github.com/ser-zhur/NetworkBackupManager/releases/latest) и запустите. Программа установится как служба Windows.
-2. Создайте пользователя веб-интерфейса — в командной строке **от имени администратора**:
-   ```bat
-   "C:\Program Files\NetworkBackupManager\NetworkBackupManager.exe" --create-user
-   ```
-3. Откройте `http://127.0.0.1:8080`.
+1. Скачайте `NetworkBackupManager-<версия>-Setup.exe` из [последнего выпуска](https://github.com/ser-zhur/NetworkBackupManager/releases/latest) и запустите.
+2. Задайте в установщике логин и пароль веб-интерфейса. Программа установится как служба Windows.
+3. Откройте `http://127.0.0.1:8080` и войдите.
 
-Доступ с других компьютеров, обновление и удаление — [docs/WINDOWS.md](docs/WINDOWS.md).
+Доступ с других компьютеров, тихая установка, смена пароля, обновление и удаление — [docs/WINDOWS.md](docs/WINDOWS.md).
 
 ### Docker
 
@@ -75,6 +72,7 @@ venv/Scripts/python main.py --foreground
 |---|---|
 | `--foreground` | Только веб-сервер, без установки службы |
 | `--create-user` | Создать или сменить пользователя веб-интерфейса |
+| `--init-user` | Создать пользователя из `NBM_ADMIN_USER` / `NBM_ADMIN_PASSWORD` без вопросов, если его ещё нет (так делает установщик Windows) |
 | `--install-service` / `--uninstall-service` | Установить или удалить службу (Windows / systemd) |
 | `--start-service` / `--stop-service` / `--restart-service` | Управление службой |
 | `--version` | Показать версию |
