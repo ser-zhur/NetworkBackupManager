@@ -147,7 +147,11 @@ def _stage(tmp: Path, data_dir: Path) -> list[str]:
         try:
             shutil.copy2(data_dir / rel, dst)
         except OSError as exc:
-            raise SettingsBackupError(f"не удалось прочитать {rel.as_posix()}: {exc}") from exc
+            # Текст ОС (пути) — в журнал, пользователю — имя файла
+            logger.error("💾 Копия настроек: %s не прочитан: %s", rel.as_posix(), exc)
+            raise SettingsBackupError(
+                f"не удалось прочитать data/{rel.as_posix()} — подробности в общем логе"
+            ) from exc
 
     names = [f"data/{rel.as_posix()}" for rel in files]
     manifest = {
