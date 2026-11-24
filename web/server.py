@@ -6288,6 +6288,16 @@ def _settings_backup_page(request: Request, **extra):
     return response
 
 
+def _backup_user_message(exc: Exception) -> str:
+    """
+    Текст ошибки для пользователя: свои понятные сообщения —
+    как есть, неожиданные (пути, тексты ОС) — только в журнал.
+    """
+    if isinstance(exc, settings_backup.SettingsBackupError):
+        return str(exc)
+    return "ошибка на сервере — подробности в общем логе"
+
+
 def _backup_error(text: str):
     return RedirectResponse(
         "/settings?tab=backup&error=" + urllib.parse.quote(text), status_code=303,
@@ -6315,8 +6325,8 @@ async def settings_backup_download(request: Request, user: str = Depends(require
         path = await run_in_threadpool(settings_backup.build, tmpdir, password)
     except Exception as exc:
         shutil.rmtree(tmpdir, ignore_errors=True)
-        logging.error("💾 Копия настроек не создана: %s", exc)
-        return _backup_error(str(exc))
+        logging.error("💾 Копия настроек не создана: %s", exc, exc_info=True)
+        return _backup_error(_backup_user_message(exc))
     logging.info(
         "💾 Копия настроек скачана: %s (%s, запрос от %s)",
         path.name, "с паролем" if password else "без пароля", user,
@@ -6365,8 +6375,9 @@ async def api_settings_backup_upload(request: Request, user: str = Depends(requi
     try:
         name, results = await run_in_threadpool(settings_backup.upload, targets, password, keep)
     except Exception as exc:
-        logging.error("💾 Копия настроек не создана: %s", exc)
-        return {"ok": False, "message": f"Копия не создана: {exc}", "results": []}
+        logging.error("💾 Копия настроек не создана: %s", exc, exc_info=True)
+        return {"ok": False, "message": "Копия не создана: " + _backup_user_message(exc),
+                "results": []}
 
     ok = all(r["ok"] for r in results)
     return {
@@ -6453,7 +6464,7 @@ async def settings_backup_restore_upload(request: Request, user: str = Depends(r
     except Exception as exc:
         shutil.rmtree(workdir, ignore_errors=True)
         logging.error("💾 Архив для восстановления не прочитан: %s", exc, exc_info=True)
-        return _backup_error(f"Восстановление: архив не прочитан: {exc}")
+        return _backup_error("Восстановление: архив не прочитан: " + _backup_user_message(exc))
     finally:
         archive.unlink(missing_ok=True)
 
@@ -6522,7 +6533,7 @@ async def settings_backup_restore_apply(request: Request, user: str = Depends(re
         backup_state.finish_mass()
         scheduler.start()
         logging.error("💾 Восстановление не удалось: %s", exc, exc_info=True)
-        return _backup_error(f"Восстановление не удалось: {exc}")
+        return _backup_error("Восстановление не удалось: " + _backup_user_message(exc))
     finally:
         _drop_staged(token)
 

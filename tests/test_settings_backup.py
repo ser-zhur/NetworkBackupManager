@@ -410,3 +410,20 @@ def test_web_auto_settings(client, remotes):
     assert "error=" in r.headers["location"]
     page = c.get("/settings?tab=backup").text
     assert "По расписанию" in page and "Восстановить из архива" in page
+
+
+def test_unexpected_error_text_stays_in_log(client, remotes, monkeypatch):
+    s, c = client
+
+    def boom(*a, **kw):
+        raise OSError("/srv/secret/path: permission denied")
+
+    monkeypatch.setattr(s.settings_backup, "upload", boom)
+    r = c.post("/api/settings-backup/upload", json={"ids": ["good"]}).json()
+    assert not r["ok"] and "/srv/secret" not in r["message"] and "журнал" not in r["message"]
+    assert "общем логе" in r["message"]
+
+    monkeypatch.setattr(s.settings_backup, "build", boom)
+    r = c.post("/settings/backup/download", data={"password": "", "confirm": ""},
+               follow_redirects=False)
+    assert "secret" not in r.headers["location"]
