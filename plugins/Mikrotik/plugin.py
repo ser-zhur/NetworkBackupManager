@@ -790,7 +790,34 @@ PLUGIN = {
         "RouterOS 6 и 7 определяются сами. Вход по SSH-ключу."
     ),
     "auth": ["key", "password"],
-    "default_username": "admin",
+    "default_username": "nbm-backup",
+    "setup": [
+        "Ключ: нажмите «🔑 Создать пару ключей» под полем «Файл SSH-ключа». "
+        "Закрытый ключ останется в программе (`data/keys/mikrotik/`). "
+        "Нажмите «⬇ Скачать .pub» — файл открытого ключа понадобится в шаге 4. "
+        "Свой закрытый RSA-ключ без пароля тоже подойдёт: положите файл в "
+        "`data/keys/mikrotik/` и укажите его имя.",
+        "Группа (Winbox: System → Users → Groups → «+», или в терминале): "
+        "`/user group add name=nbm-backup policy=ssh,ftp,read,write,sensitive,policy,test`. "
+        "Зачем права: `ssh` — вход; `ftp` — скачивание файлов по SCP; `read` — "
+        "чтение конфигурации; `write` — создание и удаление временных файлов; "
+        "`sensitive` — пароли и ключи в export и backup; `policy` и `test` — "
+        "нужны для `/system backup save`. `api` не нужен: программа работает по SSH.",
+        "Пользователь (System → Users → «+»): "
+        "`/user add name=nbm-backup group=nbm-backup password=<надёжный пароль>`. "
+        "Право `policy` позволяет менять права пользователей, поэтому заведите "
+        "отдельного пользователя и входите только по ключу.",
+        "Открытый ключ: перетащите скачанный файл .pub в Winbox → Files, затем "
+        "System → Users → SSH Keys → «Import SSH Key»: пользователь `nbm-backup`, "
+        "файл ключа. Или в терминале: "
+        "`/user ssh-keys import public-key-file=id_rsa.key.pub user=nbm-backup` "
+        "(имя файла — как у скачанного).",
+        "Проверьте, что SSH включён: IP → Services → ssh (порт по умолчанию 22; "
+        "другой — укажите в поле «Порт SSH»).",
+        "В этой форме: «Пользователь SSH» — `nbm-backup`, «Файл SSH-ключа» — "
+        "имя ключа из шага 1 (по умолчанию `id_rsa.key`). После сохранения "
+        "запустите бэкап устройства, чтобы проверить подключение.",
+    ],
 }
 
 

@@ -39,11 +39,20 @@
                   aria-label="Открытый ключ"
                   class="w-full rounded-md px-2 py-1.5 text-[11px] font-mono break-all
                          bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-800"></textarea>
-        <button type="button" data-keygen-copy
-                class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-white
-                       bg-brand-600 hover:bg-brand-700 transition">
-            📋 Копировать открытый ключ
-        </button>
+        <div data-keygen-actions class="flex flex-wrap gap-2">
+            <button type="button" data-keygen-copy
+                    class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-white
+                           bg-brand-600 hover:bg-brand-700 transition">
+                📋 Копировать открытый ключ
+            </button>
+            {# RouterOS 6 и Winbox принимают ключ только файлом #}
+            <button type="button" data-keygen-download
+                    class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium
+                           bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                           border border-gray-200 dark:border-slate-700 transition">
+                ⬇ Скачать .pub
+            </button>
+        </div>
     </div>
 </div>
 {% endmacro %}
@@ -58,7 +67,10 @@
         const status = box.querySelector("[data-keygen-status]");
         const pub = box.querySelector("[data-keygen-public]");
         const copy = box.querySelector("[data-keygen-copy]");
+        const download = box.querySelector("[data-keygen-download]");
+        const actions = box.querySelector("[data-keygen-actions]");
         const input = document.querySelector('input[name="private_key"]');
+        let keyName = "";
 
         btn.addEventListener("click", async () => {
             const sel = document.getElementById("device_type");
@@ -81,14 +93,25 @@
             if (!data.ok) {
                 status.className = "text-xs text-rose-700 dark:text-rose-300";
                 status.textContent = "✗ " + data.message;
-                pub.hidden = copy.hidden = true;
+                pub.hidden = actions.hidden = true;
                 return;
             }
-            input.value = data.name;
+            input.value = keyName = data.name;
             status.className = "text-xs text-emerald-700 dark:text-emerald-300";
             status.textContent = data.message;
-            pub.hidden = copy.hidden = false;
+            pub.hidden = actions.hidden = false;
             pub.value = data.public_key;
+        });
+
+        download.addEventListener("click", () => {
+            const blob = new Blob([pub.value + "\n"], {type: "text/plain"});
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = (keyName || "id_rsa.key") + ".pub";
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(a.href), 1000);
         });
 
         copy.addEventListener("click", async () => {

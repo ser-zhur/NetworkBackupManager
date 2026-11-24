@@ -109,3 +109,13 @@ def test_inline_code_escapes_html(client):
     out = str(s._inline_code("<b>x</b> `<i>` y"))
     assert "&lt;b&gt;" in out and "<b>" not in out
     assert "<code" in out and "&lt;i&gt;" in out
+
+
+def test_add_page_shows_mikrotik_setup(client):
+    s, c = client
+    if "mikrotik" not in s.plugin_manager._plugins:
+        pytest.skip("плагин mikrotik не загружен")
+    page = c.get("/add").text
+    assert "Как подготовить MikroTik" in page
+    assert "policy=ssh,ftp,read,write,sensitive,policy,test" in page
+    assert "ssh-keys import" in page and "Скачать .pub" in page
