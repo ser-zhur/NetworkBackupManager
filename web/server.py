@@ -97,7 +97,7 @@ from core.version import (
 )
 from core import devices as device_store
 from core import device_status, events, monitoring, notifications, plugin_api
-from core import csv_import, settings_backup
+from core import backup_state, csv_import, settings_backup
 
 from core.logger import (
     setup_logging,
@@ -6241,8 +6241,10 @@ def settings_monitoring_token_revoke(user: str = Depends(require_auth)):
 # КОПИЯ НАСТРОЕК
 # =========================================================
 
-def _settings_backup_context(request: Request) -> dict:
+def _settings_backup_context(request: Request, **extra) -> dict:
     storages = global_config.load_global()
+    auto = settings_backup.load_auto()
+    when = settings_backup.next_run(auto)
     return {
         "backup_files": len(settings_backup.collect_files()),
         "backup_min_length": settings_backup.MIN_PASSWORD_LENGTH,
@@ -6260,8 +6262,40 @@ def _settings_backup_context(request: Request) -> dict:
             for b in _external_backends()
             if hasattr(b, "put_file")
         ],
+        "auto": auto,
+        "auto_next": when.strftime("%Y-%m-%d %H:%M") if when else "",
+        "auto_running": settings_backup.is_running(),
+        "restore_max_mb": settings_backup.MAX_RESTORE_BYTES // (1024 * 1024),
         "error": request.query_params.get("error", ""),
+        "restore": None,
+        "restore_token": "",
+        **extra,
     }
+
+
+def _settings_backup_page(request: Request, **extra):
+    context = {
+        "active_tab": "backup",
+        "message": request.query_params.get("message", ""),
+        "service": get_status(),
+        "scheduler_config": scheduler.config,
+        "logs_size": format_size(get_dir_size(LOGS_DIR)),
+        "is_backup_running": is_backup_running(),
+        **_settings_backup_context(request, **extra),
+    }
+    response = templates.TemplateResponse(request, "settings.html", context)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _backup_error(text: str):
+    return RedirectResponse(
+        "/settings?tab=backup&error=" + urllib.parse.quote(text), status_code=303,
+    )
+
+
+# Плановая копия настроек — на круге планировщика
+scheduler.extra_jobs.append(lambda: settings_backup.tick(_external_backends))
 
 
 @app.post("/settings/backup/download")
@@ -6274,9 +6308,7 @@ async def settings_backup_download(request: Request, user: str = Depends(require
     password = form.get("password") or ""
     error = settings_backup.validate_password(password, form.get("confirm") or "")
     if error:
-        return RedirectResponse(
-            "/settings?tab=backup&error=" + urllib.parse.quote(error), status_code=303,
-        )
+        return _backup_error(error)
 
     tmpdir = Path(tempfile.mkdtemp(prefix="nbm_settings_dl_"))
     try:
@@ -6284,9 +6316,7 @@ async def settings_backup_download(request: Request, user: str = Depends(require
     except Exception as exc:
         shutil.rmtree(tmpdir, ignore_errors=True)
         logging.error("💾 Копия настроек не создана: %s", exc)
-        return RedirectResponse(
-            "/settings?tab=backup&error=" + urllib.parse.quote(str(exc)), status_code=303,
-        )
+        return _backup_error(str(exc))
     logging.info(
         "💾 Копия настроек скачана: %s (%s, запрос от %s)",
         path.name, "с паролем" if password else "без пароля", user,
@@ -6305,7 +6335,8 @@ async def api_settings_backup_upload(request: Request, user: str = Depends(requi
     """
     Копия настроек на хранилища: {"ids": [...]}. Всегда 7z
     с паролем шифрования хранилищ — в копии secret.key и
-    закрытые SSH-ключи. → {"ok", "message", "results": [...]}.
+    закрытые SSH-ключи. Старые копии удаляются по настройке
+    «Хранить копий». → {"ok", "message", "results": [...]}.
     """
     try:
         data = await request.json()
@@ -6324,33 +6355,15 @@ async def api_settings_backup_upload(request: Request, user: str = Depends(requi
             "results": [],
         }
 
-    storages = global_config.load_global()
-    by_id = {b.id: b for b in _external_backends() if hasattr(b, "put_file")}
-    targets = []
-    for rid in dict.fromkeys(str(i) for i in ids):
-        backend = by_id.get(rid)
-        if backend is None:
-            return {"ok": False, "message": f"Хранилище «{rid}» не найдено", "results": []}
-        if not global_config.is_configured(backend, storages):
-            return {"ok": False, "message": f"Хранилище «{backend.name}» не настроено", "results": []}
-        targets.append((backend, storages.get(rid) or {}))
+    targets, error = settings_backup.resolve_targets(
+        ids, _external_backends(), global_config.load_global(),
+    )
+    if error:
+        return {"ok": False, "message": error[:1].upper() + error[1:], "results": []}
 
-    def work():
-        with tempfile.TemporaryDirectory(prefix="nbm_settings_up_") as tmp:
-            path = settings_backup.build(Path(tmp), password)
-            results = []
-            for backend, cfg in targets:
-                directory = settings_backup.remote_dir(cfg.get("base_dir") or "")
-                r = backend.put_file(cfg, path, directory)
-                results.append({"id": backend.id, "name": backend.name,
-                                "ok": r.ok, "message": r.message})
-                (logging.info if r.ok else logging.error)(
-                    "💾 Копия настроек → %s: %s", backend.name, r.message,
-                )
-            return path.name, results
-
+    keep = settings_backup.load_auto().get("keep", 0)
     try:
-        name, results = await run_in_threadpool(work)
+        name, results = await run_in_threadpool(settings_backup.upload, targets, password, keep)
     except Exception as exc:
         logging.error("💾 Копия настроек не создана: %s", exc)
         return {"ok": False, "message": f"Копия не создана: {exc}", "results": []}
@@ -6361,6 +6374,171 @@ async def api_settings_backup_upload(request: Request, user: str = Depends(requi
         "message": f"{name}: " + ("выгружено" if ok else "есть ошибки"),
         "results": results,
     }
+
+
+@app.post("/settings/backup/auto")
+async def settings_backup_auto(request: Request, user: str = Depends(require_auth)):
+    """Расписание автоматической копии на хранилища."""
+    form = await request.form()
+    cfg, error = settings_backup.validate_auto({
+        "enabled": form.get("enabled"),
+        "every_days": form.get("every_days"),
+        "time": form.get("time"),
+        "keep": form.get("keep"),
+        "storages": form.getlist("storages"),
+    })
+    if not error and cfg["enabled"]:
+        if not storage_encryption.is_password_set():
+            error = "сначала задайте пароль шифрования хранилищ"
+        else:
+            _, error = settings_backup.resolve_targets(
+                cfg["storages"], _external_backends(), global_config.load_global(),
+            )
+    if error:
+        return _backup_error("Копия по расписанию: " + error)
+    settings_backup.save_auto(cfg)
+    logging.info(
+        "💾 Копия настроек по расписанию: %s (запрос от %s)",
+        f"каждые {cfg['every_days']} дн. в {cfg['time']}, хранить {cfg['keep']}"
+        if cfg["enabled"] else "выключена", user,
+    )
+    return RedirectResponse("/settings?tab=backup&message=auto_saved", status_code=303)
+
+
+# ---------------------------------------------------------
+# Восстановление: загрузка → проверка → подтверждение
+# ---------------------------------------------------------
+
+# Распакованный архив ждёт подтверждения: {token: (папка, время)}.
+# Одновременно — один: новая загрузка убирает прежнюю.
+_restore_staged: dict[str, tuple[Path, float]] = {}
+_restore_lock = threading.Lock()
+_RESTORE_TTL = 30 * 60
+
+
+def _drop_staged(token: str | None = None) -> None:
+    with _restore_lock:
+        for t in list(_restore_staged):
+            path, at = _restore_staged[t]
+            if token is None or t == token or time.time() - at > _RESTORE_TTL:
+                shutil.rmtree(path, ignore_errors=True)
+                del _restore_staged[t]
+
+
+@app.post("/settings/backup/restore/upload", response_class=HTMLResponse)
+async def settings_backup_restore_upload(request: Request, user: str = Depends(require_auth)):
+    form = await request.form()
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "read"):
+        return _backup_error("Восстановление: выберите файл архива")
+    raw = await upload.read(settings_backup.MAX_RESTORE_BYTES + 1)
+    if not raw:
+        return _backup_error("Восстановление: файл пустой")
+    if len(raw) > settings_backup.MAX_RESTORE_BYTES:
+        return _backup_error("Восстановление: файл слишком большой для копии настроек")
+
+    _drop_staged()
+    workdir = Path(tempfile.mkdtemp(prefix="nbm_restore_"))
+    archive = workdir / "archive.bin"
+    archive.write_bytes(raw)
+    staged = workdir / "staged"
+    staged.mkdir()
+    try:
+        info = await run_in_threadpool(
+            settings_backup.stage_restore, archive, form.get("password") or "", staged,
+        )
+    except settings_backup.SettingsBackupError as exc:
+        shutil.rmtree(workdir, ignore_errors=True)
+        return _backup_error(f"Восстановление: {exc}")
+    except Exception as exc:
+        shutil.rmtree(workdir, ignore_errors=True)
+        logging.error("💾 Архив для восстановления не прочитан: %s", exc, exc_info=True)
+        return _backup_error(f"Восстановление: архив не прочитан: {exc}")
+    finally:
+        archive.unlink(missing_ok=True)
+
+    token = secrets.token_urlsafe(24)
+    with _restore_lock:
+        _restore_staged[token] = (workdir, time.time())
+    info["filename"] = getattr(upload, "filename", "") or ""
+    return _settings_backup_page(request, restore=info, restore_token=token)
+
+
+@app.post("/settings/backup/restore/cancel")
+async def settings_backup_restore_cancel(request: Request, user: str = Depends(require_auth)):
+    form = await request.form()
+    _drop_staged(str(form.get("token") or "") or None)
+    return RedirectResponse("/settings?tab=backup", status_code=303)
+
+
+def _restart_after_restore() -> tuple[bool, str]:
+    """
+    Перезапуск, чтобы программа перечитала настройки.
+    Docker и systemd поднимают процесс сами после выхода,
+    служба Windows — через schedule_restart. Запущенную
+    вручную программу нужно запустить снова.
+    """
+    from core import settings as nbm_settings
+
+    manager = nbm_settings.service_manager()
+    if manager in ("docker", "systemd") or not is_service_process():
+        def _exit():
+            time.sleep(2)
+            logging.info("💾 Выход после восстановления настроек")
+            logging.shutdown()
+            os._exit(1 if manager else 0)
+
+        threading.Thread(target=_exit, daemon=True).start()
+        if manager:
+            return True, ("Программа перезапускается. Через полминуты обновите "
+                          "страницу и войдите с логином и паролем из копии.")
+        return True, ("Программа завершает работу — запустите её снова. "
+                      "Входите с логином и паролем из копии.")
+    return schedule_restart()
+
+
+@app.post("/settings/backup/restore/apply", response_class=HTMLResponse)
+async def settings_backup_restore_apply(request: Request, user: str = Depends(require_auth)):
+    form = await request.form()
+    token = str(form.get("token") or "")
+    with _restore_lock:
+        entry = _restore_staged.get(token)
+    if entry is None or time.time() - entry[1] > _RESTORE_TTL:
+        _drop_staged(token)
+        return _backup_error("Восстановление: архив устарел — загрузите его ещё раз")
+    if not form.get("confirm"):
+        return _backup_error("Восстановление: подтвердите замену настроек")
+
+    if not backup_state.try_start_mass():
+        return _backup_error("Восстановление: идёт бэкап — дождитесь окончания")
+
+    workdir = entry[0]
+    try:
+        # Планировщик не должен записать старые настройки
+        # поверх восстановленных до перезапуска.
+        await run_in_threadpool(scheduler.stop)
+        saved = await run_in_threadpool(settings_backup.apply_restore, workdir / "staged")
+    except Exception as exc:
+        backup_state.finish_mass()
+        scheduler.start()
+        logging.error("💾 Восстановление не удалось: %s", exc, exc_info=True)
+        return _backup_error(f"Восстановление не удалось: {exc}")
+    finally:
+        _drop_staged(token)
+
+    logging.warning("💾 Настройки восстановлены пользователем %s; прежние — %s", user, saved)
+    ok, message = _restart_after_restore()
+    return templates.TemplateResponse(
+        request,
+        "service_action.html",
+        {
+            "title": "Настройки восстановлены",
+            "message": (
+                f"Прежние настройки сохранены в data/{saved.name}. " + message
+            ),
+            "ok": ok,
+        },
+    )
 
 
 # =========================================================

@@ -430,6 +430,43 @@ class RcloneRemote(StorageBackend):
             )
         return PushResult.success(f"Загружено: {directory.rstrip('/')}/{local_path.name}")
 
+    def prune_files(self, config: dict, directory: str, name_re, keep: int) -> PushResult:
+        """
+        Оставить в папке хранилища `keep` последних файлов, чьи
+        имена подходят под name_re (порядок — по имени: в нём
+        дата и время). Остальные файлы папки не трогаются.
+        """
+        type_name = config.get("type") or self.type
+        path = rclone_path(type_name, config.get("base_dir") or "", directory).rstrip("/")
+        base = f"{rclone_mod.REMOTE_NAME}:{path}"
+        try:
+            with self._rclone_env(config) as env:
+                r = rclone_mod.run(
+                    ["lsf", "--files-only", "--max-depth", "1",
+                     *_flags(_PUSH_FLAGS, type_name), "--", base],
+                    env=env, timeout=120,
+                )
+                if r.returncode != 0:
+                    return PushResult.failure(_last_lines(r.stderr or r.stdout) or "ошибка rclone")
+                names = sorted(n.strip() for n in (r.stdout or "").splitlines()
+                               if name_re.match(n.strip()))
+                old = names[:-keep] if keep > 0 else []
+                deleted = 0
+                for name in old:
+                    d = rclone_mod.run(
+                        ["deletefile", *_flags(_PUSH_FLAGS, type_name), "--", f"{base}/{name}"],
+                        env=env, timeout=120,
+                    )
+                    if d.returncode != 0:
+                        return PushResult.failure(
+                            f"{name}: {_last_lines(d.stderr or d.stdout) or 'ошибка rclone'}",
+                            deleted=deleted,
+                        )
+                    deleted += 1
+        except Exception as exc:
+            return PushResult.failure(f"Ошибка: {exc}")
+        return PushResult.success(f"удалено старых: {deleted}", deleted=deleted)
+
     @classmethod
     def _copy_batch(
         cls, parent: Path, names: list[str], dest: str,

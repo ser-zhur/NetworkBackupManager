@@ -36,6 +36,11 @@ class BackupScheduler:
         self._last_attempt_ts = None
         self._RETRY_COOLDOWN = timedelta(minutes=5)
 
+        # Другие плановые задачи (копия настроек): вызываются
+        # на каждом круге цикла, даже при выключенном автобэкапе.
+        # Должны быть быстрыми — долгую работу уносят в свой поток.
+        self.extra_jobs = []
+
     def load_config(self):
         """Загрузка настроек планировщика из data/scheduler.json"""
         return load_json(SCHEDULER_FILE, DEFAULT_CONFIG.copy())
@@ -197,6 +202,12 @@ class BackupScheduler:
                 logging.error(
                     f"❌ Ошибка в цикле планировщика: {e}"
                 )
+
+            for job in list(self.extra_jobs):
+                try:
+                    job()
+                except Exception as e:
+                    logging.error("❌ Ошибка плановой задачи %r: %s", job, e)
 
             self._stop_event.wait(30)
 

@@ -5,6 +5,12 @@
 {% set _input = "w-full rounded-lg px-3 py-2 text-sm bg-gray-50 dark:bg-slate-950 border border-gray-200 dark:border-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition" %}
 {% set _btn = "px-5 py-2 rounded-lg text-sm font-medium bg-brand-600 hover:bg-brand-700 text-white shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed" %}
 
+{% if message == 'auto_saved' %}
+<div class="px-4 py-3 rounded-lg text-sm bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900 text-emerald-800 dark:text-emerald-300">
+    ✓ Расписание копии настроек сохранено.
+</div>
+{% endif %}
+
 {% if error %}
 <div class="px-4 py-3 rounded-lg text-sm bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-rose-800 dark:text-rose-300">
     ✗ {{ error }}
@@ -24,9 +30,9 @@
             Не входят: бэкапы устройств (<code class="font-mono">backups/</code>), журналы, журнал событий.
         </p>
         <p>
-            Восстановление: остановите программу, распакуйте архив в её папку (в Docker — в
-            <code class="font-mono">nbm/</code>) так, чтобы <code class="font-mono">data/</code> заменилась, и запустите.
-            Порядок действий есть и в файле <code class="font-mono">RESTORE.txt</code> внутри архива.
+            Восстановить — <a href="#restore" class="underline">внизу страницы</a>. Если программа не запускается,
+            вручную: остановите её, распакуйте архив в её папку (в Docker — в <code class="font-mono">nbm/</code>)
+            так, чтобы <code class="font-mono">data/</code> заменилась, и запустите (см. <code class="font-mono">RESTORE.txt</code> в архиве).
         </p>
     </div>
     <div class="px-4 py-3 rounded-lg text-xs bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 text-amber-800 dark:text-amber-300">
@@ -68,7 +74,9 @@
     <p class="text-xs text-gray-500 dark:text-slate-400">
         Архив 7z с паролем шифрования хранилищ уходит в папку
         <code class="font-mono">_nbm_settings</code> внутри базовой папки хранилища.
-        Каждая копия — новый файл с датой и временем в имени; старые копии не удаляются.
+        Каждая копия — новый файл с датой и временем в имени.
+        {% if auto.keep %}Хранится {{ auto.keep }} последних копий, более старые удаляются{% else %}Старые копии не удаляются{% endif %}
+        (настройка «Хранить копий» ниже).
     </p>
 
     {% if not encryption_password_set %}
@@ -121,8 +129,138 @@
     {% endif %}
 </section>
 
+<!-- По расписанию -->
+<section class="{{ _card }}" id="auto">
+    <div class="flex flex-wrap items-start justify-between gap-3">
+        <h3 class="{{ _h3 }}">⏰ По расписанию</h3>
+        {% if auto_running %}
+            <span class="px-2.5 py-1 rounded-full text-xs font-medium bg-brand-100 dark:bg-brand-900/60 text-brand-700 dark:text-brand-300">Выполняется…</span>
+        {% elif auto.enabled %}
+            <span class="px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300">Включено</span>
+        {% else %}
+            <span class="px-2.5 py-1 rounded-full text-xs font-medium bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-300">Выключено</span>
+        {% endif %}
+    </div>
+    <p class="text-xs text-gray-500 dark:text-slate-400">
+        Копия выгружается на выбранные хранилища сама, независимо от расписания бэкапов устройств.
+        Если программа была выключена в назначенное время, копия делается сразу после запуска.
+        Ошибка попадает в журнал событий и уведомления (как ошибки планировщика).
+    </p>
+
+    {% if auto.last_run %}
+    <div class="text-sm {{ 'text-emerald-700 dark:text-emerald-300' if auto.last_ok else 'text-rose-700 dark:text-rose-300' }}">
+        {{ '✓' if auto.last_ok else '✗' }} Последняя: <span class="font-mono">{{ auto.last_run }}</span> — {{ auto.last_message }}
+    </div>
+    {% endif %}
+    {% if auto_next %}
+    <div class="text-sm text-gray-600 dark:text-slate-400">Следующая: <span class="font-mono">{{ auto_next }}</span></div>
+    {% endif %}
+
+    <form method="POST" action="/settings/backup/auto" class="space-y-4">
+        <label class="flex items-center gap-2 text-sm font-medium">
+            <input type="checkbox" name="enabled" value="1" {% if auto.enabled %}checked{% endif %}
+                   class="rounded border-gray-300 dark:border-slate-700 text-brand-600 focus:ring-brand-500">
+            Делать копию по расписанию
+        </label>
+        <div class="grid gap-3 sm:grid-cols-3">
+            <label class="block">
+                <span class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Каждые, дней</span>
+                <input type="number" name="every_days" min="1" max="90" required value="{{ auto.every_days }}" class="{{ _input }}">
+            </label>
+            <label class="block">
+                <span class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Время</span>
+                <input type="time" name="time" required value="{{ auto.time }}" class="{{ _input }}">
+            </label>
+            <label class="block">
+                <span class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Хранить копий</span>
+                <input type="number" name="keep" min="0" max="1000" required value="{{ auto.keep }}" class="{{ _input }}">
+            </label>
+        </div>
+        <p class="text-[11px] text-gray-500 dark:text-slate-400">
+            «Хранить копий» действует на каждом хранилище, и для плановых, и для ручных выгрузок;
+            0 — не удалять. Удаляются только файлы <code class="font-mono">nbm-settings-…</code> в папке
+            <code class="font-mono">_nbm_settings</code>.
+        </p>
+        {% if backup_remotes %}
+        <div class="space-y-1.5">
+            <div class="text-sm font-medium text-gray-700 dark:text-slate-300">Хранилища</div>
+            {% for r in backup_remotes %}
+            <label class="flex items-center gap-2 text-sm {{ '' if r.configured else 'opacity-60' }}">
+                <input type="checkbox" name="storages" value="{{ r.id }}"
+                       {% if r.id in auto.storages %}checked{% endif %}
+                       {% if not r.configured %}disabled{% endif %}
+                       class="rounded border-gray-300 dark:border-slate-700 text-brand-600 focus:ring-brand-500">
+                {{ r.icon }} {{ r.name }}{% if not r.configured %} — не настроено{% endif %}
+            </label>
+            {% endfor %}
+        </div>
+        {% endif %}
+        <button type="submit" class="{{ _btn }}">Сохранить</button>
+    </form>
+</section>
+
+<!-- Восстановление -->
+<section class="{{ _card }}" id="restore">
+    <h3 class="{{ _h3 }}">♻ Восстановить из архива</h3>
+
+    {% if restore %}
+    <div class="rounded-xl border-2 border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 p-5 space-y-3 text-sm text-amber-900 dark:text-amber-100">
+        <div class="font-semibold">Архив проверен: {{ restore.filename }}</div>
+        <ul class="space-y-1">
+            <li>Создан: <span class="font-mono">{{ restore.created }}</span>, версия программы {{ restore.version }}</li>
+            <li>Файлов настроек: {{ restore.files }}, устройств: {{ restore.devices }}</li>
+            <li>Пользователь входа: {% if restore.user %}<b>{{ restore.user }}</b>{% else %}нет — после перезапуска программа попросит создать{% endif %}</li>
+        </ul>
+        {% if restore.newer %}
+        <p class="font-medium text-rose-700 dark:text-rose-300">⚠ Копия сделана более новой основной версией программы ({{ restore.version }}) — настройки могут прочитаться не полностью.</p>
+        {% endif %}
+        {% if not restore.has_secret %}
+        <p class="font-medium text-rose-700 dark:text-rose-300">⚠ В архиве нет secret.key — сохранённые пароли устройств и хранилищ не расшифруются, их придётся ввести заново.</p>
+        {% endif %}
+        <p>
+            Текущие настройки будут заменены. Их копия останется в <code class="font-mono">data/restore-backup-&lt;дата&gt;/</code>.
+            Бэкапы устройств не затрагиваются. После замены программа перезапустится; запущенную вручную (не службой и не в Docker) нужно будет запустить снова.
+            Вход — с логином и паролем из копии.
+        </p>
+        <form method="POST" action="/settings/backup/restore/apply" class="space-y-3">
+            <input type="hidden" name="token" value="{{ restore_token }}">
+            <label class="flex items-center gap-2 font-medium">
+                <input type="checkbox" name="confirm" value="1" required
+                       class="rounded border-amber-400 text-rose-600 focus:ring-rose-500">
+                Заменить текущие настройки настройками из архива
+            </label>
+            <div class="flex flex-wrap gap-2">
+                <button type="submit" class="px-5 py-2 rounded-lg text-sm font-medium bg-rose-600 hover:bg-rose-700 text-white shadow-sm transition">♻ Восстановить</button>
+                <button type="submit" formaction="/settings/backup/restore/cancel" formnovalidate
+                        class="px-5 py-2 rounded-lg text-sm font-medium bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700 transition">Отмена</button>
+            </div>
+        </form>
+    </div>
+    {% else %}
+    <p class="text-xs text-gray-500 dark:text-slate-400">
+        Архив, скачанный здесь или с хранилища (<code class="font-mono">.zip</code> или <code class="font-mono">.7z</code>,
+        до {{ restore_max_mb }} МБ). Сначала программа проверит архив и покажет, что в нём; заменит настройки только после подтверждения.
+        Для копии с хранилища пароль — пароль шифрования хранилищ, действовавший при её выгрузке.
+    </p>
+    <form method="POST" action="/settings/backup/restore/upload" enctype="multipart/form-data"
+          class="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+        <label class="block">
+            <span class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Файл архива</span>
+            <input type="file" name="file" required accept=".7z,.zip"
+                   class="block w-full text-sm text-gray-600 dark:text-slate-300 file:mr-3 file:px-3 file:py-2 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-gray-100 dark:file:bg-slate-800 file:text-gray-700 dark:file:text-slate-200">
+        </label>
+        <label class="block">
+            <span class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Пароль архива (для 7z)</span>
+            <input type="password" name="password" autocomplete="off" class="{{ _input }}">
+        </label>
+        <button type="submit" class="{{ _btn }}">Проверить архив</button>
+    </form>
+    {% endif %}
+</section>
+
 <script>
 (function () {
+    {% if restore %}document.getElementById('restore').scrollIntoView({block: 'start'});{% endif %}
     const dl = document.getElementById('backup-download');
     dl.addEventListener('submit', (e) => {
         const p = dl.password.value, c = dl.confirm.value;
