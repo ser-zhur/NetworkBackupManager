@@ -19,6 +19,9 @@
 #           {"name": "profile", "label": "Профиль",
 #            "type": "select", "choices": [["ios", "Cisco IOS"]]},
 #       ],
+#       "setup": [                      # как подготовить устройство
+#           "Создайте пользователя `backup` …",
+#       ],
 #   }
 #
 #   def run_backup(device: dict) -> list[str]:
@@ -94,6 +97,7 @@ class PluginInfo:
     default_username: str = "admin"
     default_port: int = 22
     fields: tuple = ()
+    setup: tuple = ()            # шаги подготовки устройства (форма)
 
     def get_field(self, name: str) -> DeviceField | None:
         return next((f for f in self.fields if f.name == name), None)
@@ -191,7 +195,21 @@ def load_info(module, folder: str) -> PluginInfo:
         default_username=str(meta.get("default_username") or "admin"),
         default_port=port,
         fields=fields,
+        setup=_setup_steps(meta.get("setup"), folder),
     )
+
+
+def _setup_steps(raw, plugin: str) -> tuple:
+    """
+    PLUGIN["setup"] — список шагов «как подготовить устройство»
+    (строки; `текст в обратных кавычках` — моноширинный).
+    Показывается в форме добавления и редактирования.
+    """
+    if raw is None:
+        return ()
+    if isinstance(raw, str) or not all(isinstance(s, str) for s in raw):
+        raise PluginContractError(f"{plugin}: setup — список строк")
+    return tuple(s.strip() for s in raw if s.strip())
 
 
 # =========================================================

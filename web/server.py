@@ -496,6 +496,22 @@ def _age_class(days) -> str:
     return "text-rose-600 dark:text-rose-400"
 
 
+def _inline_code(text: str):
+    """`текст` → <code>; остальное экранируется (шаги PLUGIN["setup"])."""
+    import re as _re
+    from markupsafe import Markup, escape
+    parts = _re.split(r"`([^`]+)`", str(text))
+    out = []
+    for i, part in enumerate(parts):
+        if i % 2:
+            out.append(Markup(
+                '<code class="font-mono text-[12px] px-1 rounded bg-white/70 dark:bg-slate-800">{}</code>'
+            ).format(part))
+        else:
+            out.append(escape(part))
+    return Markup("").join(out)
+
+
 def _static_version() -> str:
     """Версия CSS для ?v= в ссылке (время изменения файла):
     после пересборки браузер не возьмёт старый из кэша."""
@@ -512,6 +528,7 @@ if templates is not None:
     templates.env.globals["license_id"] = LICENSE_ID
     templates.env.globals["source_url"] = SOURCE_URL
     templates.env.globals["status_meta"] = _status_meta
+    templates.env.filters["inline_code"] = _inline_code
     templates.env.globals["age_label"] = _age_label
     templates.env.globals["age_class"] = _age_class
 
@@ -3605,6 +3622,49 @@ def third_party_licenses(user: str = Depends(require_auth)):
                 f"Список компонентов: {SOURCE_URL}\n"
             )
     return _plain_text(text)
+
+
+# =========================================================
+# ПАРА SSH-КЛЮЧЕЙ ДЛЯ УСТРОЙСТВА
+# =========================================================
+
+@app.post("/api/ssh-keys")
+async def api_ssh_keys(request: Request, user: str = Depends(require_auth)):
+    """
+    {"type": "pfsense", "name": "id_rsa.key"} → создать пару
+    ключей в data/keys/<тип>/ (существующий файл не меняется)
+    и вернуть открытый ключ для вставки на устройство.
+    """
+    from core import ssh_keys
+
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    device_type = str(data.get("type") or "").strip().lower()
+    info = plugin_manager.plugin_info(device_type) if plugin_manager else None
+    if info is None:
+        return {"ok": False, "message": "Неизвестный тип устройства"}
+    if not info.uses_key:
+        return {"ok": False, "message": f"{info.title}: вход по ключу не поддерживается"}
+    try:
+        created, path, public = ssh_keys.ensure_key_pair(device_type, str(data.get("name") or ""))
+    except ssh_keys.SshKeyError as exc:
+        return {"ok": False, "message": str(exc)}
+    except OSError as exc:
+        logging.error("ssh-keys: %s", exc, exc_info=True)
+        return {"ok": False, "message": "Не удалось записать файл ключа (подробности в журнале)"}
+
+    shown = f"data/keys/{device_type}/{path.name}"
+    if created:
+        logging.info("🔑 Создана пара ключей %s (запрос от %s)", shown, user)
+        message = (f"✓ Создан ключ {shown}. Вставьте открытый ключ на устройство "
+                   f"и сохраните эту форму.")
+    else:
+        message = (f"Ключ {shown} уже есть — новый не создавался. "
+                   f"Ниже его открытый ключ.")
+    return {"ok": True, "created": created, "name": path.name,
+            "public_key": public, "message": message}
 
 
 # =========================================================

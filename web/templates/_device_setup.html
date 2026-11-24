@@ -1,0 +1,108 @@
+{# Шаги подготовки устройства (PLUGIN["setup"]) и создание
+   пары SSH-ключей. Используется в add.html и edit.html. #}
+
+{% macro device_setup(info, open=True) %}
+{% if info.setup %}
+<details class="rounded-xl border border-brand-200 dark:border-brand-900 bg-brand-50/60 dark:bg-brand-950/30 px-4 py-3"
+         {% if open %}open{% endif %}>
+    <summary class="cursor-pointer text-sm font-semibold text-brand-800 dark:text-brand-200">
+        📋 Как подготовить {{ info.title }}
+    </summary>
+    <ol class="mt-3 space-y-2 list-decimal pl-5 text-sm text-gray-700 dark:text-slate-300">
+        {% for step in info.setup %}
+        <li>{{ step | inline_code }}</li>
+        {% endfor %}
+    </ol>
+</details>
+{% endif %}
+{% endmacro %}
+
+
+{# device_type — тип устройства (форма редактирования); пусто —
+   берётся из списка #device_type (форма добавления). #}
+{% macro keygen(device_type="") %}
+<div class="mt-2 space-y-2" data-keygen>
+    <button type="button" data-keygen-btn data-type="{{ device_type }}"
+            class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium
+                   bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                   border border-gray-200 dark:border-slate-700 transition">
+        🔑 Создать пару ключей
+    </button>
+    <span class="text-[11px] text-gray-500 dark:text-slate-400">
+        RSA 2048. Закрытый ключ сохранится в программе под именем из поля выше;
+        существующий файл не перезаписывается — для него покажется открытый ключ.
+    </span>
+    <div data-keygen-result hidden
+         class="rounded-lg border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-950 p-3 space-y-2">
+        <p data-keygen-status class="text-xs"></p>
+        <textarea data-keygen-public readonly rows="5" spellcheck="false"
+                  aria-label="Открытый ключ"
+                  class="w-full rounded-md px-2 py-1.5 text-[11px] font-mono break-all
+                         bg-white dark:bg-slate-900 border border-gray-200 dark:border-slate-800"></textarea>
+        <button type="button" data-keygen-copy
+                class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-white
+                       bg-brand-600 hover:bg-brand-700 transition">
+            📋 Копировать открытый ключ
+        </button>
+    </div>
+</div>
+{% endmacro %}
+
+
+{% macro keygen_script() %}
+<script>
+(function () {
+    document.querySelectorAll("[data-keygen]").forEach((box) => {
+        const btn = box.querySelector("[data-keygen-btn]");
+        const result = box.querySelector("[data-keygen-result]");
+        const status = box.querySelector("[data-keygen-status]");
+        const pub = box.querySelector("[data-keygen-public]");
+        const copy = box.querySelector("[data-keygen-copy]");
+        const input = document.querySelector('input[name="private_key"]');
+
+        btn.addEventListener("click", async () => {
+            const sel = document.getElementById("device_type");
+            const type = btn.dataset.type || (sel ? sel.value : "");
+            const name = (input.value || "").trim() || "id_rsa.key";
+            btn.disabled = true;
+            let data;
+            try {
+                const res = await fetch("/api/ssh-keys", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({type: type, name: name}),
+                });
+                data = await res.json();
+            } catch (e) {
+                data = {ok: false, message: "Нет связи с программой"};
+            }
+            btn.disabled = false;
+            result.hidden = false;
+            if (!data.ok) {
+                status.className = "text-xs text-rose-700 dark:text-rose-300";
+                status.textContent = "✗ " + data.message;
+                pub.hidden = copy.hidden = true;
+                return;
+            }
+            input.value = data.name;
+            status.className = "text-xs text-emerald-700 dark:text-emerald-300";
+            status.textContent = data.message;
+            pub.hidden = copy.hidden = false;
+            pub.value = data.public_key;
+        });
+
+        copy.addEventListener("click", async () => {
+            try {
+                await navigator.clipboard.writeText(pub.value);
+            } catch (e) {
+                // http:// не с localhost — Clipboard API недоступен
+                pub.select();
+                document.execCommand("copy");
+            }
+            copy.textContent = "✓ Скопировано";
+            setTimeout(() => { copy.textContent = "📋 Копировать открытый ключ"; }, 2000);
+        });
+    });
+})();
+</script>
+{% endmacro %}

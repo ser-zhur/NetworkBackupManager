@@ -114,7 +114,27 @@ PLUGIN = {
     "title": "pfSense",
     "description": "Файл /cf/conf/config.xml по SFTP. Вход по SSH-ключу.",
     "auth": ["key"],
-    "default_username": "root",
+    "default_username": "nbm-backup",
+    "setup": [
+        "Ключ: нажмите «🔑 Создать пару ключей» под полем «Файл SSH-ключа». "
+        "Закрытый ключ останется в программе (`data/keys/pfsense/`), открытый "
+        "появится на экране — его нужно вставить в pfSense (шаг 4). "
+        "Свой закрытый RSA-ключ без пароля тоже подойдёт: положите файл в "
+        "`data/keys/pfsense/` и укажите его имя.",
+        "pfSense → System → Advanced → Admin Access: включите «Enable Secure "
+        "Shell», в «SSHd Key Only» выберите «Public Key Only» (или «Password "
+        "or Public Key»). Сохраните.",
+        "System → User Manager → Groups → Add: создайте группу, например "
+        "`nbm-backup`, и сохраните. Откройте её снова и в «Assigned "
+        "Privileges» добавьте «User - System: Shell account access».",
+        "System → User Manager → Users → Add: пользователь `nbm-backup` с "
+        "надёжным паролем, в «Group membership» — группа из шага 3. В поле "
+        "«Authorized SSH Keys» вставьте открытый ключ (кнопка «Копировать»). "
+        "Сохраните.",
+        "В этой форме: «Пользователь SSH» — `nbm-backup`, «Файл SSH-ключа» — "
+        "имя ключа из шага 1 (по умолчанию `id_rsa.key`). После сохранения "
+        "запустите бэкап устройства, чтобы проверить подключение.",
+    ],
 }
 
 
