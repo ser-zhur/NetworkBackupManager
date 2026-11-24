@@ -35,10 +35,10 @@ def test_existing_key_is_never_overwritten(keys_dir):
 
 def test_existing_foreign_file_gives_clear_error(keys_dir):
     (keys_dir / "pfsense").mkdir(parents=True)
-    (keys_dir / "pfsense" / "id_rsa.key").write_text("не ключ")
+    (keys_dir / "pfsense" / "id_rsa.key").write_text("не ключ", encoding="utf-8")
     with pytest.raises(ssh_keys.SshKeyError, match="не закрытый SSH-ключ"):
         ssh_keys.ensure_key_pair("pfsense", "id_rsa.key")
-    assert (keys_dir / "pfsense" / "id_rsa.key").read_text() == "не ключ"
+    assert (keys_dir / "pfsense" / "id_rsa.key").read_text(encoding="utf-8") == "не ключ"
 
 
 @pytest.mark.parametrize("name", ["../evil.key", "a/b.key", "C:\\x.key", "id_rsa.key.pub", ".hidden", "x" * 70])
