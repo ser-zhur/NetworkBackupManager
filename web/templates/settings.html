@@ -15,57 +15,64 @@
     {% include "_header.html" %}
 {% endwith %}
 
-<main class="max-w-4xl mx-auto px-5 py-8">
+<main class="max-w-6xl mx-auto px-5 py-8">
 
     <h1 class="text-2xl font-bold mb-5 flex items-center gap-2">
         ⚙ Настройки
     </h1>
 
-    <!-- Табы -->
-    <div class="border-b border-gray-200 dark:border-slate-800 mb-5 overflow-x-auto">
-        <div class="flex gap-1 min-w-max">
-            {% set _tabs = [
-                ("general",   "Общие"),
-                ("scheduler", "⏰ Планировщик"),
-                ("retention", "🧹 Очистка"),
-                ("storage",   "🗄 Хранилища"),
-                ("service",   "⚙ Служба"),
-                ("notifications", "🔔 Уведомления"),
-                ("monitoring", "📈 Мониторинг"),
-            ] %}
-            {% for tab_id, tab_label in _tabs %}
+    {% set _tabs = [
+        ("general",       "🔧", "Общие"),
+        ("scheduler",     "⏰", "Планировщик"),
+        ("retention",     "🧹", "Очистка"),
+        ("storage",       "🗄", "Хранилища"),
+        ("service",       "⚙", "Служба"),
+        ("notifications", "🔔", "Уведомления"),
+        ("monitoring",    "📈", "Мониторинг"),
+    ] %}
+
+    <div class="md:grid md:grid-cols-[200px_minmax(0,1fr)] md:gap-6 md:items-start">
+
+        <!-- Разделы: слева столбцом; на узком экране — строками
+             с переносом, без горизонтальной прокрутки -->
+        <nav aria-label="Разделы настроек"
+             class="mb-5 md:mb-0 md:sticky md:top-20
+                    flex flex-wrap md:flex-col gap-1">
+            {% for tab_id, tab_icon, tab_label in _tabs %}
                 <a href="/settings?tab={{ tab_id }}"
-                   class="px-4 py-2 text-sm font-medium border-b-2 transition whitespace-nowrap
+                   {% if active_tab == tab_id %}aria-current="page"{% endif %}
+                   class="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition
                           {% if active_tab == tab_id %}
-                          border-brand-600 text-brand-600 dark:text-brand-400 dark:border-brand-400
+                          bg-brand-50 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300
                           {% else %}
-                          border-transparent text-gray-500 dark:text-slate-400
+                          text-gray-600 dark:text-slate-400
+                          hover:bg-gray-100 dark:hover:bg-slate-800/70
                           hover:text-gray-900 dark:hover:text-slate-200
-                          hover:border-gray-300 dark:hover:border-slate-700
                           {% endif %}">
-                    {{ tab_label }}
+                    <span class="w-5 text-center" aria-hidden="true">{{ tab_icon }}</span>
+                    <span>{{ tab_label }}</span>
                 </a>
             {% endfor %}
-        </div>
-    </div>
+        </nav>
 
-    <!-- Содержимое таба -->
-    <div class="space-y-5">
-        {% if active_tab == "general" %}
-            {% include "_settings_tab_general.html" %}
-        {% elif active_tab == "scheduler" %}
-            {% include "_settings_tab_scheduler.html" %}
-        {% elif active_tab == "retention" %}
-            {% include "_settings_tab_retention.html" %}
-        {% elif active_tab == "storage" %}
-            {% include "_settings_tab_storage.html" %}
-        {% elif active_tab == "service" %}
-            {% include "_settings_tab_service.html" %}
-        {% elif active_tab == "notifications" %}
-            {% include "_settings_tab_notifications.html" %}
-        {% elif active_tab == "monitoring" %}
-            {% include "_settings_tab_monitoring.html" %}
-        {% endif %}
+        <!-- Содержимое раздела -->
+        <div class="space-y-5 min-w-0">
+            {% if active_tab == "general" %}
+                {% include "_settings_tab_general.html" %}
+            {% elif active_tab == "scheduler" %}
+                {% include "_settings_tab_scheduler.html" %}
+            {% elif active_tab == "retention" %}
+                {% include "_settings_tab_retention.html" %}
+            {% elif active_tab == "storage" %}
+                {% include "_settings_tab_storage.html" %}
+            {% elif active_tab == "service" %}
+                {% include "_settings_tab_service.html" %}
+            {% elif active_tab == "notifications" %}
+                {% include "_settings_tab_notifications.html" %}
+            {% elif active_tab == "monitoring" %}
+                {% include "_settings_tab_monitoring.html" %}
+            {% endif %}
+        </div>
     </div>
 
 </main>
