@@ -398,6 +398,38 @@ class RcloneRemote(StorageBackend):
 
         return self._push_result(uploaded, errors, len(ctx.files))
 
+    # -----------------------------------------------------
+    # Один файл в заданную папку (копия настроек)
+    # -----------------------------------------------------
+
+    def put_file(self, config: dict, local_path: Path, directory: str) -> PushResult:
+        """
+        local_path → <directory>/<имя файла> на хранилище.
+        directory — путь вида '/a/b' (от корня хранилища).
+        """
+        if not rclone_mod.is_available():
+            return PushResult.failure(
+                "rclone не найден (Настройки → Хранилища → путь к rclone)"
+            )
+        type_name = config.get("type") or self.type
+        path = rclone_path(type_name, config.get("base_dir") or "", directory)
+        target = f"{rclone_mod.REMOTE_NAME}:{path.rstrip('/')}/{local_path.name}"
+        try:
+            with self._rclone_env(config) as env:
+                r = rclone_mod.run(
+                    ["copyto", *_flags(_PUSH_FLAGS, type_name), "--", str(local_path), target],
+                    env=env, timeout=300,
+                )
+        except Exception as exc:
+            return PushResult.failure(f"Ошибка: {exc}")
+        if r.returncode != 0:
+            err = r.stderr or r.stdout or ""
+            return PushResult.failure(
+                (_last_lines(err) or "ошибка rclone")
+                + _hint(err, type_name, config.get("options") or {})
+            )
+        return PushResult.success(f"Загружено: {directory.rstrip('/')}/{local_path.name}")
+
     @classmethod
     def _copy_batch(
         cls, parent: Path, names: list[str], dest: str,

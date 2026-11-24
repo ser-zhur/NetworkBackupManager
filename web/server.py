@@ -8,11 +8,15 @@ import hashlib
 import base64
 import binascii
 import time
+import shutil
+import tempfile
 import urllib.parse
 
 from pathlib import Path
 from datetime import datetime
 from contextlib import asynccontextmanager
+from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
 from core import rclone as rclone_mod
 from core import rclone_oauth
 
@@ -93,7 +97,7 @@ from core.version import (
 )
 from core import devices as device_store
 from core import device_status, events, monitoring, notifications, plugin_api
-from core import csv_import
+from core import csv_import, settings_backup
 
 from core.logger import (
     setup_logging,
@@ -6103,9 +6107,10 @@ def settings_page(
         service   — управление службой
         monitoring — мониторинг: токен, адреса API, события
         notifications — уведомления: каналы и правила
+        backup    — копия настроек программы
     """
     if tab not in ("general", "scheduler", "retention", "storage", "service",
-                   "monitoring", "notifications"):
+                   "monitoring", "notifications", "backup"):
         tab = "general"
 
     # Вкладки используют service, scheduler_config, logs_size,
@@ -6174,6 +6179,9 @@ def settings_page(
     elif tab == "notifications":
         context.update(_notifications_context(request))
 
+    elif tab == "backup":
+        context.update(_settings_backup_context(request))
+
     return templates.TemplateResponse(
         request,
         "settings.html",
@@ -6227,6 +6235,132 @@ def settings_monitoring_token_revoke(user: str = Depends(require_auth)):
     monitoring.revoke_token()
     logging.info("🔑 Токен мониторинга отозван")
     return RedirectResponse("/settings?tab=monitoring&message=revoked", status_code=303)
+
+
+# =========================================================
+# КОПИЯ НАСТРОЕК
+# =========================================================
+
+def _settings_backup_context(request: Request) -> dict:
+    storages = global_config.load_global()
+    return {
+        "backup_files": len(settings_backup.collect_files()),
+        "backup_min_length": settings_backup.MIN_PASSWORD_LENGTH,
+        "encryption_password_set": storage_encryption.is_password_set(),
+        "encryption_available": storage_encryption.is_available(),
+        "rclone_available": rclone_mod.is_available(),
+        "backup_remotes": [
+            {
+                "id": b.id,
+                "name": b.name,
+                "icon": b.icon,
+                "configured": global_config.is_configured(b, storages),
+                "dir": settings_backup.remote_dir((storages.get(b.id) or {}).get("base_dir") or ""),
+            }
+            for b in _external_backends()
+            if hasattr(b, "put_file")
+        ],
+        "error": request.query_params.get("error", ""),
+    }
+
+
+@app.post("/settings/backup/download")
+async def settings_backup_download(request: Request, user: str = Depends(require_auth)):
+    """
+    Архив папки data/ в браузер: с паролем — 7z (AES-256),
+    без пароля — zip.
+    """
+    form = await request.form()
+    password = form.get("password") or ""
+    error = settings_backup.validate_password(password, form.get("confirm") or "")
+    if error:
+        return RedirectResponse(
+            "/settings?tab=backup&error=" + urllib.parse.quote(error), status_code=303,
+        )
+
+    tmpdir = Path(tempfile.mkdtemp(prefix="nbm_settings_dl_"))
+    try:
+        path = await run_in_threadpool(settings_backup.build, tmpdir, password)
+    except Exception as exc:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        logging.error("💾 Копия настроек не создана: %s", exc)
+        return RedirectResponse(
+            "/settings?tab=backup&error=" + urllib.parse.quote(str(exc)), status_code=303,
+        )
+    logging.info(
+        "💾 Копия настроек скачана: %s (%s, запрос от %s)",
+        path.name, "с паролем" if password else "без пароля", user,
+    )
+    return FileResponse(
+        path,
+        filename=path.name,
+        media_type="application/x-7z-compressed" if password else "application/zip",
+        headers={"Cache-Control": "no-store"},
+        background=BackgroundTask(shutil.rmtree, tmpdir, ignore_errors=True),
+    )
+
+
+@app.post("/api/settings-backup/upload")
+async def api_settings_backup_upload(request: Request, user: str = Depends(require_auth)):
+    """
+    Копия настроек на хранилища: {"ids": [...]}. Всегда 7z
+    с паролем шифрования хранилищ — в копии secret.key и
+    закрытые SSH-ключи. → {"ok", "message", "results": [...]}.
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    ids = data.get("ids") if isinstance(data, dict) else None
+    if not isinstance(ids, list) or not ids:
+        return {"ok": False, "message": "Не выбрано ни одного хранилища", "results": []}
+
+    password = storage_encryption.get_password()
+    if not password:
+        return {
+            "ok": False,
+            "message": "Задайте пароль шифрования (Настройки → Хранилища → Шифрование): "
+                       "без него копия на хранилище не выгружается",
+            "results": [],
+        }
+
+    storages = global_config.load_global()
+    by_id = {b.id: b for b in _external_backends() if hasattr(b, "put_file")}
+    targets = []
+    for rid in dict.fromkeys(str(i) for i in ids):
+        backend = by_id.get(rid)
+        if backend is None:
+            return {"ok": False, "message": f"Хранилище «{rid}» не найдено", "results": []}
+        if not global_config.is_configured(backend, storages):
+            return {"ok": False, "message": f"Хранилище «{backend.name}» не настроено", "results": []}
+        targets.append((backend, storages.get(rid) or {}))
+
+    def work():
+        with tempfile.TemporaryDirectory(prefix="nbm_settings_up_") as tmp:
+            path = settings_backup.build(Path(tmp), password)
+            results = []
+            for backend, cfg in targets:
+                directory = settings_backup.remote_dir(cfg.get("base_dir") or "")
+                r = backend.put_file(cfg, path, directory)
+                results.append({"id": backend.id, "name": backend.name,
+                                "ok": r.ok, "message": r.message})
+                (logging.info if r.ok else logging.error)(
+                    "💾 Копия настроек → %s: %s", backend.name, r.message,
+                )
+            return path.name, results
+
+    try:
+        name, results = await run_in_threadpool(work)
+    except Exception as exc:
+        logging.error("💾 Копия настроек не создана: %s", exc)
+        return {"ok": False, "message": f"Копия не создана: {exc}", "results": []}
+
+    ok = all(r["ok"] for r in results)
+    return {
+        "ok": ok,
+        "message": f"{name}: " + ("выгружено" if ok else "есть ошибки"),
+        "results": results,
+    }
 
 
 # =========================================================

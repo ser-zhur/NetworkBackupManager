@@ -29,6 +29,7 @@
         ("service",       "⚙", "Служба"),
         ("notifications", "🔔", "Уведомления"),
         ("monitoring",    "📈", "Мониторинг"),
+        ("backup",        "💾", "Копия настроек"),
     ] %}
 
     <div class="md:grid md:grid-cols-[200px_minmax(0,1fr)] md:gap-6 md:items-start">
@@ -71,6 +72,8 @@
                 {% include "_settings_tab_notifications.html" %}
             {% elif active_tab == "monitoring" %}
                 {% include "_settings_tab_monitoring.html" %}
+            {% elif active_tab == "backup" %}
+                {% include "_settings_tab_backup.html" %}
             {% endif %}
         </div>
     </div>
