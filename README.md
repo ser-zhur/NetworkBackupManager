@@ -38,7 +38,7 @@ sudo nano .env          # NBM_ADMIN_PASSWORD — пароль первого в�
 sudo docker compose up -d
 ```
 
-Интерфейс — `http://<сервер>:8080`, пользователь `admin` и пароль из `.env`. Данные лежат в `/opt/nbm/nbm`. Обновление: `docker compose pull && docker compose up -d`. Сборка образа на сервере, откат, переезд с Windows — [docs/DOCKER.md](docs/DOCKER.md).
+Интерфейс — `http://<сервер>:8080`, пользователь `admin` и пароль из `.env`. Данные лежат в `/opt/nbm/nbm`. Обновление: `sudo docker compose pull && sudo docker compose up -d`. Сборка образа на сервере, откат, переезд с Windows — [docs/DOCKER.md](docs/DOCKER.md).
 
 ### Linux (служба systemd)
 
