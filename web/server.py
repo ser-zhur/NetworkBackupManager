@@ -97,7 +97,7 @@ from core.version import (
 )
 from core import devices as device_store
 from core import device_status, events, monitoring, notifications, plugin_api
-from core import backup_state, csv_import, settings_backup
+from core import backup_state, csv_import, settings_backup, update_check
 
 from core.logger import (
     setup_logging,
@@ -1790,6 +1790,8 @@ def _header_info() -> dict:
         "run": _run_mode(),
         "scheduler": _scheduler_info(),
         "devices": _device_counts(),
+        # не «update»: в шаблоне hi.update — метод dict.update
+        "new_version": update_check.available(),
     }
 
 
@@ -6126,6 +6128,7 @@ def settings_page(
 
     if tab == "general":
         context["config"] = load_json(CONFIG_FILE, {})
+        context["update"] = _update_check_context()
 
     elif tab == "scheduler":
         context["config"] = scheduler.config
@@ -6306,6 +6309,7 @@ def _backup_error(text: str):
 
 # Плановая копия настроек — на круге планировщика
 scheduler.extra_jobs.append(lambda: settings_backup.tick(_external_backends))
+scheduler.extra_jobs.append(update_check.tick)
 
 
 @app.post("/settings/backup/download")
@@ -6655,7 +6659,7 @@ async def settings_notifications_save(
     channel["enabled"] = form.get("enabled") == "on"
     channel["rules"] = notifications.normalize_rules({
         key: form.get(key) == "on"
-        for key in ("errors", "recovered", "config", "include_diff", "app")
+        for key in ("errors", "recovered", "config", "include_diff", "app", "update")
     } | {"run": form.get("run")})
     channel["settings"] = notifications.encrypt_settings(
         channel_type, plain, (existing or {}).get("settings"),
@@ -6742,6 +6746,7 @@ async def settings_general_save(
         timeout = 300
 
     tag_rows = _clamp_tag_rows(form.get("tag_rows"))
+    update_check_on = form.get("update_check") == "true"
 
     # Загружаем существующий config, чтобы не потерять retention и пр.
     config = load_json(CONFIG_FILE, {})
@@ -6751,6 +6756,8 @@ async def settings_general_save(
     config["max_parallel_backups"] = max_parallel
     config["backup_timeout_seconds"] = timeout
     config["tag_rows"] = tag_rows
+    if update_check.env_override() is None:      # задано NBM_UPDATE_CHECK — не трогаем
+        config["update_check"] = update_check_on
 
     try:
         save_json(CONFIG_FILE, config)
@@ -6768,6 +6775,30 @@ async def settings_general_save(
         url="/settings?tab=general&message=saved",
         status_code=303,
     )
+
+
+def _update_check_context() -> dict:
+    state = update_check.load_state()
+    checked = state.get("checked")
+    try:
+        checked = datetime.fromisoformat(checked).strftime("%d.%m.%Y %H:%M") if checked else ""
+    except ValueError:
+        checked = ""
+    return {
+        "enabled": update_check.is_enabled(),
+        "env": update_check.env_override(),
+        "checked": checked,
+        "latest": state.get("latest") or "",
+        "error": state.get("error") or "",
+        "available": update_check.available(),
+    }
+
+
+@app.post("/settings/update-check/run")
+async def settings_update_check_run(user: str = Depends(require_auth)):
+    """Проверить новую версию сейчас (кнопка на вкладке «Общие»)."""
+    await run_in_threadpool(update_check.check_now)
+    return RedirectResponse(url="/settings?tab=general#updates", status_code=303)
 
 # =========================================================
 # RUN DIRECTLY

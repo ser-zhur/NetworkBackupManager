@@ -117,6 +117,60 @@
         </div>
     </section>
 
+    <section id="updates" class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm p-6 space-y-4">
+        <h3 class="text-sm font-semibold text-gray-700 dark:text-slate-200 flex items-center gap-2">
+            🔄 Обновления
+        </h3>
+
+        <label class="flex items-start gap-3">
+            <input type="checkbox" name="update_check" value="true"
+                   {% if update.enabled %}checked{% endif %}
+                   {% if update.env is not none %}disabled{% endif %}
+                   class="mt-0.5 text-brand-600 focus:ring-brand-500">
+            <span class="text-sm text-gray-700 dark:text-slate-300">
+                Проверять новые версии (раз в сутки)
+                {% if update.env is not none %}
+                <span class="block text-xs text-amber-700 dark:text-amber-400">
+                    Задано переменной окружения <code class="font-mono">NBM_UPDATE_CHECK={{ 1 if update.env else 0 }}</code> — здесь не меняется.
+                </span>
+                {% endif %}
+            </span>
+        </label>
+
+        <p class="text-xs text-gray-500 dark:text-slate-400 leading-relaxed">
+            Программа отправляет на github.com запрос без тела — адрес последнего выпуска — и читает
+            номер версии из ответа. Ни версия программы, ни данные об устройствах не передаются;
+            GitHub видит только IP-адрес. Когда выходит новая версия, один раз скачивается её
+            <code class="font-mono">CHANGELOG.md</code>, чтобы узнать, есть ли исправления безопасности.
+            Ничего не устанавливается само: в шапке появляется значок со ссылкой на выпуск,
+            в уведомления уходит одно сообщение. Прокси — переменная <code class="font-mono">HTTPS_PROXY</code>.
+        </p>
+
+        {% if update.enabled %}
+        <div class="flex flex-wrap items-center gap-3 text-sm">
+            <span class="text-gray-700 dark:text-slate-300" data-update-status>
+                {% if not update.checked %}
+                    Ещё не проверялось.
+                {% elif update.error %}
+                    <span class="text-amber-700 dark:text-amber-400">Проверка {{ update.checked }} не удалась: {{ update.error }}</span>
+                {% elif update.available %}
+                    Проверено {{ update.checked }}:
+                    <a href="{{ update.available.url }}" target="_blank" rel="noopener noreferrer"
+                       class="font-semibold {{ 'text-rose-700 dark:text-rose-300' if update.available.security else 'text-brand-700 dark:text-brand-300' }} hover:underline">
+                        доступна версия {{ update.available.version }}{% if update.available.security %} — с исправлениями безопасности{% endif %}</a>
+                {% else %}
+                    Проверено {{ update.checked }}: установлена последняя версия ({{ app_version }}).
+                {% endif %}
+            </span>
+            <button type="submit" formaction="/settings/update-check/run" formmethod="post" formnovalidate
+                    class="px-3 py-1.5 rounded-lg text-sm font-medium border border-gray-200 dark:border-slate-700
+                           hover:bg-gray-50 dark:hover:bg-slate-800 transition">
+                Проверить сейчас
+            </button>
+        </div>
+        {% endif %}
+    </section>
+
     <div class="flex justify-end gap-3 pt-2">
         <button type="submit"
                 class="px-6 py-2.5 rounded-lg text-sm font-medium

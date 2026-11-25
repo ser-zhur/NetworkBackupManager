@@ -46,6 +46,7 @@ STORAGE_RECOVERED = "storage.recovered"    # хранилище снова в п
 RUN_FINISHED = "run.finished"              # массовый прогон завершён
 CONFIG_CHANGED = "config.changed"          # конфигурация устройства изменилась
 SCHEDULER_ERROR = "scheduler.error"        # сбой планировщика
+UPDATE_AVAILABLE = "update.available"      # вышла новая версия программы
 
 LEVELS = ("info", "warning", "error")
 

@@ -24,7 +24,7 @@ import secrets
 import time
 from datetime import datetime, timedelta
 
-from core import backup_state, context, device_status, events, settings
+from core import backup_state, context, device_status, events, settings, update_check
 from core.version import APP_NAME, __version__
 
 # Плановый бэкап не начался через столько после срока —
@@ -226,6 +226,10 @@ def status(plugin_manager=None, scheduler=None, now: datetime | None = None) -> 
         elif d["status"] == "none":
             warnings.append(f"{label}: бэкапов ещё не было")
 
+    update = update_check.available()
+    if update and update["security"]:
+        warnings.append(f"Доступна версия {update['version']} с исправлениями безопасности")
+
     overall = "error" if problems else ("warning" if warnings else "ok")
 
     return {
@@ -235,6 +239,11 @@ def status(plugin_manager=None, scheduler=None, now: datetime | None = None) -> 
             "started": _fmt(_started_at),
             "uptime_s": uptime_seconds(),
             "container": settings.in_container(),
+            "update": {
+                "available": bool(update),
+                "version": update["version"] if update else None,
+                "security": bool(update and update["security"]),
+            },
         },
         "status": overall,
         "severity": {"ok": 0, "warning": 1, "error": 2}[overall],

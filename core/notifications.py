@@ -58,6 +58,7 @@ DEFAULT_RULES = {
     "config": True,
     "include_diff": False,
     "app": False,
+    "update": True,
 }
 RUN_CHOICES = ("always", "errors", "never")
 
@@ -75,6 +76,7 @@ ICONS = {
     events.CONFIG_CHANGED: "✏️",
     events.RUN_FINISHED: "🏁",
     events.APP_STARTED: "▶️",
+    events.UPDATE_AVAILABLE: "⬆️",
 }
 
 RETRY_DELAYS = (5, 30)          # между попытками, секунды
@@ -154,7 +156,7 @@ def decrypt_settings(channel: dict) -> dict:
 
 def normalize_rules(raw: dict) -> dict:
     rules = dict(DEFAULT_RULES)
-    for key in ("errors", "recovered", "config", "include_diff", "app"):
+    for key in ("errors", "recovered", "config", "include_diff", "app", "update"):
         rules[key] = bool(raw.get(key))
     run = raw.get("run")
     rules["run"] = run if run in RUN_CHOICES else DEFAULT_RULES["run"]
@@ -178,6 +180,8 @@ def wants(rules: dict, event: dict) -> bool:
         return run == "always" or (run == "errors" and event.get("level") == "error")
     if kind == events.APP_STARTED:
         return bool(rules.get("app"))
+    if kind == events.UPDATE_AVAILABLE:
+        return bool(rules.get("update"))
     return False
 
 

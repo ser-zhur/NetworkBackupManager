@@ -25,6 +25,9 @@ import pytest
 _TEST_HOME = Path(tempfile.mkdtemp(prefix="nbm_test_home_"))
 (_TEST_HOME / "backups").mkdir()
 os.environ["NBM_HOME"] = str(_TEST_HOME)
+# Тесты не ходят на github.com (tests/test_update_check.py
+# подменяет сеть и снимает эту переменную сам)
+os.environ["NBM_UPDATE_CHECK"] = "0"
 
 
 def _remove_test_home():
