@@ -3,7 +3,8 @@
 # =========================================================
 #
 # Бэкап любого устройства, которое отдаёт конфигурацию
-# командой по SSH. Что выполнять — описывает профиль:
+# командой по SSH или файлом (SFTP, затем SCP). Что
+# выполнять и что скачивать — описывает профиль:
 #
 #   plugins/SSH/profiles/<id>.json   — профили из поставки
 #   data/ssh_profiles/<id>.json      — свои (заменяют поставочные
@@ -20,8 +21,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from core import context
 from core import ssh
@@ -34,6 +36,9 @@ MODES = ("shell", "exec")
 _FILE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}$")
 # «файл.txt: команда» в своих командах
 _NAMED_CMD_RE = re.compile(r"^([A-Za-z0-9_][A-Za-z0-9_.-]{0,99}\.[A-Za-z0-9]{1,8})\s*:\s*(\S.*)$")
+# «file:<путь>» в своих командах — скачать файл, а не выполнить
+# команду («get …» не годится: это команда CLI FortiGate)
+_FILE_CMD_RE = re.compile(r"^file:\s*(\S.*)$")
 # Устройство не поняло команду
 _CLI_ERROR_RE = re.compile(
     r"^\s*(% ?Invalid|% ?Unknown command|% ?Unrecognized|Unrecognized command|"
@@ -68,20 +73,36 @@ def parse_profile(data: dict, profile_id: str) -> dict:
 
     parsed, files = [], set()
     for i, c in enumerate(commands, 1):
-        if not isinstance(c, dict) or not str(c.get("command") or "").strip():
-            raise ValueError(f"commands[{i}]: нет command")
+        if not isinstance(c, dict):
+            raise ValueError(f"commands[{i}]: не объект JSON")
+        command = str(c.get("command") or "").strip()
+        download = str(c.get("download") or "").strip()
+        if bool(command) == bool(download):
+            raise ValueError(f"commands[{i}]: нужно одно из command или download")
+        if "\n" in download or "\r" in download:
+            raise ValueError(f"commands[{i}]: download — путь в одну строку")
+        if download and c.get("drop"):
+            raise ValueError(
+                f"commands[{i}]: drop не применяется к download "
+                f"(файл сохраняется как есть) — используйте ignore"
+            )
         name = str(c.get("file") or "").strip()
         if not _FILE_RE.match(name):
             raise ValueError(f"commands[{i}]: недопустимое имя файла {name!r}")
         if name in files:
             raise ValueError(f"commands[{i}]: файл {name} уже есть")
         files.add(name)
+        for key in ("drop", "ignore"):
+            if not isinstance(c.get(key) or [], list):
+                raise ValueError(f"commands[{i}].{key} — не список")
         parsed.append({
-            "command": str(c["command"]).strip(),
+            "command": command,
+            "download": download,
             "file": name,
             "start": _regex(c.get("start"), f"commands[{i}].start"),
             "end": _regex(c.get("end"), f"commands[{i}].end"),
             "drop": [_regex(d, f"commands[{i}].drop") for d in c.get("drop") or []],
+            "ignore": [_regex(d, f"commands[{i}].ignore") for d in c.get("ignore") or []],
         })
 
     setup = data.get("setup") or []
@@ -129,7 +150,8 @@ def parse_custom_commands(text: str) -> list[dict]:
     """
     Свои команды: по одной в строке, «#» — комментарий.
     «имя.txt: команда» — вывод в файл с этим именем, иначе
-    имя из текста команды.
+    имя из текста команды. «file:<путь>» (тоже можно с
+    «имя:») — скачать файл с устройства.
     """
     result, used = [], set()
     for line in (text or "").splitlines():
@@ -140,8 +162,16 @@ def parse_custom_commands(text: str) -> list[dict]:
         if m:
             name, command = m.group(1), m.group(2).strip()
         else:
-            command = line
-            slug = re.sub(r"[^A-Za-z0-9]+", "_", command).strip("_").lower()[:60]
+            name, command = "", line
+        f = _FILE_CMD_RE.match(command)
+        download = f.group(1).strip() if f else ""
+        if download:
+            command = ""
+            if not name:
+                base = PurePosixPath(download.replace("\\", "/")).name
+                name = base if _FILE_RE.match(base) else ""
+        if not name:
+            slug = re.sub(r"[^A-Za-z0-9]+", "_", download or command).strip("_").lower()[:60]
             name = f"{slug or 'output'}.txt"
         base, n = name, 2
         while name in used:
@@ -149,7 +179,10 @@ def parse_custom_commands(text: str) -> list[dict]:
             name = f"{stem}_{n}.{ext}" if dot else f"{base}_{n}"
             n += 1
         used.add(name)
-        result.append({"command": command, "file": name, "start": None, "end": None, "drop": []})
+        result.append({
+            "command": command, "download": download, "file": name,
+            "start": None, "end": None, "drop": [], "ignore": [],
+        })
     if not result:
         raise PluginError("Профиль «Свои команды»: не задано ни одной команды")
     return result
@@ -163,8 +196,8 @@ PLUGIN = {
     "api": 1,
     "title": "SSH (универсальный)",
     "description": (
-        "Любое устройство, которое показывает конфигурацию командой по SSH: "
-        "выберите профиль или задайте свои команды."
+        "Любое устройство, которое показывает конфигурацию командой по SSH "
+        "или отдаёт её файлом (SFTP, SCP): выберите профиль или задайте свои команды."
     ),
     "auth": ["password", "key"],
     "default_username": "admin",
@@ -178,9 +211,10 @@ PLUGIN = {
         },
         {
             "name": "commands", "label": "Свои команды", "type": "textarea",
-            "placeholder": "show running-config\nversion.txt: show version",
+            "placeholder": "show running-config\nversion.txt: show version\nconfig.xml: file:/conf/config.xml",
             "help": "Только для «Свои команды»: по одной в строке. Вывод каждой — в свой файл; "
-                    "имя можно задать так: «config.txt: show running-config».",
+                    "имя можно задать так: «config.txt: show running-config». "
+                    "«file:<путь>» — скачать файл с устройства (SFTP, затем SCP).",
         },
         {
             "name": "mode", "label": "Режим для своих команд", "type": "select",
@@ -264,11 +298,20 @@ def run_backup(device: dict) -> list[str]:
     except (TypeError, ValueError):
         timeout = ssh.COMMAND_TIMEOUT
 
+    commands = [spec for spec in profile["commands"] if not spec["download"]]
+    downloads = [spec for spec in profile["commands"] if spec["download"]]
+    backup_dir = Path(device["backup_path"])
+    if downloads:
+        backup_dir.mkdir(parents=True, exist_ok=True)
+
     client = ssh.connect(device, default_username=profile["default_username"] or "admin")
     outputs = []
+    fetched = []   # (spec, путь .part)
     try:
-        if profile["mode"] == "exec":
-            for spec in profile["commands"]:
+        if not commands:
+            pass
+        elif profile["mode"] == "exec":
+            for spec in commands:
                 outputs.append((spec, ssh.run(client, spec["command"], timeout)))
         else:
             with ssh.Shell(client, timeout=timeout, pager=profile["pager"]) as sh:
@@ -281,14 +324,88 @@ def run_backup(device: dict) -> list[str]:
                     sh.enable(profile["enable"], device["enable_pass"])
                 for command in profile["setup"]:
                     sh.send(command)
-                for spec in profile["commands"]:
+                for spec in commands:
                     outputs.append((spec, sh.send(spec["command"])))
+        for spec in downloads:
+            part = backup_dir / (spec["file"] + ".part")
+            fetched.append((spec, part))
+            protocol = ssh.download(client, spec["download"], part, timeout)
+            logging.info("SSH (%s): %s скачан по %s", profile["name"], spec["download"], protocol.upper())
+            check_file(part.read_bytes(), spec)
+
+        # Файлы пишутся только когда всё выполнено и скачано: при
+        # ошибке на середине в каталоге не окажется смеси версий.
+        contents = [(spec["file"], extract(text, spec)) for spec, text in outputs]
+    except BaseException:
+        _remove_parts(fetched)
+        raise
     finally:
         client.close()
 
-    # Файлы пишутся только когда все команды выполнены: при
-    # ошибке на середине в каталоге не окажется смеси версий.
-    contents = [(spec["file"], extract(text, spec)) for spec, text in outputs]
     paths = [ssh.write_text(device["backup_path"], name, body) for name, body in contents]
+    for spec, part in fetched:
+        final = backup_dir / spec["file"]
+        os.replace(part, final)
+        paths.append(str(final.resolve()))
     logging.info("✅ SSH (%s): сохранено файлов: %d", profile["name"], len(paths))
     return paths
+
+
+def _remove_parts(fetched) -> None:
+    for _, part in fetched:
+        try:
+            part.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logging.warning("SSH: не удалось удалить %s: %s", part, exc)
+
+
+def check_file(data: bytes, spec: dict) -> None:
+    """
+    Скачанный файл: не пустой; start — первая непустая
+    строка, end — последняя (проверка, файл не меняется).
+    """
+    remote = spec["download"]
+    if not data.strip():
+        raise PluginError(f"Файл «{remote}» пустой")
+    if spec["start"] is None and spec["end"] is None:
+        return
+    lines = [l.strip() for l in data.decode("utf-8", "replace").splitlines() if l.strip()]
+    if spec["start"] is not None and not spec["start"].search(lines[0]):
+        raise PluginError(
+            f"Файл «{remote}» не похож на конфигурацию: первая строка "
+            f"{lines[0][:120]!r} не подходит под /{spec['start'].pattern}/"
+        )
+    if spec["end"] is not None and not spec["end"].search(lines[-1]):
+        raise PluginError(
+            f"Файл «{remote}» оборван: последняя строка не подходит под "
+            f"/{spec['end'].pattern}/"
+        )
+
+
+def compare_normalizer(device: dict):
+    """
+    Для сравнения «изменилось или нет»: убрать строки,
+    подходящие под ignore профиля устройства. Файл в
+    бэкапе остаётся целым. Нет правил — None.
+    """
+    try:
+        profile = resolve_profile(device)
+    except PluginError:
+        return None
+    rules = {spec["file"]: spec["ignore"] for spec in profile["commands"] if spec["ignore"]}
+    if not rules:
+        return None
+
+    def normalize(filename: str, data: bytes) -> bytes:
+        patterns = rules.get(filename)
+        if not patterns:
+            return data
+        kept = [
+            line for line in data.split(b"\n")
+            if not any(p.search(line.decode("utf-8", "replace").rstrip("\r")) for p in patterns)
+        ]
+        return b"\n".join(kept)
+
+    return normalize

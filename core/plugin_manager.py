@@ -282,11 +282,22 @@ class PluginManager:
                 )
                 normalize_fn = None
 
+            # Нормализатор для конкретного устройства (необязателен):
+            # compare_normalizer(device) -> функция или None
+            factory = getattr(module, "compare_normalizer", None)
+            if factory is not None and not callable(factory):
+                logging.warning(
+                    "🔌 %s: compare_normalizer не функция — не используется",
+                    device_type,
+                )
+                factory = None
+
             self._plugins[device_type] = {
                 "func": module.run_backup,
                 "info": info,
                 "routers": [],
                 "normalize": normalize_fn or identity_normalize,
+                "normalizer_factory": factory,
                 # Реальный каталог (с исходным регистром имени)
                 "dir": item_path,
             }
@@ -297,6 +308,29 @@ class PluginManager:
     # =====================================================
     # STORAGE HELPERS
     # =====================================================
+
+    @staticmethod
+    def _normalizer_for(plugin: dict | None, router: dict):
+        """
+        Функция сравнения «изменилось или нет» для устройства:
+        compare_normalizer(device) плагина, иначе общий
+        normalize_for_compare, иначе без изменений.
+        """
+        if not plugin:
+            return identity_normalize
+        factory = plugin.get("normalizer_factory")
+        if factory is not None:
+            try:
+                fn = factory(router)
+            except Exception as exc:
+                logging.warning(
+                    "compare_normalizer (%s): %s — сравнение без него",
+                    device_label(router), exc,
+                )
+                fn = None
+            if fn is not None:
+                return fn
+        return plugin.get("normalize", identity_normalize)
 
     @staticmethod
     def _normalize_created_files(created_files) -> dict:
@@ -412,11 +446,7 @@ class PluginManager:
         # (для MikroTik — удаляет первую строку с timestamp
         # из .rsc при сравнении).
         plugin = self._plugins.get(device_type)
-        normalize_fn = (
-            plugin.get("normalize", identity_normalize)
-            if plugin
-            else identity_normalize
-        )
+        normalize_fn = self._normalizer_for(plugin, router)
 
         ctx = PushContext(
             device_id=self.router_id(router),

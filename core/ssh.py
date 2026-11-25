@@ -10,6 +10,7 @@
 #       text = sh.send("show running-config")
 #
 #   ssh.write_text(device["backup_path"], "config.txt", text)
+#   ssh.download(client, "/conf/config.xml", local)  # SFTP, затем SCP
 #
 # Ошибки — PluginError с понятным текстом: «неверный логин»,
 # «нет связи», «ключ хоста изменился», «нет ответа за N с».
@@ -301,6 +302,54 @@ class Shell:
             raise PluginError(f"«{command}»: пароль не принят")
         lines = [line.strip() for line in text.split("\n") if line.strip()]
         self.prompt = lines[-1] if lines else self.detect_prompt()
+
+
+def _error_text(exc: Exception) -> str:
+    return (str(exc).strip() or exc.__class__.__name__)[:300]
+
+
+def download(client: paramiko.SSHClient, remote: str, local, timeout: float = COMMAND_TIMEOUT) -> str:
+    """
+    Скачать файл remote в local: сначала SFTP, при неудаче —
+    SCP (старый протокол, как «scp -O»). Вернуть "sftp" или
+    "scp". Не удалось обоими — PluginError с обеими причинами,
+    недокачанный local удаляется.
+    """
+    local = str(local)
+    errors = []
+
+    try:
+        sftp = client.open_sftp()
+    except Exception as exc:
+        errors.append(f"SFTP: {_error_text(exc)}")
+        sftp = None
+    if sftp is not None:
+        try:
+            sftp.get_channel().settimeout(timeout)
+            sftp.get(remote, local)
+            return "sftp"
+        except Exception as exc:
+            errors.append(f"SFTP: {_error_text(exc)}")
+        finally:
+            sftp.close()
+
+    from scp import SCPClient   # входит в зависимости (requirements.txt)
+    try:
+        with SCPClient(client.get_transport(), socket_timeout=timeout) as scp:
+            scp.get(remote, local)
+        return "scp"
+    except (socket.timeout, TimeoutError):
+        errors.append(f"SCP: нет данных за {timeout:g} с")
+    except Exception as exc:
+        errors.append(f"SCP: {_error_text(exc)}")
+
+    try:
+        os.remove(local)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.warning("не удалось удалить %s: %s", local, exc)
+    raise PluginError(f"Не удалось скачать «{remote}» — " + "; ".join(errors))
 
 
 def write_text(directory, name: str, text: str) -> str:

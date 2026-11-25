@@ -5,6 +5,11 @@
 # Настоящий SSH (paramiko) на 127.0.0.1 со случайным портом:
 #
 #   • exec — exec_handler(command) -> (вывод, код);
+#     exec_channel(channel, command) -> код — диалог
+#     с клиентом; scp_source(files) — готовый такой
+#     обработчик: отдаёт файлы по «scp -f <путь>»;
+#   • sftp_files={путь: байты} — подсистема SFTP (только
+#     чтение);
 #   • shell — CLI в стиле Cisco: приглашение, эхо ввода,
 #     enable с паролем, пагинатор «--More--» до
 #     «terminal length 0», ответы из словаря commands.
@@ -55,6 +60,69 @@ class _Iface(paramiko.ServerInterface):
         return True
 
 
+def _attrs(data: bytes) -> paramiko.SFTPAttributes:
+    attr = paramiko.SFTPAttributes()
+    attr.st_size = len(data)
+    attr.st_mode = 0o100644
+    return attr
+
+
+class _MemHandle(paramiko.SFTPHandle):
+    def __init__(self, data: bytes):
+        super().__init__()
+        self.data = data
+
+    def read(self, offset, length):
+        return self.data[offset:offset + length]
+
+    def stat(self):
+        return _attrs(self.data)
+
+
+class _MemSFTP(paramiko.SFTPServerInterface):
+    """SFTP только для чтения из словаря {путь: байты}."""
+
+    def __init__(self, iface, *args, **kwargs):
+        super().__init__(iface, *args, **kwargs)
+        self.files = iface.srv.sftp_files
+
+    def open(self, path, flags, attr):
+        data = self.files.get(path)
+        return paramiko.SFTP_NO_SUCH_FILE if data is None else _MemHandle(data)
+
+    def stat(self, path):
+        data = self.files.get(path)
+        return paramiko.SFTP_NO_SUCH_FILE if data is None else _attrs(data)
+
+    lstat = stat
+
+
+def scp_source(files: dict):
+    """exec_channel: «scp -f <путь>» по протоколу SCP из словаря {путь: байты}."""
+    def ack(channel):
+        return channel.recv(1) == b"\x00"
+
+    def handler(channel, command):
+        if not command.startswith("scp -f "):
+            channel.sendall(f"\x01scp: unexpected command {command}\n".encode())
+            return 1
+        path = command[len("scp -f "):].strip().strip("'")
+        if not ack(channel):
+            return 1
+        data = files.get(path)
+        if data is None:
+            channel.sendall(f"\x01scp: {path}: No such file or directory\n".encode())
+            return 1
+        name = path.rsplit("/", 1)[-1]
+        channel.sendall(f"C0644 {len(data)} {name}\n".encode())
+        if not ack(channel):
+            return 1
+        channel.sendall(data + b"\x00")
+        ack(channel)
+        return 0
+    return handler
+
+
 class FakeSSHServer:
     def __init__(
         self,
@@ -63,6 +131,8 @@ class FakeSSHServer:
         password="pw",
         commands=None,
         exec_handler=None,
+        exec_channel=None,
+        sftp_files=None,
         hostname="R1",
         enable_password=None,
         page_lines=5,
@@ -72,6 +142,8 @@ class FakeSSHServer:
         self.password = password
         self.commands = commands or {}
         self.exec_handler = exec_handler
+        self.exec_channel = exec_channel
+        self.sftp_files = sftp_files
         self.hostname = hostname
         self.enable_password = enable_password
         self.page_lines = page_lines
@@ -113,6 +185,8 @@ class FakeSSHServer:
                 return
             t = paramiko.Transport(conn)
             t.add_server_key(self.key)
+            if self.sftp_files is not None:
+                t.set_subsystem_handler("sftp", paramiko.SFTPServer, _MemSFTP)
             self._transports.append(t)
             try:
                 t.start_server(server=_Iface(self))
@@ -125,8 +199,11 @@ class FakeSSHServer:
         # клиент получит «Channel closed».
         time.sleep(0.1)
         self.received.append(command)
-        out, code = self.exec_handler(command) if self.exec_handler else ("", 127)
-        channel.sendall(out.encode())
+        if self.exec_channel:
+            code = self.exec_channel(channel, command)
+        else:
+            out, code = self.exec_handler(command) if self.exec_handler else ("", 127)
+            channel.sendall(out.encode())
         channel.send_exit_status(code)
         channel.close()
 

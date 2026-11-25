@@ -1,0 +1,14 @@
+{
+  "name": "OPNsense",
+  "description": "Файл /conf/config.xml (SFTP или SCP) — тот же, что «System → Configuration → Backups». Нужен пользователь с доступом к этому файлу, обычно root.",
+  "mode": "exec",
+  "default_username": "root",
+  "commands": [
+    {
+      "download": "/conf/config.xml",
+      "file": "config.xml",
+      "start": "^<\\?xml",
+      "end": "^</opnsense>$"
+    }
+  ]
+}

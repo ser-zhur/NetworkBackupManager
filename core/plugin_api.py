@@ -28,6 +28,8 @@
 #       ...
 #
 #   def normalize_for_compare(filename, data: bytes) -> bytes  # необязательно
+#   def compare_normalizer(device) -> NormalizeFn | None      # необязательно,
+#       то же для конкретного устройства (правила из его настроек)
 #
 # run_backup получает копию устройства: пароль (ssh_pass) и
 # поля type="password" уже расшифрованы, ssh_key — абсолютный

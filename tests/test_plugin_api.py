@@ -121,7 +121,30 @@ def test_shipped_plugins_follow_contract():
     pm = PluginManager()
     pm.discover_and_load_plugins()
     assert pm.plugin_errors == {}
-    assert {"mikrotik", "pfsense", "ssh"} <= set(pm._plugins)
+    assert {"mikrotik", "pfsense", "ssh", "fortigate"} <= set(pm._plugins)
+    assert pm._plugins["ssh"]["normalizer_factory"] is not None
+
+
+def test_normalizer_for_device(caplog):
+    from core.plugin_manager import PluginManager
+    from core.storage.base import identity_normalize
+
+    general = lambda name, data: b"general"
+    special = lambda name, data: b"special"
+
+    def factory(device):
+        if device.get("boom"):
+            raise RuntimeError("сломано")
+        return special if device.get("rules") else None
+
+    plugin = {"normalize": general, "normalizer_factory": factory}
+    pick = PluginManager._normalizer_for
+    assert pick(plugin, {"rules": 1}) is special
+    assert pick(plugin, {}) is general                      # фабрика вернула None
+    assert pick(plugin, {"boom": 1, "name": "fw"}) is general
+    assert "compare_normalizer (fw): сломано" in caplog.text
+    assert pick({"normalize": general}, {}) is general
+    assert pick(None, {}) is identity_normalize
 
 
 # ---------------------------------------------------------
