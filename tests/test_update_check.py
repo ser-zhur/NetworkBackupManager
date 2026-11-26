@@ -64,13 +64,15 @@ def net(tmp_path, monkeypatch):
 def test_parse_and_security_sections():
     assert update_check.parse_version("v2.5.0") == (2, 5, 0)
     assert update_check.parse_version("2.5") is None
-    text = changelog(("2.7.0", False), ("2.6.1", True), ("2.6.0", False))
-    # 2.6.1 с «Безопасность» — среди пропущенных
-    assert update_check.has_security_fixes(text, "2.5.0", "2.7.0")
-    # уже на 2.6.1 — безопасность в старом, новых нет
-    assert not update_check.has_security_fixes(text, "2.6.1", "2.7.0")
+    # Версии далеко впереди текущей: changelog() дописывает раздел
+    # __version__ с «Безопасность», номера не должны совпасть
+    text = changelog(("99.2.0", False), ("99.1.1", True), ("99.1.0", False))
+    # 99.1.1 с «Безопасность» — среди пропущенных
+    assert update_check.has_security_fixes(text, "99.0.0", "99.2.0")
+    # уже на 99.1.1 — безопасность в старом, новых нет
+    assert not update_check.has_security_fixes(text, "99.1.1", "99.2.0")
     # секция текущей версии (тоже с «Безопасность») не считается
-    assert not update_check.has_security_fixes(text, "2.6.1", "2.6.1")
+    assert not update_check.has_security_fixes(text, "99.1.1", "99.1.1")
 
 
 def test_new_version_found_once(net):
