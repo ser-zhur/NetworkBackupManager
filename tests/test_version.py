@@ -61,13 +61,15 @@ def test_main_version_flag():
     assert any(version.LICENSE_ID in line for line in rest)
 
 
-def test_main_version_flag_without_cyrillic_encoding():
+@pytest.mark.parametrize("io_encoding", ["cp1252", "cp1252:surrogateescape"])
+def test_main_version_flag_without_cyrillic_encoding(io_encoding):
     # Английская Windows (cp1252) или LANG=C: русский текст не
-    # представим — вместо падения UnicodeEncodeError знаки «?»
+    # представим — вместо падения UnicodeEncodeError знаки «?».
+    # surrogateescape — так Windows настраивает вывод в канал.
     r = subprocess.run(
         [sys.executable, str(ROOT / "main.py"), "--version"],
         capture_output=True, cwd=ROOT, timeout=60,
-        env={**__import__("os").environ, "PYTHONIOENCODING": "cp1252"},
+        env={**__import__("os").environ, "PYTHONIOENCODING": io_encoding},
     )
     assert r.returncode == 0, r.stderr.decode("cp1252", "replace")
     first = r.stdout.decode("cp1252").strip().splitlines()[0]

@@ -946,9 +946,12 @@ def tolerant_stdio() -> None:
     заменяются на «?», а не роняют программу UnicodeEncodeError.
     В окне консоли Windows Python пишет Юникодом — там не влияет.
     """
+    # strict, а в канал на Windows — surrogateescape: оба падают
+    # на символе, которого нет в кодировке
+    lenient = {"replace", "backslashreplace", "xmlcharrefreplace", "namereplace", "ignore"}
     for stream in (sys.stdout, sys.stderr):
         try:
-            if stream is not None and stream.errors == "strict":
+            if stream is not None and stream.errors not in lenient:
                 stream.reconfigure(errors="replace")
         except (AttributeError, ValueError):
             pass
