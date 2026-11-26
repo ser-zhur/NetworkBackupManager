@@ -114,9 +114,11 @@ sudo ./install.sh --uninstall --purge   # и данные, и пользоват
 
 Пути к бэкапам вида `D:\…\backups\R1` программа сама находит в `/var/lib/nbm/backups/R1`. Пароль входа переезжает вместе с `data/auth.json`.
 
-## Обратный прокси (HTTPS)
+## HTTPS
 
-Установите с `--host 127.0.0.1` и добавьте в `/etc/nbm/nbm.env` строку `NBM_TRUSTED_PROXIES=127.0.0.1`. Пример настройки nginx — в [DOCKER.md](DOCKER.md#обратный-прокси-https), там `proxy_pass http://127.0.0.1:8080`.
+**Свой сертификат.** Положите `cert.pem` и `key.pem` в `/var/lib/nbm/data/tls/`, владелец — пользователь службы. Затем добавьте в `/etc/nbm/nbm.env` строки `NBM_TLS_CERT=tls/cert.pem` и `NBM_TLS_KEY=tls/key.pem` и выполните `sudo systemctl restart networkbackupmanager`. Подробнее — в [README](../README.md#https).
+
+**Обратный прокси.** Установите с `--host 127.0.0.1` и добавьте в `/etc/nbm/nbm.env` строку `NBM_TRUSTED_PROXIES=127.0.0.1`. Пример настройки nginx — в [DOCKER.md](DOCKER.md#обратный-прокси), там `proxy_pass http://127.0.0.1:8080`.
 
 ## Неполадки
 

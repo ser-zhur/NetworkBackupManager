@@ -5,6 +5,7 @@ import logging
 import threading
 import secrets
 import hashlib
+import ipaddress
 import base64
 import binascii
 import time
@@ -1795,8 +1796,36 @@ def _header_info() -> dict:
     }
 
 
+def _is_loopback(host: str | None) -> bool:
+    host = (host or "").strip("[]").lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def insecure_connection(request: Request | None) -> bool:
+    """
+    Браузер работает с программой по HTTP через сеть: пароль
+    (HTTP Basic) и содержимое копий идут открытым текстом.
+
+    HTTPS — сам сервер с сертификатом или доверенный прокси
+    (X-Forwarded-Proto → request.url.scheme). Открыто с этого
+    же компьютера (localhost по адресу или по клиенту) — трафик
+    не уходит в сеть.
+    """
+    if request is None or request.url.scheme == "https":
+        return False
+    if _is_loopback(request.url.hostname):
+        return False
+    return not _is_loopback(request.client.host if request.client else None)
+
+
 if templates is not None:
     templates.env.globals["header_info"] = _header_info
+    templates.env.globals["insecure_connection"] = insecure_connection
 
 # =========================================================
 # STORAGE SYNC TASK

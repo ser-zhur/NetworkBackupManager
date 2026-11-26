@@ -11,6 +11,9 @@
 #   NBM_OPEN_BROWSER     0/1 — открывать браузер при запуске
 #   NBM_TRUSTED_PROXIES  адреса обратных прокси через запятую
 #                        или * — им доверяются X-Forwarded-*
+#   NBM_TLS_CERT         сертификат PEM — включает HTTPS (config.json:
+#   NBM_TLS_KEY          tls_cert/tls_key; путь от папки data/ или
+#                        абсолютный; ключ — если он в отдельном файле)
 #   NBM_ADMIN_USER       логин первого пользователя (если
 #   NBM_ADMIN_PASSWORD   data/auth.json ещё нет)
 #   NBM_RCLONE           путь к rclone (config.json: rclone.binary_path)
@@ -118,6 +121,72 @@ def is_trusted_proxy(client_host: str | None) -> bool:
     if proxies == "*":
         return True
     return bool(client_host) and client_host in proxies.split(",")
+
+
+# =========================================================
+# HTTPS
+# =========================================================
+
+class TlsConfigError(Exception):
+    """Сертификат задан, но использовать его нельзя."""
+
+
+def _data_path(raw: str) -> Path:
+    """Относительный путь — от папки data/."""
+    path = Path(raw).expanduser()
+    return path if path.is_absolute() else context.DATA_DIR / path
+
+
+def tls_files() -> tuple[Path, Path | None] | None:
+    """
+    (сертификат, ключ) для HTTPS или None — работать по HTTP.
+
+    NBM_TLS_CERT/NBM_TLS_KEY, затем config.json tls_cert/tls_key.
+    Ключ можно не указывать, если он в одном файле с
+    сертификатом. Файлы проверяются: при ошибке TlsConfigError —
+    молча перейти на HTTP нельзя, пароль ушёл бы открытым.
+    """
+    import ssl
+
+    config = context.load_json(context.CONFIG_FILE, {})
+    cert_raw = env("NBM_TLS_CERT") or str(config.get("tls_cert") or "").strip()
+    key_raw = env("NBM_TLS_KEY") or str(config.get("tls_key") or "").strip()
+    if not cert_raw:
+        if key_raw:
+            raise TlsConfigError("Задан ключ (NBM_TLS_KEY / tls_key), но не задан сертификат (NBM_TLS_CERT / tls_cert)")
+        return None
+
+    cert = _data_path(cert_raw)
+    key = _data_path(key_raw) if key_raw else None
+    for path in (cert, key):
+        if path is not None and not path.is_file():
+            raise TlsConfigError(f"Файл не найден: {path}")
+
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    try:
+        # Пароль-заглушка: ключ с паролем не поддерживается, а
+        # без неё OpenSSL спросил бы пароль в консоли
+        ctx.load_cert_chain(cert, key, password=lambda: b"")
+    except (ssl.SSLError, OSError, ValueError) as exc:
+        hint = "" if key else " Если ключ в отдельном файле, укажите его в NBM_TLS_KEY / tls_key."
+        raise TlsConfigError(
+            f"Не удалось загрузить сертификат {cert}"
+            + (f" и ключ {key}" if key else "")
+            + f": {exc}. Нужны PEM-файлы, ключ без пароля.{hint}"
+        ) from exc
+    return cert, key
+
+
+def cert_expires(cert: Path):
+    """Дата окончания сертификата (datetime, UTC) или None."""
+    import ssl
+    from datetime import datetime, timezone
+
+    try:
+        info = ssl._ssl._test_decode_cert(str(cert))      # без сторонних библиотек
+        return datetime.fromtimestamp(ssl.cert_time_to_seconds(info["notAfter"]), timezone.utc)
+    except Exception:
+        return None
 
 
 # =========================================================

@@ -85,6 +85,18 @@
                 <span aria-hidden="true">{{ '⚠' if up.security else '⬆' }}</span><span>{{ up.version }}</span>
             </a>
             {% endif %}
+
+            {# HTTP по сети: пароль и копии идут открытым текстом #}
+            {% if request is defined and insecure_connection(request) %}
+            <span class="w-px h-4 bg-gray-200 dark:bg-slate-700 mx-1"></span>
+            <a href="https://github.com/ser-zhur/NetworkBackupManager#https" target="_blank" rel="noopener noreferrer" data-insecure="1"
+               title="Соединение не зашифровано (HTTP): пароль и содержимое копий настроек передаются по сети открытым текстом. Настройте HTTPS — откроется инструкция"
+               aria-label="Соединение не зашифровано, настройте HTTPS"
+               class="h-7 px-2 inline-flex items-center gap-1 rounded-md font-semibold transition
+                      bg-amber-50 text-amber-800 hover:bg-amber-100 dark:bg-amber-950/50 dark:text-amber-300 dark:hover:bg-amber-900/60">
+                <span aria-hidden="true">🔓</span><span>HTTP</span>
+            </a>
+            {% endif %}
         </div>
 
         <div class="flex-1"></div>

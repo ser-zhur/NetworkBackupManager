@@ -74,6 +74,7 @@ sudo docker compose up -d --build
 | `NBM_UID`, `NBM_GID` | `1000` | Владелец файлов в папке данных; узнать: `id -u`, `id -g` |
 | `TZ` | `Europe/Kyiv` | Часовой пояс: по нему работает расписание бэкапов |
 | `NBM_TRUSTED_PROXIES` | пусто | Адрес обратного прокси, если он есть |
+| `NBM_TLS_CERT`, `NBM_TLS_KEY` | пусто | Сертификат и ключ PEM от `nbm/data/` — включают HTTPS (см. [HTTPS](#https)) |
 | `NBM_API_TOKEN` | пусто | Токен мониторинга, если не хотите создавать его в интерфейсе |
 | `NBM_UPDATE_CHECK` | пусто | `0` — не проверять новые версии (закрытая сеть); пусто — как в Настройки → Общие, по умолчанию проверка включена |
 
@@ -139,9 +140,20 @@ sudo docker compose up -d
 
 Пароль входа переезжает вместе с `data/auth.json`, поэтому `NBM_ADMIN_PASSWORD` не нужен.
 
-## Обратный прокси (HTTPS)
+## HTTPS
 
-Пример для nginx: в `.env` задайте `NBM_LISTEN=127.0.0.1:8080` и `NBM_TRUSTED_PROXIES=*`.
+**Свой сертификат, без прокси.** Положите `cert.pem` и `key.pem` в `nbm/data/tls/` и задайте в `.env`:
+
+```
+NBM_TLS_CERT=tls/cert.pem
+NBM_TLS_KEY=tls/key.pem
+```
+
+Затем выполните `sudo docker compose up -d`. Интерфейс откроется по `https://<сервер>:8080`. Пути отсчитываются от `nbm/data/`. Владельца файлов контейнер исправит сам. Если сертификат не подходит, контейнер не запустится, а причина будет в `sudo docker compose logs nbm`. Как выпустить самоподписанный сертификат, написано в [README](../README.md#https).
+
+### Обратный прокси
+
+Нужен для Let's Encrypt и своего доменного имени. Пример для nginx: в `.env` задайте `NBM_LISTEN=127.0.0.1:8080` и `NBM_TRUSTED_PROXIES=*`.
 
 ```nginx
 server {

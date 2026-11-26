@@ -77,6 +77,7 @@ COPY tools/licenses ./tools/licenses
 RUN python tools/third_party_licenses.py THIRD_PARTY_LICENSES.txt --target docker \
  && rm -rf tools
 COPY docker/entrypoint.sh /usr/local/bin/nbm-entrypoint
+COPY docker/healthcheck.py /usr/local/bin/nbm-healthcheck
 RUN chmod 0755 /usr/local/bin/nbm-entrypoint
 
 # NBM_RCLONE важнее config.json: путь rclone.exe, перенесённый
@@ -95,7 +96,7 @@ EXPOSE 8080
 # /api/health: 200 — работает, 503 — планировщик остановлен
 # или нельзя писать в папку данных.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
-    CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/api/health' % os.environ.get('NBM_PORT','8080'), timeout=4)" || exit 1
+    CMD python /usr/local/bin/nbm-healthcheck
 
 ENTRYPOINT ["tini", "--", "nbm-entrypoint"]
 CMD ["python", "main.py", "--foreground"]

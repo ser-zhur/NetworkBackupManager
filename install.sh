@@ -351,13 +351,28 @@ WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
 
-health_url="http://127.0.0.1:${PORT_NOW}/api/health"
-case "$HOST_NOW" in ""|0.0.0.0|::|127.0.0.1|localhost) ;; *) health_url="http://${HOST_NOW}:${PORT_NOW}/api/health" ;; esac
+health_addr="127.0.0.1:${PORT_NOW}"
+case "$HOST_NOW" in ""|0.0.0.0|::|127.0.0.1|localhost) ;; *) health_addr="${HOST_NOW}:${PORT_NOW}" ;; esac
+
+# HTTPS (если задан сертификат) или HTTP; сертификат не проверяется
+health_py='
+import ssl, sys, urllib.error, urllib.request
+ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+for scheme in ("https", "http"):
+    try:
+        urllib.request.urlopen(scheme + "://" + sys.argv[1] + "/api/health", timeout=3, context=ctx)
+        sys.exit(0)
+    except urllib.error.HTTPError:
+        sys.exit(1)
+    except Exception:
+        pass
+sys.exit(1)
+'
 
 wait_healthy() {
     local i
     for i in $(seq 1 60); do
-        if "$PY" -c "import urllib.request,sys; urllib.request.urlopen(sys.argv[1], timeout=3)" "$health_url" 2>/dev/null; then
+        if "$PY" -c "$health_py" "$health_addr" 2>/dev/null; then
             return 0
         fi
         systemctl is-failed --quiet "$UNIT" && return 1
@@ -405,7 +420,9 @@ echo
 if [ "$FIRST_INSTALL" = 1 ]; then echo "Network Backup Manager $VERSION установлен."; else echo "Network Backup Manager обновлён до $VERSION."; fi
 shown_host="$HOST_NOW"
 case "$shown_host" in ""|0.0.0.0|::) shown_host="$(hostname -I 2>/dev/null | awk '{print $1}')"; shown_host="${shown_host:-<адрес сервера>}" ;; esac
-echo "  Веб-интерфейс:  http://${shown_host}:${PORT_NOW}"
+shown_scheme=http
+if grep -q '^NBM_TLS_CERT=..*' "$ENV_FILE" || grep -qs '"tls_cert": *"[^"]' "$DATA/data/config.json"; then shown_scheme=https; fi
+echo "  Веб-интерфейс:  ${shown_scheme}://${shown_host}:${PORT_NOW}"
 if [ -n "$NEW_PASSWORD" ]; then
     echo "  Вход:           ${NBM_ADMIN_USER:-admin} / $NEW_PASSWORD"
     echo "                  (сохраните; сменить — в программе или: sudo -u $USER_NAME env NBM_HOME=$DATA $VENV/bin/python $PREFIX/app/main.py --create-user)"

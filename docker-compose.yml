@@ -29,6 +29,8 @@ services:
       NBM_UID: ${NBM_UID:-1000}
       NBM_GID: ${NBM_GID:-1000}
       NBM_TRUSTED_PROXIES: ${NBM_TRUSTED_PROXIES:-}
+      NBM_TLS_CERT: ${NBM_TLS_CERT:-}
+      NBM_TLS_KEY: ${NBM_TLS_KEY:-}
       NBM_API_TOKEN: ${NBM_API_TOKEN:-}
       NBM_UPDATE_CHECK: ${NBM_UPDATE_CHECK:-}
       TZ: ${TZ:-Europe/Kyiv}

@@ -702,7 +702,11 @@ def open_browser_when_ready() -> None:
             return
 
         host, port = get_web_config()
-        url = f"http://{host}:{port}"
+        try:
+            scheme = "https" if settings.tls_files() else "http"
+        except settings.TlsConfigError:
+            return
+        url = f"{scheme}://{host}:{port}"
 
         logger.info("Открытие браузера: %s", url)
         webbrowser.open(url, new=2)
@@ -743,6 +747,28 @@ def run_web_server() -> None:
     if proxies:
         # Реальный адрес клиента и схема (https) из X-Forwarded-*
         extra["forwarded_allow_ips"] = proxies
+
+    # HTTPS: сертификат задан, но не годится — не запускаемся,
+    # а не уходим молча на HTTP (пароль шёл бы открытым)
+    try:
+        tls = settings.tls_files()
+    except settings.TlsConfigError as exc:
+        logger.error("HTTPS: %s. Веб-сервер не запущен.", exc)
+        raise SystemExit(2)
+    if tls:
+        cert, key = tls
+        extra["ssl_certfile"] = str(cert)
+        if key:
+            extra["ssl_keyfile"] = str(key)
+        logger.info("HTTPS включён: %s", cert)
+        expires = settings.cert_expires(cert)
+        if expires:
+            from datetime import datetime, timezone
+            days = (expires - datetime.now(timezone.utc)).days
+            if days < 0:
+                logger.warning("Сертификат HTTPS истёк %s — браузеры его не примут", expires.date())
+            elif days <= 30:
+                logger.warning("Сертификат HTTPS истекает через %s дн. (%s)", days, expires.date())
 
     uvicorn.run(
         "web.server:app",
