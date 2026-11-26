@@ -298,7 +298,7 @@ def test_web_upload_assign_restart(web, pki, data):
     assert "Сертификат назначен" in r.text and "data-restart-needed" in r.text and "data-active" in r.text
 
     r = client.post("/settings/https/restart")
-    assert restarts and "https://nbm.example:8443" in restarts[0]
+    assert restarts == ["Адрес программы: https://nbm.example:8443/settings?tab=https"]
     assert 'href="https://nbm.example:8443/settings?tab=https"' in r.text
 
     r = client.post("/settings/https/delete", data={"id": cert_id})
