@@ -46,11 +46,19 @@
         {% endif %}
 
         <div class="flex flex-wrap justify-center gap-2">
+            {% if next_url %}
+            <a href="{{ next_url }}" data-next-url
+               class="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium
+                      bg-brand-600 hover:bg-brand-700 text-white shadow-sm transition">
+                🔒 Открыть {{ next_url.split('/settings')[0] }}
+            </a>
+            {% else %}
             <a href="/settings?tab=service"
                class="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium
                       bg-brand-600 hover:bg-brand-700 text-white shadow-sm transition">
                 ⚙ Управление службой
             </a>
+            {% endif %}
             <a href="/"
                class="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium
                       bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700

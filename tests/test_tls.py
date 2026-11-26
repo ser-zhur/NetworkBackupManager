@@ -101,7 +101,7 @@ def test_env_wins_over_config(data, monkeypatch):
 
 
 @pytest.mark.parametrize("case, words", [
-    ("key_only", "не задан сертификат"),
+    ("key_only", "не задан NBM_TLS_CERT"),
     ("missing", "Файл не найден"),
     ("garbage", "PEM"),
     ("no_key", "NBM_TLS_KEY"),
@@ -206,7 +206,7 @@ def test_header_badge(web):
     s, TestClient = web
     # TestClient: клиент «testclient», хост «testserver» — как по сети
     page = TestClient(s.app).get("/").text
-    assert 'data-insecure="1"' in page and "#https" in page
+    assert 'data-insecure="1"' in page and 'href="/settings?tab=https" data-insecure' in page
     assert 'data-insecure' not in TestClient(s.app, base_url="https://testserver").get("/").text
     assert 'data-insecure' not in TestClient(s.app, base_url="http://localhost").get("/").text
 

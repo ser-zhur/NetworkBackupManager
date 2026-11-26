@@ -27,6 +27,7 @@
         ("retention",     "🧹", "Очистка"),
         ("storage",       "🗄", "Хранилища"),
         ("service",       "⚙", "Служба"),
+        ("https",         "🔒", "HTTPS"),
         ("notifications", "🔔", "Уведомления"),
         ("monitoring",    "📈", "Мониторинг"),
         ("backup",        "💾", "Копия настроек"),
@@ -74,6 +75,8 @@
                 {% include "_settings_tab_monitoring.html" %}
             {% elif active_tab == "backup" %}
                 {% include "_settings_tab_backup.html" %}
+            {% elif active_tab == "https" %}
+                {% include "_settings_tab_https.html" %}
             {% endif %}
         </div>
     </div>

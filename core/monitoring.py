@@ -23,6 +23,7 @@ import logging
 import secrets
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from core import backup_state, context, device_status, events, settings, update_check
 from core.version import APP_NAME, __version__
@@ -229,6 +230,17 @@ def status(plugin_manager=None, scheduler=None, now: datetime | None = None) -> 
     update = update_check.available()
     if update and update["security"]:
         warnings.append(f"Доступна версия {update['version']} с исправлениями безопасности")
+
+    # Сертификат HTTPS, с которым работает веб-сервер
+    if settings.RUNNING_CERT:
+        from datetime import timezone
+        expires = settings.cert_expires(Path(settings.RUNNING_CERT))
+        if expires:
+            days = (expires - datetime.now(timezone.utc)).days
+            if days < 0:
+                warnings.append(f"Сертификат HTTPS истёк {expires:%d.%m.%Y}")
+            elif days <= 30:
+                warnings.append(f"Сертификат HTTPS истекает через {days} дн. ({expires:%d.%m.%Y})")
 
     overall = "error" if problems else ("warning" if warnings else "ok")
 

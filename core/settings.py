@@ -12,8 +12,10 @@
 #   NBM_TRUSTED_PROXIES  адреса обратных прокси через запятую
 #                        или * — им доверяются X-Forwarded-*
 #   NBM_TLS_CERT         сертификат PEM — включает HTTPS (config.json:
-#   NBM_TLS_KEY          tls_cert/tls_key; путь от папки data/ или
-#                        абсолютный; ключ — если он в отдельном файле)
+#   NBM_TLS_KEY          tls_cert/tls_key — их назначает Настройки →
+#                        HTTPS; путь от папки data/ или абсолютный;
+#                        ключ — если он в отдельном файле).
+#                        NBM_TLS_CERT=off — HTTPS выключен всегда
 #   NBM_ADMIN_USER       логин первого пользователя (если
 #   NBM_ADMIN_PASSWORD   data/auth.json ещё нет)
 #   NBM_RCLONE           путь к rclone (config.json: rclone.binary_path)
@@ -137,27 +139,34 @@ def _data_path(raw: str) -> Path:
     return path if path.is_absolute() else context.DATA_DIR / path
 
 
-def tls_files() -> tuple[Path, Path | None] | None:
-    """
-    (сертификат, ключ) для HTTPS или None — работать по HTTP.
+# Сертификат, с которым запущен веб-сервер: "" — HTTP. Задаёт
+# main.run_web_server; интерфейс сравнивает с настройкой и
+# предлагает перезапуск.
+RUNNING_CERT = ""
 
-    NBM_TLS_CERT/NBM_TLS_KEY, затем config.json tls_cert/tls_key.
-    Ключ можно не указывать, если он в одном файле с
-    сертификатом. Файлы проверяются: при ошибке TlsConfigError —
-    молча перейти на HTTP нельзя, пароль ушёл бы открытым.
+
+def tls_env_override() -> str:
     """
+    Значение NBM_TLS_CERT, если оно задано: тогда настройка из
+    интерфейса (config.json) не действует. "off" — HTTPS
+    выключен переменной (выход, если сертификат мешает войти).
+    """
+    raw = env("NBM_TLS_CERT")
+    if raw.lower() in _FALSE:
+        return "off"
+    return raw
+
+
+def tls_config_paths() -> tuple[str, str]:
+    """(tls_cert, tls_key) из config.json — как записаны."""
+    config = context.load_json(context.CONFIG_FILE, {})
+    return str(config.get("tls_cert") or "").strip(), str(config.get("tls_key") or "").strip()
+
+
+def check_tls_pair(cert: Path, key: Path | None) -> None:
+    """Файлы есть и годятся для веб-сервера, иначе TlsConfigError."""
     import ssl
 
-    config = context.load_json(context.CONFIG_FILE, {})
-    cert_raw = env("NBM_TLS_CERT") or str(config.get("tls_cert") or "").strip()
-    key_raw = env("NBM_TLS_KEY") or str(config.get("tls_key") or "").strip()
-    if not cert_raw:
-        if key_raw:
-            raise TlsConfigError("Задан ключ (NBM_TLS_KEY / tls_key), но не задан сертификат (NBM_TLS_CERT / tls_cert)")
-        return None
-
-    cert = _data_path(cert_raw)
-    key = _data_path(key_raw) if key_raw else None
     for path in (cert, key):
         if path is not None and not path.is_file():
             raise TlsConfigError(f"Файл не найден: {path}")
@@ -174,6 +183,36 @@ def tls_files() -> tuple[Path, Path | None] | None:
             + (f" и ключ {key}" if key else "")
             + f": {exc}. Нужны PEM-файлы, ключ без пароля.{hint}"
         ) from exc
+
+
+def tls_files() -> tuple[Path, Path | None] | None:
+    """
+    (сертификат, ключ) для HTTPS или None — работать по HTTP.
+
+    NBM_TLS_CERT/NBM_TLS_KEY, затем config.json tls_cert/tls_key
+    (их назначает Настройки → HTTPS). NBM_TLS_CERT=off выключает
+    HTTPS при любой настройке. Ключ можно не указывать, если он
+    в одном файле с сертификатом. Файлы проверяются: при ошибке
+    TlsConfigError — молча перейти на HTTP нельзя, пароль ушёл
+    бы открытым.
+    """
+    override = tls_env_override()
+    if override == "off":
+        return None
+    if override:
+        cert_raw, key_raw = override, env("NBM_TLS_KEY")
+    elif env("NBM_TLS_KEY"):
+        raise TlsConfigError("Задан NBM_TLS_KEY, но не задан NBM_TLS_CERT")
+    else:
+        cert_raw, key_raw = tls_config_paths()
+    if not cert_raw:
+        if key_raw:
+            raise TlsConfigError("Задан ключ (NBM_TLS_KEY / tls_key), но не задан сертификат (NBM_TLS_CERT / tls_cert)")
+        return None
+
+    cert = _data_path(cert_raw)
+    key = _data_path(key_raw) if key_raw else None
+    check_tls_pair(cert, key)
     return cert, key
 
 

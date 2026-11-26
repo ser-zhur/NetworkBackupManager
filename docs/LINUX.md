@@ -116,7 +116,9 @@ sudo ./install.sh --uninstall --purge   # и данные, и пользоват
 
 ## HTTPS
 
-**Свой сертификат.** Положите `cert.pem` и `key.pem` в `/var/lib/nbm/data/tls/`, владелец — пользователь службы. Затем добавьте в `/etc/nbm/nbm.env` строки `NBM_TLS_CERT=tls/cert.pem` и `NBM_TLS_KEY=tls/key.pem` и выполните `sudo systemctl restart networkbackupmanager`. Подробнее — в [README](../README.md#https).
+**Из интерфейса** — **Настройки → HTTPS**: загрузить сертификат, «Назначить», «Перезапустить сейчас». Если после этого интерфейс не открывается, добавьте в `/etc/nbm/nbm.env` строку `NBM_TLS_CERT=off` и выполните `sudo systemctl restart networkbackupmanager`.
+
+**Через файл настроек.** Положите `cert.pem` и `key.pem` в `/var/lib/nbm/data/tls/`, владелец — пользователь службы. Затем добавьте в `/etc/nbm/nbm.env` строки `NBM_TLS_CERT=tls/cert.pem` и `NBM_TLS_KEY=tls/key.pem` и выполните `sudo systemctl restart networkbackupmanager`. Подробнее — в [README](../README.md#https).
 
 **Обратный прокси.** Установите с `--host 127.0.0.1` и добавьте в `/etc/nbm/nbm.env` строку `NBM_TRUSTED_PROXIES=127.0.0.1`. Пример настройки nginx — в [DOCKER.md](DOCKER.md#обратный-прокси), там `proxy_pass http://127.0.0.1:8080`.
 

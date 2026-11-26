@@ -98,7 +98,7 @@ from core.version import (
 )
 from core import devices as device_store
 from core import device_status, events, monitoring, notifications, plugin_api
-from core import backup_state, csv_import, settings_backup, update_check
+from core import backup_state, csv_import, settings_backup, tls_store, update_check
 
 from core.logger import (
     setup_logging,
@@ -6141,7 +6141,7 @@ def settings_page(
         backup    — копия настроек программы
     """
     if tab not in ("general", "scheduler", "retention", "storage", "service",
-                   "monitoring", "notifications", "backup"):
+                   "monitoring", "notifications", "backup", "https"):
         tab = "general"
 
     # Вкладки используют service, scheduler_config, logs_size,
@@ -6213,6 +6213,9 @@ def settings_page(
 
     elif tab == "backup":
         context.update(_settings_backup_context(request))
+
+    elif tab == "https":
+        context.update(_https_context(request))
 
     return templates.TemplateResponse(
         request,
@@ -6515,12 +6518,13 @@ async def settings_backup_restore_cancel(request: Request, user: str = Depends(r
     return RedirectResponse("/settings?tab=backup", status_code=303)
 
 
-def _restart_after_restore() -> tuple[bool, str]:
+def _restart_program(reason: str, hint: str = "") -> tuple[bool, str]:
     """
     Перезапуск, чтобы программа перечитала настройки.
     Docker и systemd поднимают процесс сами после выхода,
     служба Windows — через schedule_restart. Запущенную
-    вручную программу нужно запустить снова.
+    вручную программу нужно запустить снова. hint — что
+    сделать после перезапуска (с точкой в конце).
     """
     from core import settings as nbm_settings
 
@@ -6528,16 +6532,14 @@ def _restart_after_restore() -> tuple[bool, str]:
     if manager in ("docker", "systemd") or not is_service_process():
         def _exit():
             time.sleep(2)
-            logging.info("💾 Выход после восстановления настроек")
+            logging.info("Выход для перезапуска: %s", reason)
             logging.shutdown()
             os._exit(1 if manager else 0)
 
         threading.Thread(target=_exit, daemon=True).start()
         if manager:
-            return True, ("Программа перезапускается. Через полминуты обновите "
-                          "страницу и войдите с логином и паролем из копии.")
-        return True, ("Программа завершает работу — запустите её снова. "
-                      "Входите с логином и паролем из копии.")
+            return True, ("Программа перезапускается. Через полминуты обновите страницу. " + hint).strip()
+        return True, ("Программа завершает работу — запустите её снова. " + hint).strip()
     return schedule_restart()
 
 
@@ -6571,7 +6573,7 @@ async def settings_backup_restore_apply(request: Request, user: str = Depends(re
         _drop_staged(token)
 
     logging.warning("💾 Настройки восстановлены пользователем %s; прежние — %s", user, saved)
-    ok, message = _restart_after_restore()
+    ok, message = _restart_program("восстановление настроек", "Входите с логином и паролем из копии.")
     return templates.TemplateResponse(
         request,
         "service_action.html",
@@ -6581,6 +6583,153 @@ async def settings_backup_restore_apply(request: Request, user: str = Depends(re
                 f"Прежние настройки сохранены в data/{saved.name}. " + message
             ),
             "ok": ok,
+        },
+    )
+
+
+# =========================================================
+# HTTPS: сертификаты (Настройки → HTTPS)
+# =========================================================
+
+def _https_context(request: Request) -> dict:
+    from core import settings as nbm_settings
+
+    config_error = ""
+    try:
+        configured = nbm_settings.tls_files()
+    except nbm_settings.TlsConfigError as exc:
+        configured, config_error = None, str(exc)
+
+    host = request.url.hostname or "localhost"
+    port = request.url.port
+    certs = tls_store.list_certs()
+    for item in certs:
+        item["host_ok"] = tls_store.host_matches(host, item.get("sans") or [])
+    running = nbm_settings.RUNNING_CERT
+    cfg_cert, cfg_key = nbm_settings.tls_config_paths()
+    return {
+        "certs": certs,
+        "env_override": nbm_settings.tls_env_override(),
+        "configured": str(configured[0]) if configured else "",
+        "configured_id": tls_store.configured_id(),
+        "config_manual": cfg_cert if cfg_cert and not tls_store.configured_id() else "",
+        "config_error": config_error,
+        "running_cert": running,
+        "restart_needed": not config_error and not tls_store.running_matches_config(),
+        "proxy": nbm_settings.trusted_proxies(),
+        "insecure": insecure_connection(request),
+        "host": host,
+        "https_url": f"https://{host}{':' + str(port) if port else ''}/settings?tab=https",
+        "max_kb": tls_store.MAX_FILE_BYTES // 1024,
+        "error": request.query_params.get("error", ""),
+    }
+
+
+def _https_redirect(message: str = "", error: str = ""):
+    query = "tab=https"
+    if message:
+        query += "&message=" + urllib.parse.quote(message)
+    if error:
+        query += "&error=" + urllib.parse.quote(error)
+    return RedirectResponse("/settings?" + query, status_code=303)
+
+
+def _https_env_locked():
+    from core import settings as nbm_settings
+    if nbm_settings.tls_env_override():
+        return _https_redirect(error="HTTPS задан переменной окружения NBM_TLS_CERT — "
+                                     "она важнее настроек; уберите её, чтобы управлять отсюда")
+    return None
+
+
+@app.post("/settings/https/upload")
+async def settings_https_upload(request: Request, user: str = Depends(require_auth)):
+    form = await request.form()
+    files = []
+    for field in ("cert", "key", "chain"):
+        upload = form.get(field)
+        if upload is None or not hasattr(upload, "read"):
+            continue
+        data = await upload.read(tls_store.MAX_FILE_BYTES + 1)
+        if data:
+            files.append((getattr(upload, "filename", "") or field, data))
+    if not files:
+        return _https_redirect(error="Выберите файл сертификата")
+    try:
+        cert_id, new = await run_in_threadpool(
+            tls_store.import_files, files, str(form.get("password") or ""))
+    except tls_store.CertError as exc:
+        return _https_redirect(error=str(exc))
+    except Exception as exc:
+        logging.error("🔒 Сертификат не загружен: %s", exc, exc_info=True)
+        return _https_redirect(error=f"Сертификат не загружен: {exc}")
+    logging.info("🔒 Сертификат %s загружен пользователем %s", cert_id, user)
+    return _https_redirect(message=("Сертификат загружен: " if new else "Этот сертификат уже загружен: ") + cert_id)
+
+
+@app.post("/settings/https/assign")
+async def settings_https_assign(request: Request, user: str = Depends(require_auth)):
+    locked = _https_env_locked()
+    if locked:
+        return locked
+    form = await request.form()
+    cert_id = str(form.get("id") or "")
+    try:
+        await run_in_threadpool(tls_store.assign, cert_id)
+    except tls_store.CertError as exc:
+        return _https_redirect(error=str(exc))
+    logging.warning("🔒 Сертификат HTTPS %s назначен пользователем %s", cert_id, user)
+    return _https_redirect(message="Сертификат назначен: " + cert_id)
+
+
+@app.post("/settings/https/disable")
+async def settings_https_disable(request: Request, user: str = Depends(require_auth)):
+    locked = _https_env_locked()
+    if locked:
+        return locked
+    await run_in_threadpool(tls_store.unassign)
+    logging.warning("🔒 HTTPS выключен пользователем %s", user)
+    return _https_redirect(message="HTTPS выключен в настройках")
+
+
+@app.post("/settings/https/delete")
+async def settings_https_delete(request: Request, user: str = Depends(require_auth)):
+    form = await request.form()
+    cert_id = str(form.get("id") or "")
+    try:
+        await run_in_threadpool(tls_store.delete, cert_id)
+    except tls_store.CertError as exc:
+        return _https_redirect(error=str(exc))
+    logging.info("🔒 Сертификат %s удалён пользователем %s", cert_id, user)
+    return _https_redirect(message="Сертификат удалён: " + cert_id)
+
+
+@app.post("/settings/https/restart", response_class=HTMLResponse)
+async def settings_https_restart(request: Request, user: str = Depends(require_auth)):
+    from core import settings as nbm_settings
+
+    try:
+        files = nbm_settings.tls_files()
+    except nbm_settings.TlsConfigError as exc:
+        # с такой настройкой программа не запустится
+        return _https_redirect(error=f"Перезапуск отменён: {exc}")
+    if is_backup_running():
+        return _https_redirect(error="Идёт бэкап — перезапустите после его окончания")
+
+    host = request.url.hostname or "localhost"
+    port = request.url.port
+    scheme = "https" if files else "http"
+    next_url = f"{scheme}://{host}{':' + str(port) if port else ''}/settings?tab=https"
+    logging.warning("🔒 Перезапуск для HTTPS (%s) пользователем %s", scheme, user)
+    ok, message = _restart_program("смена настроек HTTPS", f"Адрес программы: {next_url}")
+    return templates.TemplateResponse(
+        request,
+        "service_action.html",
+        {
+            "title": "Перезапуск для HTTPS" if files else "Перезапуск без HTTPS",
+            "message": message,
+            "ok": ok,
+            "next_url": next_url if ok else "",
         },
     )
 

@@ -364,7 +364,7 @@ def test_web_restore_flow(client, data_dir, tmp_path, monkeypatch):
     archive = settings_backup.build(tmp_path)
     (data_dir / "secret.key").write_bytes(b"CHANGED")
     restarted = []
-    monkeypatch.setattr(s, "_restart_after_restore", lambda: restarted.append(1) or (True, "перезапуск"))
+    monkeypatch.setattr(s, "_restart_program", lambda *a, **kw: restarted.append(1) or (True, "перезапуск"))
     monkeypatch.setattr(s.scheduler, "stop", lambda: None)
 
     page = c.post("/settings/backup/restore/upload", data={"password": ""},

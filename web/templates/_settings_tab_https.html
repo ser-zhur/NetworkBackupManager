@@ -1,0 +1,216 @@
+{# Вкладка «HTTPS»: загрузка сертификатов, выбор, назначение, перезапуск #}
+
+{% set _card = "bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm p-6 space-y-4" %}
+{% set _h3 = "text-sm font-semibold text-gray-700 dark:text-slate-200 flex items-center gap-2" %}
+{% set _input = "w-full rounded-lg px-3 py-2 text-sm bg-gray-50 dark:bg-slate-950 border border-gray-200 dark:border-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 transition" %}
+{% set _file = "block w-full text-sm text-gray-600 dark:text-slate-300 file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-gray-100 file:text-gray-700 hover:file:bg-gray-200 dark:file:bg-slate-800 dark:file:text-slate-200 dark:hover:file:bg-slate-700" %}
+{% set _btn = "px-5 py-2 rounded-lg text-sm font-medium bg-brand-600 hover:bg-brand-700 text-white shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed" %}
+{% set _btn2 = "px-3 py-1.5 rounded-lg text-xs font-medium bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 transition disabled:opacity-50 disabled:cursor-not-allowed" %}
+{% set _ok = "px-4 py-3 rounded-lg text-sm bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900 text-emerald-800 dark:text-emerald-300" %}
+{% set _warn = "px-4 py-3 rounded-lg text-sm bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 text-amber-800 dark:text-amber-300" %}
+{% set _bad = "px-4 py-3 rounded-lg text-sm bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-rose-800 dark:text-rose-300" %}
+{% set locked = env_override != "" %}
+
+{% if message %}<div class="{{ _ok }}" data-https-message>✓ {{ message }}</div>{% endif %}
+{% if error %}<div class="{{ _bad }}" data-https-error>✗ {{ error }}</div>{% endif %}
+
+<!-- Состояние -->
+<section class="{{ _card }}" id="https-state">
+    <h3 class="{{ _h3 }}">🔒 HTTPS</h3>
+
+    <div class="text-sm text-gray-700 dark:text-slate-300 space-y-1">
+        <p data-running="{{ 'https' if running_cert else 'http' }}">
+            Сейчас:
+            {% if running_cert %}<b class="text-emerald-700 dark:text-emerald-400">HTTPS</b>
+                — <code class="font-mono text-xs break-all">{{ running_cert }}</code>
+            {% else %}<b>HTTP</b>, без шифрования{% endif %}
+        </p>
+        <p>
+            В настройках:
+            {% if config_error %}<b class="text-rose-700 dark:text-rose-400">ошибка</b>
+            {% elif configured %}HTTPS — <code class="font-mono text-xs break-all">{{ configured_id or configured }}</code>
+            {% else %}HTTPS выключен{% endif %}
+        </p>
+    </div>
+
+    {% if locked %}
+    <div class="{{ _warn }}" data-env-locked>
+        {% if env_override == "off" %}
+        HTTPS выключен переменной окружения <code class="font-mono">NBM_TLS_CERT=off</code> — назначение здесь не действует.
+        {% else %}
+        Сертификат задан переменной окружения <code class="font-mono">NBM_TLS_CERT={{ env_override }}</code>, она важнее
+        настроек. Загружать сертификаты можно, а назначить — после того как переменная будет убрана
+        (в Docker — из <code class="font-mono">.env</code>, затем <code class="font-mono">docker compose up -d</code>).
+        {% endif %}
+    </div>
+    {% endif %}
+
+    {% if config_error %}
+    <div class="{{ _bad }}">
+        ✗ {{ config_error }}<br>
+        <span class="text-xs">С такой настройкой программа не запустится. Назначьте другой сертификат или выключите HTTPS.</span>
+    </div>
+    {% endif %}
+
+    {% if config_manual %}
+    <p class="text-xs text-gray-500 dark:text-slate-400">
+        Сертификат задан вручную в <code class="font-mono">config.json</code>: <code class="font-mono break-all">{{ config_manual }}</code>.
+        Назначение сертификата отсюда заменит эту настройку.
+    </p>
+    {% endif %}
+
+    {% if restart_needed %}
+    <div class="{{ _warn }} space-y-2" data-restart-needed>
+        <p>
+            ⟳ Настройка изменена — веб-сервер ещё работает {{ 'с прежним сертификатом' if running_cert and configured else ('по HTTPS' if running_cert else 'по HTTP') }}.
+            Изменения вступят в силу после перезапуска.
+        </p>
+        {% if configured %}
+        <p class="text-xs">После перезапуска программа откроется по адресу <code class="font-mono">{{ https_url.split('/settings')[0] }}</code>,
+           по <code class="font-mono">http://</code> она отвечать перестанет.</p>
+        {% endif %}
+        <form method="POST" action="/settings/https/restart"
+              onsubmit="return confirm('Перезапустить программу? Текущий бэкап должен быть завершён.')">
+            <button type="submit" class="{{ _btn }}">⟳ Перезапустить сейчас</button>
+        </form>
+    </div>
+    {% endif %}
+
+    {% if configured and not locked %}
+    <form method="POST" action="/settings/https/disable"
+          onsubmit="return confirm('Выключить HTTPS? После перезапуска программа будет работать по HTTP.')">
+        <button type="submit" class="{{ _btn2 }}">Выключить HTTPS</button>
+    </form>
+    {% endif %}
+
+    {% if proxy %}
+    <p class="text-xs text-gray-500 dark:text-slate-400">
+        Задан обратный прокси (<code class="font-mono">NBM_TRUSTED_PROXIES</code>). Если HTTPS уже даёт прокси, свой сертификат
+        здесь не нужен. Если включить его, в настройке прокси замените <code class="font-mono">http://</code> на
+        <code class="font-mono">https://</code> в <code class="font-mono">proxy_pass</code>.
+    </p>
+    {% endif %}
+</section>
+
+<!-- Загруженные сертификаты -->
+<section class="{{ _card }}" id="https-certs">
+    <h3 class="{{ _h3 }}">📜 Сертификаты</h3>
+
+    {% if not certs %}
+    <p class="text-sm text-gray-500 dark:text-slate-400">Сертификатов ещё нет — загрузите ниже.</p>
+    {% endif %}
+
+    <div class="space-y-3">
+    {% for c in certs %}
+        <div class="rounded-xl border p-4 space-y-2
+                    {% if c.active %}border-emerald-300 dark:border-emerald-800 bg-emerald-50/40 dark:bg-emerald-950/20
+                    {% else %}border-gray-200 dark:border-slate-800{% endif %}"
+             data-cert="{{ c.id }}">
+            <div class="flex flex-wrap items-start gap-2">
+                <div class="flex-1 min-w-0">
+                    <div class="font-semibold text-sm break-all">
+                        {{ c.cn or c.id }}
+                        {% if c.active %}<span class="ml-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-100 text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-300" data-active>назначен</span>{% endif %}
+                    </div>
+                    <div class="text-xs text-gray-500 dark:text-slate-400 font-mono break-all">{{ c.id }}</div>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                    {% if not c.active and not c.error %}
+                    <form method="POST" action="/settings/https/assign">
+                        <input type="hidden" name="id" value="{{ c.id }}">
+                        <button type="submit" class="{{ _btn2 }}" {% if locked %}disabled title="Сертификат задан переменной NBM_TLS_CERT"{% endif %}>Назначить</button>
+                    </form>
+                    {% endif %}
+                    {% if not c.active %}
+                    <form method="POST" action="/settings/https/delete"
+                          onsubmit="return confirm('Удалить сертификат {{ c.id }} вместе с ключом?')">
+                        <input type="hidden" name="id" value="{{ c.id }}">
+                        <button type="submit" class="{{ _btn2 }} text-rose-700 dark:text-rose-400">Удалить</button>
+                    </form>
+                    {% endif %}
+                </div>
+            </div>
+
+            {% if c.error %}
+            <p class="text-xs text-rose-700 dark:text-rose-400">✗ {{ c.error }}</p>
+            {% else %}
+            <dl class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-xs">
+                <dt class="text-gray-500 dark:text-slate-400">Имена</dt>
+                <dd class="font-mono break-all">{{ c.sans | join(', ') if c.sans else '—' }}</dd>
+                <dt class="text-gray-500 dark:text-slate-400">Выдан</dt>
+                <dd>{{ 'самоподписанный' if c.self_signed else c.issuer }}{% if c.chain_len > 1 %} · цепочка: {{ c.chain_len }}{% endif %}</dd>
+                <dt class="text-gray-500 dark:text-slate-400">Действует</dt>
+                <dd class="{% if c.expired %}text-rose-700 dark:text-rose-400{% elif c.days_left <= 30 %}text-amber-700 dark:text-amber-400{% endif %}">
+                    {{ c.not_before.strftime('%d.%m.%Y') }} — {{ c.not_after.strftime('%d.%m.%Y') }}
+                    {% if not c.expired %}(осталось {{ c.days_left }} дн.){% endif %}
+                </dd>
+                <dt class="text-gray-500 dark:text-slate-400">SHA-256</dt>
+                <dd class="font-mono break-all text-[11px] text-gray-500 dark:text-slate-400">{{ c.fingerprint }}</dd>
+            </dl>
+            {% if not c.host_ok %}
+            <p class="text-xs text-amber-700 dark:text-amber-400" data-host-mismatch>
+                ⚠ Адреса <code class="font-mono">{{ host }}</code>, по которому вы открыли программу, нет в сертификате — браузер предупредит.
+            </p>
+            {% endif %}
+            {% for w in c.warnings %}
+            <p class="text-xs text-amber-700 dark:text-amber-400">⚠ {{ w }}</p>
+            {% endfor %}
+            {% endif %}
+        </div>
+    {% endfor %}
+    </div>
+</section>
+
+<!-- Загрузка -->
+<section class="{{ _card }}" id="https-upload">
+    <h3 class="{{ _h3 }}">⬆ Загрузить сертификат</h3>
+    <p class="text-xs text-gray-500 dark:text-slate-400">
+        PEM (<code class="font-mono">.pem .crt .cer .key</code>), DER или PFX/P12. Сертификат, ключ и цепочка могут быть
+        в одном файле или в разных. Ключ с паролем и PFX расшифровываются паролем из формы и хранятся
+        в <code class="font-mono">data/tls/</code> без пароля — веб-серверу нужен ключ при каждом запуске. Пароль не сохраняется.
+    </p>
+
+    {% if insecure %}
+    <div class="{{ _warn }}" data-upload-insecure>
+        ⚠ Вы подключены по HTTP: закрытый ключ уйдёт по сети открытым текстом. Надёжнее загрузить его,
+        открыв программу на самом сервере (<code class="font-mono">localhost</code>), или скопировать файлы
+        в <code class="font-mono">data/tls/</code> вручную.
+    </div>
+    {% endif %}
+
+    <form method="POST" action="/settings/https/upload" enctype="multipart/form-data" class="space-y-3">
+        <label class="block">
+            <span class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Сертификат или PFX/P12</span>
+            <input type="file" name="cert" required accept=".pem,.crt,.cer,.der,.pfx,.p12,.key" class="{{ _file }}">
+        </label>
+        <label class="block">
+            <span class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Закрытый ключ
+                <span class="font-normal text-gray-500 dark:text-slate-400">— если отдельным файлом</span></span>
+            <input type="file" name="key" accept=".pem,.key,.der" class="{{ _file }}">
+        </label>
+        <label class="block">
+            <span class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Промежуточные сертификаты
+                <span class="font-normal text-gray-500 dark:text-slate-400">— если отдельным файлом (chain, ca-bundle)</span></span>
+            <input type="file" name="chain" accept=".pem,.crt,.cer" class="{{ _file }}">
+        </label>
+        <label class="block max-w-sm">
+            <span class="block text-sm font-medium text-gray-700 dark:text-slate-300 mb-1">Пароль
+                <span class="font-normal text-gray-500 dark:text-slate-400">— PFX или ключа, если есть</span></span>
+            <input type="password" name="password" autocomplete="off" class="{{ _input }}">
+        </label>
+        <button type="submit" class="{{ _btn }}">⬆ Загрузить</button>
+        <p class="text-[11px] text-gray-500 dark:text-slate-400">До {{ max_kb }} КБ на файл. Загруженный сертификат не назначается сам — нажмите «Назначить».</p>
+    </form>
+</section>
+
+<!-- Если не открывается -->
+<section class="{{ _card }}">
+    <h3 class="{{ _h3 }}">🛟 Если после перезапуска программа не открывается</h3>
+    <div class="text-xs text-gray-600 dark:text-slate-400 space-y-1">
+        <p>Откройте адрес с <code class="font-mono">https://</code>. На самоподписанный сертификат браузер предупредит — это ожидаемо.</p>
+        <p>Выключить HTTPS без интерфейса: задайте переменную <code class="font-mono">NBM_TLS_CERT=off</code>
+           (Docker — в <code class="font-mono">.env</code>, затем <code class="font-mono">sudo docker compose up -d</code>;
+           Linux — в <code class="font-mono">/etc/nbm/nbm.env</code>) или удалите строки <code class="font-mono">tls_cert</code>
+           и <code class="font-mono">tls_key</code> из <code class="font-mono">data/config.json</code>, затем перезапустите программу.</p>
+    </div>
+</section>

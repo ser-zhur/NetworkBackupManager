@@ -755,6 +755,7 @@ def run_web_server() -> None:
     except settings.TlsConfigError as exc:
         logger.error("HTTPS: %s. Веб-сервер не запущен.", exc)
         raise SystemExit(2)
+    settings.RUNNING_CERT = str(tls[0]) if tls else ""
     if tls:
         cert, key = tls
         extra["ssl_certfile"] = str(cert)
