@@ -61,6 +61,20 @@ def test_main_version_flag():
     assert any(version.LICENSE_ID in line for line in rest)
 
 
+def test_main_version_flag_without_cyrillic_encoding():
+    # Английская Windows (cp1252) или LANG=C: русский текст не
+    # представим — вместо падения UnicodeEncodeError знаки «?»
+    r = subprocess.run(
+        [sys.executable, str(ROOT / "main.py"), "--version"],
+        capture_output=True, cwd=ROOT, timeout=60,
+        env={**__import__("os").environ, "PYTHONIOENCODING": "cp1252"},
+    )
+    assert r.returncode == 0, r.stderr.decode("cp1252", "replace")
+    first = r.stdout.decode("cp1252").strip().splitlines()[0]
+    assert first.endswith(version.__version__)
+    assert b"UnicodeEncodeError" not in r.stderr
+
+
 def test_header_shows_version():
     from web import server as s
 

@@ -939,7 +939,24 @@ _KNOWN_FLAGS = {
 }
 
 
+def tolerant_stdio() -> None:
+    """
+    Вывод в канал или файл в кодировке без кириллицы (cp1252 на
+    английской Windows, LANG=C в Linux): непредставимые символы
+    заменяются на «?», а не роняют программу UnicodeEncodeError.
+    В окне консоли Windows Python пишет Юникодом — там не влияет.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if stream is not None and stream.errors == "strict":
+                stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main() -> int:
+
+    tolerant_stdio()
 
     args = sys.argv[1:]
 
