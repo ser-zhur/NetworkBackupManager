@@ -11,6 +11,7 @@
 !tools/third_party_licenses.py
 !tools/licenses/
 !docker/entrypoint.sh
+!docker/healthcheck.py
 **/__pycache__
 **/*.pyc
 plugins/**/routers.json
