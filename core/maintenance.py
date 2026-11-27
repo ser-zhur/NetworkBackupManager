@@ -331,8 +331,8 @@ def apply_retention(
     max_age_days = max(1, int(config.get("max_age_days", 365)))
     keep_with_notes = bool(config.get("keep_with_notes", True))
 
-    # Все коммиты без фильтрации — иначе защита keep_last
-    # не увидит помеченные ранее.
+    # Только непомеченные: уже помеченные не считаются
+    # «живыми» версиями, keep_last отсчитывается по остальным.
     history = gs.get_history(limit=1_000_000)
     if not history:
         return []
@@ -344,8 +344,11 @@ def apply_retention(
         (reference - timedelta(days=max_age_days)).timestamp()
     )
 
-    # history[0] — самый свежий, history[:keep_last] — свежие N
-    protected = {c["sha"] for c in history[:keep_last]}
+    # history[0] — самый свежий, history[:keep_last] — свежие N.
+    # Текущая версия защищена всегда, даже при keep_last=0:
+    # иначе у давно не менявшегося устройства помечалась бы
+    # вся история, а пересборка от этого отказывается.
+    protected = {c["sha"] for c in history[:max(1, keep_last)]}
 
     marked: list[str] = []
 

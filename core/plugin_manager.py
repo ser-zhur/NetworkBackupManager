@@ -339,21 +339,32 @@ class PluginManager:
 
         Плагины возвращают разные имена, а в git-репо мы хотим
         видеть фиксированные config.rsc / config.backup / config.xml.
+
+        Если фиксированное имя уже занято (два .xml в одном
+        бэкапе), файл сохраняется под своим именем, а при
+        совпадении и его — с номером: ни один не теряется.
         """
+        fixed = {".rsc": "config.rsc", ".backup": "config.backup", ".xml": "config.xml"}
         result = {}
         for p in created_files or []:
             path = Path(p)
             if not path.is_file():
                 continue
-            ext = path.suffix.lower()
-            if ext == ".rsc":
-                result["config.rsc"] = path
-            elif ext == ".backup":
-                result["config.backup"] = path
-            elif ext == ".xml":
-                result["config.xml"] = path
-            else:
-                result[path.name] = path
+            name = fixed.get(path.suffix.lower(), path.name)
+            if name in result:
+                name = path.name
+            if name in result:
+                stem, suffix = Path(name).stem, Path(name).suffix
+                n = 2
+                while f"{stem}-{n}{suffix}" in result:
+                    n += 1
+                name = f"{stem}-{n}{suffix}"
+            if name != fixed.get(path.suffix.lower(), path.name):
+                logging.warning(
+                    "storage: имя %s уже занято — файл %s сохранён как %s",
+                    fixed.get(path.suffix.lower(), path.name), path, name,
+                )
+            result[name] = path
         return result
 
     def _decrypt_backend_config(self, backend, cfg: dict) -> dict:
@@ -461,6 +472,15 @@ class PluginManager:
         )
         results = {}
 
+        # Хранилища, чья прошлая выгрузка упала: им «нет
+        # изменений» не повод пропускать — у них этой версии нет.
+        with _STATE_LOCK:
+            state = load_json(STATE_FILE, {})
+        prev_entry = state.get(ctx.device_id) if isinstance(state, dict) else None
+        if not isinstance(prev_entry, dict):
+            prev_entry = {}
+        failing = set(prev_entry.get("storage_failing") or [])
+
         # ---- authority первым ----
         for backend in backends:
             if not backend.is_authority:
@@ -512,7 +532,7 @@ class PluginManager:
             )
 
             # mode=changes_only и git сказал «не изменилось» — skip
-            if backend._should_skip_for_changes(cfg, ctx):
+            if backend.id not in failing and backend._should_skip_for_changes(cfg, ctx):
                 from core.storage.base import PushResult
                 result = PushResult.skipped(
                     "Изменений нет — выгрузка пропущена"
@@ -962,21 +982,28 @@ class PluginManager:
                 entry["storage_failing"] = sorted(failing)
             else:
                 entry.pop("storage_failing", None)
+            prev_backends = entry.get("backends")
+            if not isinstance(prev_backends, dict):
+                prev_backends = {}
+            backends_state = {}
+            for bid, r in results.items():
+                skipped = bool(r.details and r.details.get("skipped"))
+                prev_b = prev_backends.get(bid)
+                if skipped and bid in failing and isinstance(prev_b, dict):
+                    # Пропуск не доказывает, что хранилище
+                    # исправно: прошлая ошибка остаётся видна.
+                    backends_state[bid] = dict(prev_b, ok=False)
+                    continue
+                backends_state[bid] = {
+                    "ok": bool(r.ok),
+                    "message": r.message or "",
+                    "skipped": skipped,
+                }
             entry.update({
                 "last_run": datetime.now().strftime(
                     "%Y-%m-%d %H:%M:%S"
                 ),
-                "backends": {
-                    bid: {
-                        "ok": bool(r.ok),
-                        "message": r.message or "",
-                        "skipped": bool(
-                            r.details
-                            and r.details.get("skipped")
-                        ),
-                    }
-                    for bid, r in results.items()
-                },
+                "backends": backends_state,
             })
 
             if total_commits is not None:
@@ -1141,6 +1168,11 @@ class PluginManager:
             if created_files is None:
                 raise RuntimeError(
                     f"Плагин {device_type} вернул None вместо списка"
+                )
+            if created_files and not self._normalize_created_files(created_files):
+                raise RuntimeError(
+                    "Файлы бэкапа не найдены на диске: "
+                    + ", ".join(str(p) for p in list(created_files)[:3])
                 )
 
             try:

@@ -793,8 +793,11 @@ class RcloneRemote(StorageBackend):
             return PushResult.failure("Нечего загружать", **extra)
         what = "Зашифровано и загружено" if extra.get("encrypted") else "Загружено"
         if errors:
+            # Часть файлов не дошла — это ошибка: копия в
+            # хранилище неполная, при следующем бэкапе без
+            # изменений выгрузка повторится (storage_failing).
             return PushResult(
-                ok=True,
+                ok=False,
                 message=(
                     f"{what} {uploaded} из {total} файлов; "
                     f"ошибки: {'; '.join(errors[:2])}"

@@ -178,7 +178,7 @@ def _commit_at(gs, files, message, ts):
             commit.encoding = b"UTF-8"
 
             repo.object_store.add_object(commit)
-            repo.refs[b"refs/heads/master"] = commit.id
+            repo.refs[b"HEAD"] = commit.id
             return True
 
         finally:

@@ -108,7 +108,7 @@ def test_partial_failure_names_failed_file(tmp_path, monkeypatch):
     remote = _local_remote("r", tmp_path / "remote")
     r = RcloneRemote(remote).push(remote, _ctx(local, files))
 
-    assert r.ok and r.details == {"uploaded": 2, "failed": 1}
+    assert not r.ok and r.details == {"uploaded": 2, "failed": 1}
     assert "Загружено 2 из 3" in r.message and "b.rsc: Failed to copy: 507" in r.message
 
 

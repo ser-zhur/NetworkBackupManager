@@ -56,6 +56,11 @@ _NOTES_FILENAME = "nbm_notes.json"
 # который вызывается вручную или scheduler'ом.
 _DELETED_FILENAME = "nbm_deleted.json"
 
+# Коммиты пишутся через HEAD — в ту ветку, на которую он
+# указывает. Новые репозитории создаются с веткой master.
+_HEAD = b"HEAD"
+_MASTER = b"refs/heads/master"
+
 
 # =========================================================
 # NORMALIZE
@@ -130,7 +135,12 @@ class GitStorage:
     def _open_repo(self) -> "Repo":
         if not self.is_initialized():
             self.repo_path.mkdir(parents=True, exist_ok=True)
-            porcelain.init(str(self.repo_path))
+            repo = porcelain.init(str(self.repo_path))
+            # dulwich берёт имя ветки из init.defaultBranch
+            # gitconfig'а (часто «main»). Фиксируем master,
+            # чтобы репозитории не зависели от настроек машины.
+            repo.refs.set_symbolic_ref(_HEAD, _MASTER)
+            repo.close()
             logger.info(
                 "git: инициализирован репозиторий %s",
                 self.repo_path,
@@ -138,11 +148,37 @@ class GitStorage:
         return Repo(str(self.repo_path))
 
     def _head_sha(self, repo: "Repo") -> bytes | None:
+        """
+        sha последнего коммита или None для пустого репо.
+
+        Чинит репозитории прошлых версий: HEAD указывал на
+        несуществующую ветку (main из gitconfig), а коммиты
+        писались в master. Тогда HEAD переводится на master.
+        """
         try:
             head = repo.head()
             return head or None
         except (KeyError, ValueError):
+            pass
+
+        try:
+            master = repo.refs[_MASTER]
+        except KeyError:
             return None
+
+        try:
+            repo.refs.set_symbolic_ref(_HEAD, _MASTER)
+            logger.warning(
+                "git[%s]: HEAD указывал на пустую ветку — "
+                "переведён на master",
+                self.repo_path.name,
+            )
+        except Exception as exc:
+            logger.warning(
+                "git[%s]: не удалось перевести HEAD на master: %s",
+                self.repo_path.name, exc,
+            )
+        return master
 
     def _read_blob(
         self,
@@ -317,7 +353,8 @@ class GitStorage:
         normalize: Callable[[str, bytes], bytes] | None = None,
     ) -> tuple[bool, bool, str]:
         """
-        Сравнивает текстовые файлы с HEAD и, если есть
+        Сравнивает файлы text_files (сравнимые — без изменчивых
+        двоичных) и набор файлов с HEAD и, если есть
         отличия (с учётом нормализации), коммитит содержимое
         рабочего дерева.
 
@@ -341,7 +378,19 @@ class GitStorage:
             try:
                 head_sha = self._head_sha(repo)
 
+                present = {
+                    name for name, src in files.items() if src.exists()
+                }
+
                 if head_sha is None:
+                    changed = True
+                elif present != set(self._list_files_at(repo, head_sha)):
+                    # Файл появился или пропал — это изменение,
+                    # даже если сравнимые файлы совпали.
+                    logger.info(
+                        "git[%s]: изменился набор файлов",
+                        self.repo_path.name,
+                    )
                     changed = True
                 else:
                     # Отбираем текстовые файлы, которые
@@ -468,11 +517,10 @@ class GitStorage:
                 repo.object_store.add_object(commit)
 
                 try:
-                    repo.refs[b"refs/heads/master"] = commit.id
+                    repo.refs[_HEAD] = commit.id
                 except Exception as exc:
                     logger.error(
-                        "git[%s]: не удалось обновить "
-                        "refs/heads/master: %s",
+                        "git[%s]: не удалось обновить HEAD: %s",
                         self.repo_path.name,
                         exc,
                     )
@@ -923,7 +971,7 @@ class GitStorage:
                 new_parent = new_commit.id
                 sha_map[old_commit.id.decode()] = new_commit.id.decode()
 
-            repo.refs[b"refs/heads/master"] = new_parent
+            repo.refs[_HEAD] = new_parent
 
             removed = len(all_commits) - len(kept)
 

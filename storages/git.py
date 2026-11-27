@@ -24,6 +24,10 @@ from core.git_storage import (
 )
 
 
+# MikroTik .backup: двоичный, с меткой времени внутри.
+_VOLATILE_EXTS = (".backup",)
+
+
 class GitStorageBackend(StorageBackend):
 
     id = "git"
@@ -64,18 +68,15 @@ class GitStorageBackend(StorageBackend):
 
         storage = GitStorage(ctx.backup_path)
 
-        # Расширения, содержимое которых имеет смысл сравнивать
-        # с нормализацией. Всё остальное (в т.ч. .backup, .img,
-        # .bin) трактуется как binary и коммитится безусловно.
-        _TEXT_EXTS = (
-            ".rsc", ".xml", ".conf", ".cfg", ".txt",
-            ".json", ".yaml", ".yml",
-            ".ini", ".toml",
-        )
-
+        # Сравниваются все файлы, кроме двоичных, которые
+        # меняются при каждой выгрузке (внутренние метки
+        # времени, шифрование): по ним «изменилось» было бы
+        # всегда. Такие файлы коммитятся вместе с остальными,
+        # но решение не принимают. Если сравнимых нет совсем —
+        # коммит создаётся всегда (см. commit_if_changed).
         text_files = [
             name for name in ctx.files
-            if name.endswith(_TEXT_EXTS)
+            if not name.lower().endswith(_VOLATILE_EXTS)
         ]
 
         from datetime import datetime as _dt
@@ -93,10 +94,14 @@ class GitStorageBackend(StorageBackend):
         )
 
         if not ok:
+            # Сравнить не удалось — «неизвестно» (None), а не
+            # «нет изменений»: иначе хранилища в режиме «только
+            # изменения» пропустили бы выгрузку, и новая
+            # конфигурация не попала бы никуда.
             return PushResult(
                 ok=False,
                 message=message,
-                details={"changed": False},
+                details={"changed": None},
             )
 
         if not created:

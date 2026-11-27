@@ -137,6 +137,10 @@ class BackupScheduler:
                             self._busy_logged = False
                             self._job_running.set()
                             self._last_attempt_ts = datetime.now()
+                            # last_run — время СТАРТА: иначе режим
+                            # «каждые N часов» сдвигался бы на
+                            # длительность каждого прогона.
+                            started_at = self._last_attempt_ts
 
                             try:
                                 logging.info(
@@ -148,7 +152,7 @@ class BackupScheduler:
                                     self.plugin_manager.run_all_backups(source="schedule")
 
                                 self.config["last_run"] = (
-                                    datetime.now().strftime(
+                                    started_at.strftime(
                                         "%Y-%m-%d %H:%M:%S"
                                     )
                                 )
