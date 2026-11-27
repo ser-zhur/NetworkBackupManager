@@ -2,7 +2,7 @@
 
 Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии — [semver](https://semver.org/lang/ru/): MAJOR — несовместимые изменения данных или поведения, MINOR — новые функции, PATCH — исправления.
 
-## [Не выпущено]
+## [2.8.2] — 2026-11-27
 
 ### Исправлено
 
@@ -182,6 +182,7 @@
 
 Первая версия с единым номером. Бэкап MikroTik (RouterOS 6/7), pfSense и D-Link DGS-1510 по SSH; история версий в git с просмотром изменений; внешние хранилища через rclone с шифрованием 7z; расписание и очистка старых версий; служба Windows и systemd; веб-интерфейс с тегами, избранным, поиском и фильтрами; защита от CSRF, проверка ключей хоста SSH.
 
+[2.8.2]: https://github.com/ser-zhur/NetworkBackupManager/releases/tag/v2.8.2
 [2.8.1]: https://github.com/ser-zhur/NetworkBackupManager/releases/tag/v2.8.1
 [2.8.0]: https://github.com/ser-zhur/NetworkBackupManager/releases/tag/v2.8.0
 [2.7.1]: https://github.com/ser-zhur/NetworkBackupManager/releases/tag/v2.7.1
