@@ -147,11 +147,10 @@
         Ошибка попадает в журнал событий и уведомления (как ошибки планировщика).
     </p>
 
-    {% if auto.last_run %}
-    <div class="text-sm {{ 'text-emerald-700 dark:text-emerald-300' if auto.last_ok else 'text-rose-700 dark:text-rose-300' }}">
-        {{ '✓' if auto.last_ok else '✗' }} Последняя: <span class="font-mono">{{ auto.last_run }}</span> — {{ auto.last_message }}
+    <div id="auto-last" class="text-sm {{ 'text-emerald-700 dark:text-emerald-300' if auto.last_ok else 'text-rose-700 dark:text-rose-300' }}"
+         {% if not (auto.last_at or auto.last_run) %}hidden{% endif %}>
+        {{ '✓' if auto.last_ok else '✗' }} Последняя: <span class="font-mono">{{ auto.last_at or auto.last_run }}</span> — {{ auto.last_message }}
     </div>
-    {% endif %}
     {% if auto_next %}
     <div class="text-sm text-gray-600 dark:text-slate-400">Следующая: <span class="font-mono">{{ auto_next }}</span></div>
     {% endif %}
@@ -298,6 +297,18 @@
                 if (!el) continue;
                 el.className = 'block text-xs font-medium ' + (r.ok ? ok : bad);
                 el.textContent = (r.ok ? '✓ ' : '✗ ') + r.message;
+            }
+            // Выгрузка прошла на все хранилища расписания —
+            // сервер обновил и итог «По расписанию»
+            const last = document.getElementById('auto-last');
+            if (data.auto_last && last) {
+                last.className = 'text-sm text-emerald-700 dark:text-emerald-300';
+                last.textContent = '✓ Последняя: ';
+                const at = document.createElement('span');
+                at.className = 'font-mono';
+                at.textContent = data.auto_last.at;
+                last.append(at, ' — ' + data.auto_last.message);
+                last.hidden = false;
             }
         } catch (err) {
             status.className = 'text-sm font-medium ' + bad;

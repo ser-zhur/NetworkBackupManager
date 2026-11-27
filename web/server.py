@@ -6416,10 +6416,15 @@ async def api_settings_backup_upload(request: Request, user: str = Depends(requi
                 "results": []}
 
     ok = all(r["ok"] for r in results)
+    auto_last = None
+    if settings_backup.record_manual(name, results):
+        auto = settings_backup.load_auto()
+        auto_last = {"at": auto["last_at"], "message": auto["last_message"]}
     return {
         "ok": ok,
         "message": f"{name}: " + ("выгружено" if ok else "есть ошибки"),
         "results": results,
+        "auto_last": auto_last,
     }
 
 

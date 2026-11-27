@@ -309,6 +309,12 @@
 <div class="bg-white dark:bg-slate-900 rounded-xl border border-gray-200 dark:border-slate-800 overflow-hidden">
     <div class="px-5 py-3 border-b border-gray-100 dark:border-slate-800 flex items-center justify-between">
         <h2 class="text-sm font-semibold">Последние версии</h2>
+        <a href="/device/{{ d.id }}/git"
+           class="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium
+                  text-brand-700 dark:text-brand-300
+                  hover:bg-brand-50 dark:hover:bg-brand-950/40 transition">
+            📜 Вся история →
+        </a>
     </div>
 
     {% if d.git_recent %}

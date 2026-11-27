@@ -181,6 +181,23 @@ def test_upload_encrypts_and_reports_each_storage(client, remotes):
     assert head == b"7z\xbc\xaf\x27\x1c"          # сигнатура 7z
 
 
+def test_upload_clears_scheduled_error_on_page(client, remotes):
+    s, c = client
+    s.settings_backup.save_auto({"enabled": True, "every_days": 1, "time": "04:00",
+                                 "keep": 5, "storages": ["good"]})
+    s.settings_backup._save_result(False, "good: нет связи", datetime(2026, 11, 24, 4, 0))
+    assert "нет связи" in c.get("/settings?tab=backup").text
+
+    r = c.post("/api/settings-backup/upload", json={"ids": ["good"]}).json()
+    assert r["ok"] and "вручную" in r["auto_last"]["message"]
+    page = c.get("/settings?tab=backup").text
+    assert "нет связи" not in page and "выгружено вручную" in page
+
+    # Ошибка на хранилище не из расписания — итог не трогаем
+    r = c.post("/api/settings-backup/upload", json={"ids": ["good", "bad"]}).json()
+    assert r["auto_last"] is None
+
+
 def test_upload_needs_encryption_password(client, remotes, monkeypatch):
     s, c = client
     monkeypatch.setattr(s.storage_encryption, "get_password", lambda: "")
@@ -288,6 +305,35 @@ def test_scheduled_run_failure_is_an_event(data_dir, monkeypatch):
     cfg = settings_backup.load_auto()
     assert cfg["last_run"] and cfg["last_ok"] is False
     assert seen and seen[0][0] == events.SCHEDULER_ERROR
+
+
+def test_manual_upload_clears_scheduled_error(data_dir):
+    """Ошибка плановой копии не висит после успешной ручной выгрузки."""
+    settings_backup.save_auto({"enabled": True, "every_days": 3, "time": "04:00",
+                               "keep": 5, "storages": ["s1", "s2"]})
+    settings_backup._save_result(False, "s1: нет связи", datetime(2026, 11, 24, 4, 0))
+    ok1 = {"id": "s1", "name": "S1", "ok": True, "message": "ok"}
+    ok2 = {"id": "s2", "name": "S2", "ok": True, "message": "ok"}
+
+    # Не все хранилища расписания или есть ошибка — итог прежний
+    assert not settings_backup.record_manual("a.7z", [ok1])
+    assert not settings_backup.record_manual("a.7z", [ok1, dict(ok2, ok=False)])
+    assert settings_backup.load_auto()["last_ok"] is False
+
+    at = datetime(2026, 11, 25, 15, 30)
+    assert settings_backup.record_manual("a.7z", [ok1, ok2], at)
+    cfg = settings_backup.load_auto()
+    assert cfg["last_ok"] and "вручную" in cfg["last_message"]
+    assert cfg["last_at"] == "2026-11-25 15:30:00"
+    # Расписание не сдвинулось
+    assert cfg["last_run"] == "2026-11-24 04:00:00"
+    assert settings_backup.next_run(cfg) == datetime(2026, 11, 27, 4, 0)
+
+
+def test_manual_upload_without_schedule_storages_changes_nothing(data_dir):
+    ok1 = {"id": "s1", "name": "S1", "ok": True, "message": "ok"}
+    assert not settings_backup.record_manual("a.7z", [ok1])
+    assert settings_backup.load_auto()["last_at"] is None
 
 
 # ---------------------------------------------------------- восстановление

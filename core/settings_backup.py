@@ -278,7 +278,7 @@ AUTO_DEFAULTS = {
     "storages": [],
     "keep": 10,
 }
-_STATE_KEYS = ("last_run", "last_ok", "last_message")
+_STATE_KEYS = ("last_run", "last_ok", "last_message", "last_at")
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _auto_lock = threading.Lock()          # чтение-запись файла
 _auto_running = threading.Lock()       # идёт копия
@@ -344,13 +344,34 @@ def save_auto(cfg: dict) -> None:
 
 
 def _save_result(ok: bool, message: str, at: datetime) -> None:
+    stamp = at.strftime("%Y-%m-%d %H:%M:%S")
     with _auto_lock:
         current = load_auto()
+        current.update(last_run=stamp, last_at=stamp, last_ok=ok, last_message=message)
+        context.save_json(_auto_file(), current)
+
+
+def record_manual(name: str, results: list[dict], at: datetime | None = None) -> bool:
+    """
+    Ручная выгрузка прошла на все хранилища расписания —
+    это тоже свежая копия: итог «По расписанию» становится
+    успешным (прежняя ошибка не висит до следующего срока).
+    last_run не меняется: расписание идёт своим чередом.
+    Ошибки ручной выгрузки итог не трогают — они видны у
+    кнопки. → True, если итог обновлён.
+    """
+    done = {r["id"] for r in results if r.get("ok")}
+    with _auto_lock:
+        current = load_auto()
+        wanted = set(current.get("storages") or [])
+        if not wanted or not wanted <= done or any(not r.get("ok") for r in results):
+            return False
         current.update(
-            last_run=at.strftime("%Y-%m-%d %H:%M:%S"),
-            last_ok=ok, last_message=message,
+            last_at=(at or datetime.now()).strftime("%Y-%m-%d %H:%M:%S"),
+            last_ok=True, last_message=f"{name}: выгружено вручную ({len(results)})",
         )
         context.save_json(_auto_file(), current)
+    return True
 
 
 def next_run(cfg: dict, now: datetime | None = None) -> datetime | None:
