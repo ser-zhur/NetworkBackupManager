@@ -259,6 +259,11 @@ def backup_router_ros6(router, local_dir):
     host = router["host"]
     user = router.get("username", "admin")
     port = router.get("port", 22)
+    # Адрес и логин идут аргументами ssh/scp: «-» в начале
+    # те приняли бы за свой параметр (-oProxyCommand=…).
+    for label, value in (("адрес", str(host)), ("логин", str(user))):
+        if value.startswith("-") or any(ch.isspace() for ch in value):
+            raise ValueError(f"Недопустимый {label} устройства: {value!r}")
     key = _get_key_path(router)
 
     debug = bool(router.get("debug_connection"))
@@ -281,6 +286,7 @@ def backup_router_ros6(router, local_dir):
         # OpenSSH 8.8+ не берёт ключ хоста ssh-rsa по умолчанию,
         # а RouterOS 6 часто другого не предлагает.
         "-oHostKeyAlgorithms=+ssh-rsa",
+        "--",
         f"{user}@{host}",
     ]
 
@@ -332,7 +338,7 @@ def backup_router_ros6(router, local_dir):
 
             try:
                 _run_command(
-                    scp_base + [f"{user}@{host}:{source}", destination],
+                    scp_base + ["--", f"{user}@{host}:{source}", destination],
                     timeout=30,
                     verbose=debug
                 )

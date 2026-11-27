@@ -44,8 +44,23 @@ class SecureStorage:
                 key = f.read()
         else:
             key = Fernet.generate_key()
-            with open(self.key_file, "wb") as f:
+            # 0600 с момента создания: ключ расшифровывает все
+            # пароли устройств (на Windows права даёт папка data\).
+            fd = os.open(
+                self.key_file,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+                0o600,
+            )
+            with os.fdopen(fd, "wb") as f:
                 f.write(key)
+
+        # Ключ, созданный прежними версиями, — тоже только владельцу.
+        if os.name != "nt":
+            try:
+                if os.stat(self.key_file).st_mode & 0o077:
+                    os.chmod(self.key_file, 0o600)
+            except OSError as exc:
+                logger.warning("secret.key: не удалось выставить права 600: %s", exc)
 
         return Fernet(key)
 

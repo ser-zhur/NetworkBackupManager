@@ -421,6 +421,26 @@ async def csrf_protect(request: Request, call_next):
     return await call_next(request)
 
 
+# Заголовки безопасности на все ответы. Главное — запрет
+# фреймов: браузер подставляет сохранённый пароль Basic и
+# во фрейм на чужом сайте, а запрос из фрейма идёт с нашего
+# же адреса — проверка CSRF его не остановит (кликджекинг).
+_SECURITY_HEADERS = {
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": "frame-ancestors 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "same-origin",
+}
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    for name, value in _SECURITY_HEADERS.items():
+        response.headers.setdefault(name, value)
+    return response
+
+
 app.mount(
     "/static",
     StaticFiles(
@@ -471,6 +491,8 @@ _ERROR_INFO = {
           "Возможно, оно уже выполняется или данные изменились. Обновите страницу и повторите."),
     422: ("⚠️", "Неверные данные",
           "Форма отправлена не полностью или с неверными значениями. Обновите страницу и повторите."),
+    429: ("🔒", "Вход временно заблокирован",
+          "С этого адреса слишком много раз ввели неверный пароль. Подождите и войдите снова."),
     500: ("💥", "Внутренняя ошибка",
           "Подробности записаны в журнал программы. Если ошибка повторяется, приложите журнал к сообщению о проблеме."),
     503: ("⏸", "Сервис временно недоступен",
@@ -657,7 +679,100 @@ from core.auth import verify_password  # noqa: E402
 # AUTH
 # =========================================================
 
+# Подбор пароля: после AUTH_MAX_FAILURES неверных попыток
+# с одного адреса за AUTH_WINDOW_S секунд адрес получает
+# 429 до конца окна — пароль даже не проверяется.
+AUTH_MAX_FAILURES = 10
+AUTH_WINDOW_S = 300
+
+_auth_lock = threading.Lock()
+_auth_failures: dict[str, list[float]] = {}
+
+# Уже проверенные пары логин/пароль (HMAC со случайным
+# ключом процесса — пароль в памяти не хранится). Basic
+# присылает пароль в каждом запросе, а PBKDF2 — это
+# ~0,1–0,2 с процессора на запрос.
+_auth_cache_key = secrets.token_bytes(32)
+_auth_cache: set[bytes] = set()
+_AUTH_CACHE_MAX = 32
+
+# Хеш для неверного логина: время ответа то же, что для
+# верного, — по нему логин не угадать.
+_DUMMY_HASH = None
+
+
+def _client_ip(request: Request | None) -> str:
+    client = request.client if request is not None else None
+    return (client.host if client else "") or "?"
+
+
+def _auth_blocked(ip: str, now: float) -> bool:
+    with _auth_lock:
+        recent = [t for t in _auth_failures.get(ip, []) if now - t < AUTH_WINDOW_S]
+        if recent:
+            _auth_failures[ip] = recent
+        else:
+            _auth_failures.pop(ip, None)
+        return len(recent) >= AUTH_MAX_FAILURES
+
+
+def _auth_failed(ip: str, now: float) -> None:
+    with _auth_lock:
+        failures = _auth_failures.setdefault(ip, [])
+        failures.append(now)
+        count = len(failures)
+        # Не даём словарю расти от перебора адресов.
+        if len(_auth_failures) > 10_000:
+            _auth_failures.clear()
+    if count == AUTH_MAX_FAILURES:
+        logging.warning(
+            "🔒 Вход: %d неверных паролей подряд с адреса %s — "
+            "адрес заблокирован на %d мин.",
+            count, ip, AUTH_WINDOW_S // 60,
+        )
+
+
+def _auth_succeeded(ip: str) -> None:
+    with _auth_lock:
+        _auth_failures.pop(ip, None)
+
+
+def _check_credentials(username: str, password: str, stored_user: str, stored_hash: str) -> bool:
+    global _DUMMY_HASH
+    import hmac
+
+    digest = hmac.new(
+        _auth_cache_key,
+        "\0".join((username, password, str(stored_user), str(stored_hash))).encode("utf-8"),
+        "sha256",
+    ).digest()
+    with _auth_lock:
+        if digest in _auth_cache:
+            return True
+
+    # Байты, а не str: compare_digest не принимает строки
+    # с не-ASCII символами (TypeError → 500 вместо 401).
+    user_ok = secrets.compare_digest(
+        username.encode("utf-8"), str(stored_user).encode("utf-8"),
+    )
+    if not user_ok:
+        if _DUMMY_HASH is None:
+            from core.auth import hash_password
+            _DUMMY_HASH = hash_password(secrets.token_urlsafe(16))
+        verify_password(password, _DUMMY_HASH)
+        return False
+    if not verify_password(password, stored_hash):
+        return False
+
+    with _auth_lock:
+        if len(_auth_cache) >= _AUTH_CACHE_MAX:
+            _auth_cache.clear()
+        _auth_cache.add(digest)
+    return True
+
+
 def require_auth(
+    request: Request,
     credentials:
         HTTPBasicCredentials =
         Depends(security),
@@ -676,6 +791,18 @@ def require_auth(
                 "WWW-Authenticate":
                 _WWW_AUTHENTICATE
             },
+        )
+
+    ip = _client_ip(request)
+    now = time.monotonic()
+    if _auth_blocked(ip, now):
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                "Слишком много неверных паролей. "
+                f"Повторите через {AUTH_WINDOW_S // 60} мин."
+            ),
+            headers={"Retry-After": str(AUTH_WINDOW_S)},
         )
 
     try:
@@ -712,22 +839,11 @@ def require_auth(
             },
         )
 
-    valid = (
-        # Байты, а не str: compare_digest не принимает строки
-        # с не-ASCII символами (TypeError → 500 вместо 401).
-        secrets.compare_digest(
-            credentials.username.encode("utf-8"),
-            str(username).encode("utf-8"),
-        )
-        and
-        verify_password(
-            credentials.password,
-            password_hash,
-        )
-    )
-
-    if not valid:
-
+    if not _check_credentials(
+        credentials.username, credentials.password,
+        username, password_hash,
+    ):
+        _auth_failed(ip, now)
         raise HTTPException(
             status_code=401,
             detail="Неверный логин или пароль.",
@@ -737,6 +853,7 @@ def require_auth(
             },
         )
 
+    _auth_succeeded(ip)
     return credentials.username
 
 
@@ -755,7 +872,7 @@ async def require_monitoring(request: Request) -> str:
             detail="Неверный токен мониторинга.",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return require_auth(await security(request))
+    return require_auth(request, await security(request))
 
 
 # =========================================================
@@ -3539,6 +3656,25 @@ def _parse_port(form) -> int:
     return port
 
 
+def _check_host_and_user(ip: str, username: str) -> None:
+    """
+    Адрес и логин уходят аргументами в ssh/scp: значение
+    с «-» в начале те приняли бы за свой параметр
+    (-oProxyCommand=… выполнил бы команду на сервере).
+    Пробелы и управляющие символы в них тоже не бывают.
+    """
+    for label, value in (("Адрес устройства", ip), ("Логин", username)):
+        if value.startswith("-"):
+            raise HTTPException(status_code=400, detail=f"{label} не может начинаться с «-»")
+        if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in value):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{label}: пробелы и управляющие символы недопустимы",
+            )
+    if "@" in ip or "/" in ip:
+        raise HTTPException(status_code=400, detail="Адрес устройства: символы «@» и «/» недопустимы")
+
+
 def _plugin_options(device_type: str, form, previous: dict) -> dict:
     """Поля, объявленные плагином (opt_<поле>), → значения устройства."""
     info = plugin_manager.plugin_info(device_type)
@@ -3578,6 +3714,7 @@ def _build_new_router(form) -> tuple[str, dict]:
             status_code=400,
             detail="Не заполнены обязательные поля",
         )
+    _check_host_and_user(ip, username)
 
     if (
         not plugin_manager
@@ -5352,6 +5489,7 @@ async def update_router(
             status_code=400,
             detail="Не заполнены обязательные поля",
         )
+    _check_host_and_user(ip, username)
 
     if (
         not plugin_manager

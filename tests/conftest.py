@@ -135,3 +135,16 @@ def make_repo(tmp_path):
         return repo_path, gs
 
     return _make
+
+# ---- Блокировка подбора пароля (web/server.py) ----
+#
+# Счётчик неверных паролей — на процесс; тесты с неверным
+# паролем не должны блокировать «testclient» для следующих.
+
+@pytest.fixture(autouse=True)
+def _reset_auth_failures():
+    yield
+    server = sys.modules.get("web.server")
+    if server is not None and hasattr(server, "_auth_failures"):
+        server._auth_failures.clear()
+        server._auth_cache.clear()

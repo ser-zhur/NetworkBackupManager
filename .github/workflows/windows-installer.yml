@@ -149,6 +149,16 @@ jobs:
           if (-not (Test-Path "$app\plugins\SSH\profiles\cisco_ios.json")) { throw "нет профилей SSH" }
           Write-Host "✅ вход закрыт паролем, все плагины и профили на месте"
 
+          # Данные — только SYSTEM и Администраторам (не «Пользователи»)
+          $allowed = "S-1-5-18", "S-1-5-32-544"
+          foreach ($p in "$app\data", "$app\data\auth.json", "$app\backups", "$app\logs", "$app\logs\app.log") {
+            $sids = (Get-Acl $p).Access | ForEach-Object {
+              $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value }
+            $extra = $sids | Where-Object { $_ -notin $allowed }
+            if ($extra) { icacls $p; throw "лишние права на ${p}: $($extra -join ', ')" }
+          }
+          Write-Host "✅ data, backups, logs закрыты от обычных пользователей"
+
           # --- Обновление поверх ---
           "keep me" | Set-Content "$app\data\marker.txt"
           "stale" | Set-Content "$app\_internal\stale-from-old-version.dll"

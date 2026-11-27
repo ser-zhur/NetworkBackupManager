@@ -318,6 +318,43 @@ begin
   Result := True;
 end;
 
+// ---------------------------------------------------------
+// Права на данные
+// ---------------------------------------------------------
+// Папки внутри Program Files наследуют «Пользователи: чтение».
+// В data\ — secret.key (расшифровывает пароли устройств),
+// SSH-ключи, auth.json; в backups\ — конфигурации; в logs\ —
+// адреса и ошибки. Оставляем доступ только SYSTEM (служба) и
+// Администраторам: наследование отключается, вложенные файлы
+// получают права от папки. SID вместо имён — имена групп
+// зависят от языка Windows.
+
+procedure ProtectDir(Dir: String);
+var
+  ResultCode: Integer;
+begin
+  if not DirExists(Dir) then
+    Exit;
+  if (not Exec(ExpandConstant('{sys}\icacls.exe'),
+               '"' + Dir + '" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F /Q',
+               '', SW_HIDE, ewWaitUntilTerminated, ResultCode))
+     or (ResultCode <> 0) then
+  begin
+    Log('icacls: не удалось ограничить права на ' + Dir + ', код ' + IntToStr(ResultCode));
+    Exit;
+  end;
+  // Вложенные файлы и папки — только унаследованные права
+  Exec(ExpandConstant('{sys}\icacls.exe'), '"' + Dir + '\*" /reset /T /C /Q',
+       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+procedure ProtectDataDirs();
+begin
+  ProtectDir(ExpandConstant('{app}\data'));
+  ProtectDir(ExpandConstant('{app}\backups'));
+  ProtectDir(ExpandConstant('{app}\logs'));
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssInstall then
@@ -330,6 +367,7 @@ begin
   begin
     // Пользователь — до запуска службы: первая же страница
     // в браузере спросит уже существующий логин
+    ProtectDataDirs();
     CreateWebUser();
     InstallAndStartService();
   end;
