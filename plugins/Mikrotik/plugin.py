@@ -1,5 +1,6 @@
 import os
 import re
+import socket
 import sys
 import time
 import subprocess
@@ -81,7 +82,7 @@ def _do_ros7(router, backup_path):
             host=host,
             port=router.get("port", 22),
             user=router.get("username", "admin"),
-            key_path=_get_key_path(router),
+            key_path=_key_path_optional(router),
             ssh_password=router.get("ssh_pass", ""),
             debug=bool(router.get("debug_connection")),
         )
@@ -252,6 +253,33 @@ def _get_key_path(router):
     return key_path
 
 
+def _key_path_optional(router):
+    """
+    Путь к ключу или None — если файла ключа нет, но задан
+    пароль: тогда вход по паролю (только путь paramiko).
+    """
+    try:
+        return _get_key_path(router)
+    except FileNotFoundError:
+        if router.get("ssh_pass"):
+            return None
+        raise
+
+
+# Таймаут одной команды RouterOS и скачивания: без него
+# зависшее устройство держало бы бэкап бесконечно.
+COMMAND_TIMEOUT = 120
+CONNECT_TIMEOUT = 10
+
+# RouterOS сообщает об ошибке команды в обычном выводе,
+# а не в stderr и не кодом возврата.
+_ROS_ERROR_RE = re.compile(
+    r"^\s*(failure:|bad command name|syntax error|expected end of command|"
+    r"input does not match|no such item|not enough permissions|interrupted)",
+    re.I | re.M,
+)
+
+
 # =========================================================
 # ROS6
 # =========================================================
@@ -280,7 +308,7 @@ def backup_router_ros6(router, local_dir):
         "-p", str(port), "-i", key,
         "-T", "-n", "-oBatchMode=yes", "-oConnectTimeout=10",
         "-oServerAliveInterval=5", *host_key_opts,
-        "-oMACs=hmac-sha1,hmac-md5",
+        "-oMACs=+hmac-sha1,hmac-md5",
         "-oKexAlgorithms=+diffie-hellman-group1-sha1",
         "-oPubkeyAcceptedAlgorithms=+ssh-rsa",
         # OpenSSH 8.8+ не берёт ключ хоста ssh-rsa по умолчанию,
@@ -295,7 +323,7 @@ def backup_router_ros6(router, local_dir):
         "-P", str(port), "-i", key,
         "-oBatchMode=yes", "-oConnectTimeout=10",
         *host_key_opts,
-        "-oMACs=hmac-sha1,hmac-md5",
+        "-oMACs=+hmac-sha1,hmac-md5",
         "-oKexAlgorithms=+diffie-hellman-group1-sha1",
         "-oPubkeyAcceptedAlgorithms=+ssh-rsa",
         "-oHostKeyAlgorithms=+ssh-rsa",
@@ -474,29 +502,36 @@ def _connect_ros7(
     (системный ssh). Ключ хоста ssh-rsa и старый обмен
     ключами принимает CompatTransport.
     """
-    pkey = paramiko.RSAKey.from_private_key_file(key_path)
+    pkey = paramiko.RSAKey.from_private_key_file(key_path) if key_path else None
+    if pkey is None and not ssh_password:
+        raise paramiko.AuthenticationException("нет ни ключа, ни пароля")
 
     if debug:
         _debug_log.debug(
-            "ros7 connect: host=%s port=%s user=%s",
-            host, port, user,
+            "ros7 connect: host=%s port=%s user=%s auth=%s",
+            host, port, user, "key" if pkey else "password",
         )
-        _debug_log.debug(
-            "ros7 key: type=%s fingerprint_md5=%s",
-            pkey.get_name(),
-            pkey.get_fingerprint().hex(),
-        )
+        if pkey is not None:
+            _debug_log.debug(
+                "ros7 key: type=%s fingerprint_md5=%s",
+                pkey.get_name(),
+                pkey.get_fingerprint().hex(),
+            )
 
     def _attempt(disabled_pubkeys):
+        sock = socket.create_connection((host, port), timeout=CONNECT_TIMEOUT)
         transport = CompatTransport(
-            (host, port),
+            sock,
             disabled_algorithms={
                 "pubkeys": list(disabled_pubkeys),
             },
         )
 
         try:
-            transport.start_client(timeout=10)
+            # Сначала тот же тип ключа хоста, что запомнен:
+            # ключ другого типа host_keys отклонит как подмену.
+            host_keys.prefer_known_key_types(transport, host, port)
+            transport.start_client(timeout=CONNECT_TIMEOUT)
 
             # Ключ хоста — до аутентификации, чтобы не
             # предъявлять наш ключ подменённому серверу.
@@ -544,11 +579,20 @@ def _connect_ros7(
                 except Exception:
                     pass
 
-            transport.auth_publickey(username=user, key=pkey)
+            if pkey is not None:
+                try:
+                    transport.auth_publickey(username=user, key=pkey)
+                except paramiko.AuthenticationException:
+                    if not ssh_password:
+                        raise
+                    # Ключ не подошёл — пробуем пароль
+                    transport.auth_password(username=user, password=ssh_password)
+            else:
+                transport.auth_password(username=user, password=ssh_password)
 
             if not transport.is_authenticated():
                 raise paramiko.AuthenticationException(
-                    "RSA public-key authentication не выполнена"
+                    "аутентификация не выполнена"
                 )
 
             client = paramiko.SSHClient()
@@ -565,11 +609,21 @@ def _connect_ros7(
     return _attempt(["rsa-sha2-512"])
 
 
+def _check_ros_result(what: str, exit_status: int, out: str, err: str) -> None:
+    """Ошибка команды RouterOS — в коде возврата, stderr или в выводе."""
+    m = _ROS_ERROR_RE.search(out)
+    if exit_status != 0 or err or m:
+        detail = err or (out[m.start():].strip().splitlines()[0] if m else "") or "<пусто>"
+        raise RuntimeError(
+            f"Ошибка создания {what}: exit={exit_status}, {detail[:300]}"
+        )
+
+
 def backup_router_ros7(router, local_dir, client=None):
     host = router["host"]
     user = router.get("username", "admin")
     port = router.get("port", 22)
-    key = _get_key_path(router)
+    key = _key_path_optional(router)
     ssh_password = router.get("ssh_pass", "")
 
     debug = bool(router.get("debug_connection"))
@@ -599,10 +653,21 @@ def backup_router_ros7(router, local_dir, client=None):
         os.makedirs(local_dir, exist_ok=True)
 
         def _exec_logged(command: str) -> tuple[int, str, str]:
-            stdin, stdout, stderr = client.exec_command(command)
+            try:
+                _, stdout, stderr = client.exec_command(
+                    command, timeout=COMMAND_TIMEOUT,
+                )
+                out = stdout.read().decode(errors="ignore").strip()
+                err = stderr.read().decode(errors="ignore").strip()
+            except socket.timeout:
+                raise RuntimeError(
+                    f"RouterOS не ответил на «{command}» за {COMMAND_TIMEOUT} с"
+                ) from None
+            if not stdout.channel.status_event.wait(COMMAND_TIMEOUT):
+                raise RuntimeError(
+                    f"RouterOS не завершил «{command}» за {COMMAND_TIMEOUT} с"
+                )
             exit_status = stdout.channel.recv_exit_status()
-            out = stdout.read().decode(errors="ignore").strip()
-            err = stderr.read().decode(errors="ignore").strip()
 
             if debug:
                 _debug_log.debug(
@@ -616,22 +681,16 @@ def backup_router_ros7(router, local_dir, client=None):
         _exec_logged("/file remove auto-export.rsc")
 
         # 2. Создание backup
-        exit_status, _, err = _exec_logged(
+        exit_status, out, err = _exec_logged(
             "/system backup save name=auto-backup"
         )
-        if exit_status != 0 or err:
-            raise RuntimeError(
-                f"Ошибка создания backup: exit={exit_status}, stderr={err or '<пусто>'}"
-            )
+        _check_ros_result("backup", exit_status, out, err)
 
         # 3. Создание export
-        exit_status, _, err = _exec_logged(
+        exit_status, out, err = _exec_logged(
             "/export file=auto-export"
         )
-        if exit_status != 0 or err:
-            raise RuntimeError(
-                f"Ошибка создания export: exit={exit_status}, stderr={err or '<пусто>'}"
-            )
+        _check_ros_result("export", exit_status, out, err)
 
         # 4. Скачивание файлов
         files_to_download = {
@@ -719,6 +778,12 @@ def backup_router(router):
             preferred, host,
         )
 
+    # Путь ROS6 — системный ssh в режиме BatchMode: только по
+    # ключу. Нет ключа, есть пароль — только путь paramiko (он
+    # работает и с RouterOS 6).
+    if _key_path_optional(router) is None:
+        order = ("7",)
+
     last_error: Exception | None = None
     auth_error: Exception | None = None
 
@@ -790,7 +855,7 @@ PLUGIN = {
     "title": "MikroTik RouterOS",
     "description": (
         "Экспорт конфигурации (.rsc) и бинарный бэкап (.backup); "
-        "RouterOS 6 и 7 определяются сами. Вход по SSH-ключу."
+        "RouterOS 6 и 7 определяются сами. Вход по SSH-ключу или паролю."
     ),
     "auth": ["key", "password"],
     "default_username": "nbm-backup",
@@ -799,7 +864,9 @@ PLUGIN = {
         "Закрытый ключ останется в программе (`data/keys/mikrotik/`). "
         "Нажмите «⬇ Скачать .pub» — файл открытого ключа понадобится в шаге 4. "
         "Свой закрытый RSA-ключ без пароля тоже подойдёт: положите файл в "
-        "`data/keys/mikrotik/` и укажите его имя.",
+        "`data/keys/mikrotik/` и укажите его имя. Можно входить и по паролю "
+        "(поле «Пароль SSH», шаг 4 тогда не нужен), но ключ надёжнее; "
+        "если заданы оба, сначала пробуется ключ.",
         "Группа (Winbox: System → Users → Groups → «+», или в терминале): "
         "`/user group add name=nbm-backup policy=ssh,ftp,read,write,sensitive,policy,test`. "
         "Зачем права: `ssh` — вход; `ftp` — скачивание файлов по SCP; `read` — "

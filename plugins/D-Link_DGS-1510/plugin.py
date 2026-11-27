@@ -9,6 +9,8 @@ import paramiko
 from core import host_keys, ssh
 
 
+LOCAL_FILE = "running-config.cfg"
+
 # ANSI escape sequences (приглашение, цвета и т.п.)
 ANSI_RE = re.compile(r'\x1b\[[0-9;?]*[a-zA-Z]')
 
@@ -33,8 +35,15 @@ def extract_config(raw: str) -> str:
     end = next(
         (i for i in range(start + 1, len(lines))
          if lines[i].strip() == "end"),
-        len(lines) - 1,
+        None,
     )
+    if end is None:
+        # Без «end» вывод оборван (не хватило времени или
+        # пагинация не отключилась): такую копию не сохраняем.
+        raise RuntimeError(
+            "вывод D-Link оборван: нет строки 'end' в конце "
+            "конфигурации — увеличьте ожидание вывода"
+        )
     return "\n".join(lines[start:end + 1]) + "\n"
 
 
@@ -51,7 +60,6 @@ def backup_dlink_ssh(router):
         backup_path      : каталог для сохранения
         timeout          : таймаут установки соединения, сек (10)
         read_timeout     : таймаут чтения конфига, сек (30)
-        filename         : имя файла (по умолчанию "running-config.cfg")
     """
     host = router.get("host") or router.get("ip")
     if not host:
@@ -70,7 +78,7 @@ def backup_dlink_ssh(router):
     read_timeout = float(router.get("read_timeout", 30.0))
 
     backup_dir = router["backup_path"]
-    local_filename = router.get("filename", "running-config.cfg")
+    local_filename = LOCAL_FILE
 
     os.makedirs(backup_dir, exist_ok=True)
     local_file = os.path.join(backup_dir, local_filename)

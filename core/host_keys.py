@@ -69,8 +69,11 @@ def check_and_remember(
     """
     Сверяет ключ хоста с запомненным.
 
-    Нет записи для этого типа ключа — запоминает.
-    Запись есть и не совпадает — BadHostKeyException.
+    Хост ещё не известен — запоминает.
+    Запись есть и не совпадает — BadHostKeyException. Ключ
+    другого типа, чем запомненный, — тоже отказ (как в
+    paramiko.SSHClient): иначе подменённый сервер выдал бы
+    себя за устройство, предъявив ключ ECDSA вместо RSA.
     """
     entry = _host_entry(hostname, port)
     path = KNOWN_HOSTS_FILE
@@ -79,6 +82,8 @@ def check_and_remember(
         keys = _load(path)
         known = keys.lookup(entry)
         expected = known.get(key.get_name()) if known else None
+        if expected is None and known:
+            expected = next(iter(known.values()))
 
         if expected is not None:
             if expected == key:
@@ -138,6 +143,32 @@ def prepare_client(client: paramiko.SSHClient, port: int | str = 22) -> None:
             # автосохранения — пишет только check_and_remember.
             client.get_host_keys().load(str(KNOWN_HOSTS_FILE))
     client.set_missing_host_key_policy(TofuPolicy(port))
+
+
+def prefer_known_key_types(
+    transport: paramiko.Transport,
+    hostname: str,
+    port: int | str = 22,
+) -> None:
+    """
+    До start_client: просить у сервера ключ хоста того типа,
+    что уже запомнен (как делает SSHClient). Иначе после
+    смены порядка алгоритмов в paramiko исправное устройство
+    предъявило бы ключ другого типа и было бы отклонено.
+    """
+    with _lock:
+        known = _load(KNOWN_HOSTS_FILE).lookup(_host_entry(hostname, port))
+    if not known:
+        return
+    options = transport.get_security_options()
+    available = list(options.key_types)
+    # rsa-sha2-* — тот же ключ ssh-rsa, другая подпись
+    first = [
+        t for t in available
+        if t in known or (t.startswith("rsa-sha2-") and "ssh-rsa" in known)
+    ]
+    if first:
+        options.key_types = first + [t for t in available if t not in first]
 
 
 def verify_transport(

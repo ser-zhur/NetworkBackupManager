@@ -7,6 +7,8 @@ import socket
 from core import host_keys
 from core.ssh import CompatTransport
 
+READ_TIMEOUT = 60
+
 
 def backup_pfsense_ssh(router):
     host = router["host"]
@@ -79,11 +81,21 @@ def backup_pfsense_ssh(router):
             username=username,
             pkey=key,
             timeout=10,
+            banner_timeout=15,
+            auth_timeout=30,
             transport_factory=CompatTransport,
         )
 
+        # Таймаут чтения: зависший pfSense не держит бэкап
+        # бесконечно.
         with ssh.open_sftp() as sftp:
-            sftp.get(remote_file, part_file)
+            sftp.get_channel().settimeout(READ_TIMEOUT)
+            try:
+                sftp.get(remote_file, part_file)
+            except socket.timeout:
+                raise TimeoutError(
+                    f"pfSense не передал {remote_file} за {READ_TIMEOUT} с"
+                ) from None
 
         os.replace(part_file, local_file)
 

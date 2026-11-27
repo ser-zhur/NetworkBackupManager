@@ -34,9 +34,15 @@ def plugin(monkeypatch):
     return module
 
 
+TIMEOUTS = []
+
+
 class FakeSFTP:
     def __init__(self, behaviour):
         self.behaviour = behaviour
+
+    def get_channel(self):
+        return type("Chan", (), {"settimeout": lambda _self, t: TIMEOUTS.append(t)})()
 
     def __enter__(self):
         return self
@@ -45,6 +51,8 @@ class FakeSFTP:
         return False
 
     def get(self, remote, local):
+        if self.behaviour == "hang":
+            raise socket.timeout("timed out")
         if self.behaviour == "partial":
             with open(local, "wb") as f:
                 f.write(b"<pfsense><trunc")
@@ -110,4 +118,16 @@ def test_connect_failure_closes(plugin, router, monkeypatch):
     with pytest.raises(socket.error):
         plugin.run_backup(router)
 
+    assert closed == [True]
+
+
+def test_hung_download_times_out(plugin, router, monkeypatch):
+    closed = []
+    TIMEOUTS.clear()
+    monkeypatch.setattr(plugin.paramiko, "SSHClient", make_ssh("hang", closed))
+
+    with pytest.raises(TimeoutError, match="не передал"):
+        plugin.run_backup(router)
+
+    assert TIMEOUTS == [plugin.READ_TIMEOUT]
     assert closed == [True]

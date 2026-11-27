@@ -124,6 +124,8 @@ def mikrotik(monkeypatch, tmp_path):
     )
     key = tmp_path / "id.key"
     key.write_text("k")
+    # Сеть не нужна: транспорт подменяется в тестах
+    monkeypatch.setattr(module.socket, "create_connection", lambda *a, **kw: None)
     module._test_router = {
         "host": "10.0.0.9", "ssh_key": str(key),
         "backup_path": str(tmp_path / "bk"), "ros_version": "7",
@@ -135,6 +137,8 @@ def _fake_transport(server_key, authed):
     class FakeTransport:
         def __init__(self, sock, disabled_algorithms=None): pass
         def start_client(self, timeout=None): pass
+        def get_security_options(self):
+            return type("Opts", (), {"key_types": ["ssh-ed25519", "rsa-sha2-256", "ssh-rsa"]})()
         def get_remote_server_key(self): return server_key
         def auth_publickey(self, username, key): authed.append(True)
         def is_authenticated(self): return True

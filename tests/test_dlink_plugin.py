@@ -79,3 +79,18 @@ def test_old_firmware_changed_key_rejected(plugin, tmp_path):
         with pytest.raises(paramiko.BadHostKeyException):
             plugin.run_backup(device(srv2, tmp_path))
 
+
+
+def test_truncated_output_is_an_error(plugin, tmp_path):
+    truncated = CONFIG.rsplit("end", 1)[0]          # нет «end» — вывод оборван
+    with FakeSSHServer(commands={"show running-config": truncated}) as srv:
+        with pytest.raises(RuntimeError, match="оборван"):
+            plugin.run_backup(device(srv, tmp_path, read_timeout=2))
+    assert not (tmp_path / "backup" / "running-config.cfg").exists()
+
+
+def test_filename_from_device_is_ignored(plugin, tmp_path):
+    with FakeSSHServer(commands={"show running-config": CONFIG}) as srv:
+        files = plugin.run_backup(device(srv, tmp_path, filename="../../evil.cfg"))
+    assert files[0].endswith("running-config.cfg")
+    assert not (tmp_path / "evil.cfg").exists()
