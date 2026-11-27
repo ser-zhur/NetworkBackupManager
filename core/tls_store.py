@@ -391,19 +391,21 @@ def assign(cert_id: str) -> None:
         settings.check_tls_pair(cert_path, key_path)
     except settings.TlsConfigError as exc:
         raise CertError(str(exc)) from exc
-    config = context.load_json(context.CONFIG_FILE, {})
-    config["tls_cert"] = _rel(cert_path)
-    config["tls_key"] = _rel(key_path)
-    context.save_json(context.CONFIG_FILE, config)
+    with context.CONFIG_LOCK:
+        config = context.load_json(context.CONFIG_FILE, {})
+        config["tls_cert"] = _rel(cert_path)
+        config["tls_key"] = _rel(key_path)
+        context.save_json(context.CONFIG_FILE, config)
     logger.info("🔒 Назначен сертификат HTTPS %s", cert_id)
 
 
 def unassign() -> None:
     """Выключить HTTPS: убрать tls_cert/tls_key из config.json."""
-    config = context.load_json(context.CONFIG_FILE, {})
-    config.pop("tls_cert", None)
-    config.pop("tls_key", None)
-    context.save_json(context.CONFIG_FILE, config)
+    with context.CONFIG_LOCK:
+        config = context.load_json(context.CONFIG_FILE, {})
+        config.pop("tls_cert", None)
+        config.pop("tls_key", None)
+        context.save_json(context.CONFIG_FILE, config)
     logger.info("🔒 HTTPS выключен в настройках")
 
 

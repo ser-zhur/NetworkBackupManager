@@ -84,9 +84,10 @@ def is_password_set() -> bool:
 def set_password(password: str) -> None:
     from core.storage import global_config as gc
 
-    config = gc.load_json(gc.CONFIG_FILE, {})
-    config[PASSWORD_KEY] = _storage().encrypt(password)
-    gc.save_json(gc.CONFIG_FILE, config)
+    with gc.CONFIG_LOCK:
+        config = gc.load_json(gc.CONFIG_FILE, {})
+        config[PASSWORD_KEY] = _storage().encrypt(password)
+        gc.save_json(gc.CONFIG_FILE, config)
 
 
 def validate_password(password: str, confirm: str) -> str | None:

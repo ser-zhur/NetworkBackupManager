@@ -273,21 +273,34 @@ def test_sweep_deletes_head(make_repo):
     assert remaining[0]["message"] == "Backup #002"
 
 
-def test_sweep_cannot_delete_all(make_repo):
+def test_marking_all_keeps_current_version(make_repo):
     from core.maintenance import sweep_repo
 
     repo_path, gs = make_repo(n=3)
-    all_shas = {c["sha"] for c in gs.get_history()}
+    history = gs.get_history()
+    head = history[0]["sha"]
 
-    gs.mark_deleted(all_shas)
+    assert gs.mark_deleted({c["sha"] for c in history}) == 2
+    assert head not in gs.get_deleted_shas()
+    assert len(gs.get_history()) == 1                # не «0 версий»
+
     ok, msg = sweep_repo(repo_path)
+    assert ok is True, msg
+    assert [c["message"] for c in gs.get_history()] == ["Backup #003"]
 
-    assert ok is False
-    assert "всю историю" in msg
 
-    # Репа не испорчена — история на месте
-    gs2 = type(gs)(repo_path)
-    assert len(gs2.get_deleted_shas()) == 3
+def test_marking_rest_after_head_keeps_one(make_repo):
+    repo_path, gs = make_repo(n=3)
+    history = gs.get_history()
+    gs.mark_deleted({history[0]["sha"]})              # текущую — можно
+    gs.mark_deleted({history[1]["sha"], history[2]["sha"]})
+    assert len(gs.get_history()) == 1
+
+
+def test_rebuild_still_refuses_to_delete_all(make_repo):
+    repo_path, gs = make_repo(n=3)
+    ok, msg = gs.rebuild_history({c["sha"] for c in gs.get_history()})
+    assert ok is False and "всю историю" in msg
 
 
 # =========================================================

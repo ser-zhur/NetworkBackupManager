@@ -37,7 +37,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from core.context import CONFIG_FILE, load_json, save_json
+from core.context import CONFIG_FILE, CONFIG_LOCK, load_json, save_json
 
 logger = logging.getLogger(__name__)
 
@@ -57,9 +57,10 @@ def load_remotes() -> list[dict]:
 
 
 def save_remotes(remotes: list[dict]) -> None:
-    config = load_json(CONFIG_FILE, {})
-    config[REMOTES_KEY] = remotes
-    save_json(CONFIG_FILE, config)
+    with CONFIG_LOCK:
+        config = load_json(CONFIG_FILE, {})
+        config[REMOTES_KEY] = remotes
+        save_json(CONFIG_FILE, config)
 
 
 def load_global() -> dict:
@@ -316,10 +317,11 @@ def migrate(plugin_manager, storage_manager) -> dict | None:
         if backup:
             report["backups"].append(backup)
 
-        config = load_json(CONFIG_FILE, {})
-        config[REMOTES_KEY] = remotes
-        config.pop(LEGACY_STORAGES_KEY, None)
-        save_json(CONFIG_FILE, config)
+        with CONFIG_LOCK:
+            config = load_json(CONFIG_FILE, {})
+            config[REMOTES_KEY] = remotes
+            config.pop(LEGACY_STORAGES_KEY, None)
+            save_json(CONFIG_FILE, config)
 
         report["created_remotes"] = [r["id"] for r in remotes]
         logger.info(

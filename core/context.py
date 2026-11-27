@@ -58,6 +58,13 @@ WEB_DIR = BASE_DIR / "web"
 # =========================================================
 
 CONFIG_FILE = DATA_DIR / "config.json"
+
+# config.json пишут разные части программы (общие настройки,
+# хранилища, шифрование, HTTPS, путь к rclone): каждая читает
+# файл, меняет свои ключи и записывает целиком. Без общей
+# блокировки два сохранения одновременно теряли бы одно из
+# изменений. Брать на всё «прочитать → изменить → записать».
+CONFIG_LOCK = threading.RLock()
 SCHEDULER_FILE = DATA_DIR / "scheduler.json"
 STATE_FILE = DATA_DIR / "state.json"
 AUTH_FILE = DATA_DIR / "auth.json"

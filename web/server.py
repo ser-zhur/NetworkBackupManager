@@ -107,6 +107,7 @@ from core.version import (
 from core import devices as device_store
 from core import device_status, events, monitoring, notifications, plugin_api
 from core import backup_state, csv_import, settings_backup, tls_store, update_check
+from core import context as context_mod
 
 from core.logger import (
     setup_logging,
@@ -950,6 +951,19 @@ def _device_ref(device_id: str) -> tuple[str, int]:
     raise HTTPException(status_code=404, detail="Устройство не найдено")
 
 
+def _locate_device(routers: list, device_id: str) -> tuple[int, dict] | None:
+    """
+    (номер, запись) устройства с постоянным id в списке
+    плагина. Вызывать под plugin_manager.routers_lock и
+    непосредственно перед изменением: номер мог сдвинуться,
+    пока обработчик ждал форму или работал в другом потоке.
+    """
+    for i, router in enumerate(routers):
+        if router.get("id") == device_id:
+            return i, router
+    return None
+
+
 def _device_id(device_type: str, index: int) -> str:
     """
     (тип, номер) → постоянный id устройства
@@ -972,26 +986,43 @@ def read_log_tail(
     if not file_path.exists():
         return ("Лог-файл пока отсутствует...", 0, False, None)
 
-    try:
-        with open(
-            file_path,
-            "r",
-            encoding="utf-8",
-            errors="ignore",
-        ) as f:
-            lines = f.readlines()
-    except Exception as exc:
-        return (f"Ошибка чтения файла логов: {exc}", 0, False, None)
+    max_l = None if limit == "all" else (int(limit) if limit.isdigit() else 100)
+    needle = f"[{filter_tag}]" if filter_tag else None
 
-    if filter_tag:
-        needle = f"[{filter_tag}]"
-        lines = [ln for ln in lines if needle in ln]
+    # Журнал ротируется (app.log → app.log.1 … app.log.5).
+    # Для журнала устройства смотрим и прежние файлы: иначе
+    # записи давно не бэкапившегося устройства пропадали бы
+    # после ротации. Читаем от нового к старому, пока не
+    # наберётся нужное число строк.
+    files = [file_path]
+    if needle:
+        files += [file_path.with_name(f"{file_path.name}.{i}") for i in range(1, 10)]
+
+    chunks: list[list[str]] = []
+    found = 0
+    for path in files:
+        if not path.exists():
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                part = f.readlines()
+        except Exception as exc:
+            if path == file_path:
+                return (f"Ошибка чтения файла логов: {exc}", 0, False, None)
+            logging.warning("журнал: не удалось прочитать %s: %s", path, exc)
+            continue
+        if needle:
+            part = [ln for ln in part if needle in ln]
+        chunks.insert(0, part)
+        found += len(part)
+        if max_l is not None and found > max_l:
+            break
+    lines = [ln for part in chunks for ln in part]
 
     total_lines = len(lines)
     has_more = False
 
-    if limit != "all":
-        max_l = int(limit) if limit.isdigit() else 100
+    if max_l is not None:
         if total_lines > max_l:
             lines = lines[-max_l:]
             total_lines = len(lines)
@@ -2060,22 +2091,35 @@ def execute_storage_sync_task(
     device_type: str,
     index: int,
     user: str,
+    device_id: str | None = None,
 ) -> dict | None:
     """
     Синхронизация хранилищ одного устройства. Слот уже занят
     вызывающим (try_start_sync); здесь только освобождается.
 
+    device_id — постоянный id: номер index мог сдвинуться,
+    пока задача ждала запуска; по id он берётся заново.
+
     Возвращает результат sync_git_to_storages или None при
     исключении.
     """
-    device_id = _device_id(device_type, index)
-
-    # Тег как у бэкапа — иначе строки синхронизации не видны
-    # в логе устройства (/logs/device/...).
     routers = (
         plugin_manager._plugins.get(device_type, {}).get("routers", [])
         if plugin_manager else []
     )
+    if device_id is None:
+        device_id = _device_id(device_type, index)
+    else:
+        with plugin_manager.routers_lock:
+            found = _locate_device(routers, device_id)
+        if found is None:
+            finish_sync(device_id)
+            logging.warning("☁ sync: устройство %s удалено до запуска", device_id)
+            return None
+        index = found[0]
+
+    # Тег как у бэкапа — иначе строки синхронизации не видны
+    # в логе устройства (/logs/device/...).
     set_device_context(
         device_log_tag(device_type, routers[index])
         if 0 <= index < len(routers)
@@ -2923,6 +2967,18 @@ def remote_delete(rid: str, user: str = Depends(require_auth)):
         raise HTTPException(404, "Хранилище не найдено")
 
     global_config.save_remotes([r for r in remotes if r["id"] != rid])
+
+    # И из расписания копии настроек: иначе каждая плановая
+    # копия падала бы с «хранилище не найдено» — в том числе
+    # для остальных выбранных хранилищ.
+    try:
+        auto = settings_backup.load_auto()
+        if rid in (auto.get("storages") or []):
+            settings_backup.save_auto({
+                "storages": [s for s in auto["storages"] if s != rid],
+            })
+    except Exception as exc:
+        logging.error("хранилище %s: не удалось обновить расписание копии настроек: %s", rid, exc)
 
     devices = 0
     if plugin_manager:
@@ -4201,7 +4257,7 @@ def sync_storages_endpoint(
 
     background_tasks.add_task(
         execute_storage_sync_task,
-        device_type, index, user,
+        device_type, index, user, device_id,
     )
 
     logging.info(
@@ -4277,9 +4333,13 @@ def run_backup(
             status_code=404,
         )
 
-    router = (
-        plugin["routers"][index]
-    )
+    with plugin_manager.routers_lock:
+        found = _locate_device(plugin["routers"], device_id)
+    if found is None:
+        if is_ajax:
+            return Response(status_code=404)
+        raise HTTPException(404, "Устройство не найдено")
+    index, router = found
 
     # Выведено из эксплуатации — бэкап не запускаем.
     # Кнопок в интерфейсе нет; это защита от прямого запроса.
@@ -4376,11 +4436,12 @@ def toggle_pin(
         raise HTTPException(404, "Плагин не найден")
 
     routers = plugin_manager._plugins[device_type].get("routers", [])
-    if not (0 <= index < len(routers)):
-        raise HTTPException(404, "Устройство не найдено")
 
     with plugin_manager.routers_lock:
-        router = routers[index]
+        found = _locate_device(routers, device_id)
+        if found is None:
+            raise HTTPException(404, "Устройство не найдено")
+        index, router = found
         was_pinned = bool(router.get("pinned"))
 
         # 1. Вычисляем новое состояние
@@ -4459,8 +4520,29 @@ async def save_scheduler_config(
     enabled: bool = Form(False),
     mode: str = Form("daily"),
     daily_time: str = Form("03:00"),
-    interval_hours: int = Form(24),
+    interval_hours: str = Form("24"),
 ):
+    # Неверное значение планировщик молча заменил бы на
+    # умолчание (03:00, 24 ч), а в настройках осталось бы
+    # введённое — проверяем здесь и показываем ошибку.
+    def _fail(text: str):
+        return RedirectResponse(
+            url="/settings?tab=scheduler&error=" + urllib.parse.quote(text),
+            status_code=303,
+        )
+
+    if mode not in ("daily", "interval"):
+        return _fail(f"неизвестный режим «{mode}»")
+    try:
+        datetime.strptime(daily_time, "%H:%M")
+    except ValueError:
+        return _fail(f"время — в виде ЧЧ:ММ, например 03:00, а не «{daily_time}»")
+    try:
+        interval_hours = int(interval_hours)
+    except (TypeError, ValueError):
+        return _fail(f"интервал — целое число часов, а не «{interval_hours}»")
+    if not 1 <= interval_hours <= 168:
+        return _fail("интервал — от 1 до 168 часов")
 
     scheduler.save_config({
         "enabled":
@@ -5751,23 +5833,24 @@ async def retention_save(
     keep_with_notes: bool = Form(False),
     auto_sweep: bool = Form(False),
 ):
-    config = load_json(CONFIG_FILE, {})
-    config["retention"] = {
-        "enabled": bool(enabled),
-        "max_age_days": max(1, int(max_age_days)),
-        "keep_last": max(0, int(keep_last)),
-        "keep_with_notes": bool(keep_with_notes),
-        "auto_sweep": bool(auto_sweep),
-    }
+    with context_mod.CONFIG_LOCK:
+        config = load_json(CONFIG_FILE, {})
+        config["retention"] = {
+            "enabled": bool(enabled),
+            "max_age_days": max(1, int(max_age_days)),
+            "keep_last": max(0, int(keep_last)),
+            "keep_with_notes": bool(keep_with_notes),
+            "auto_sweep": bool(auto_sweep),
+        }
 
-    try:
-        save_json(CONFIG_FILE, config)
-    except Exception as exc:
-        logging.error(
-            "retention: не удалось сохранить config.json: %s",
-            exc, exc_info=True,
-        )
-        raise HTTPException(500, "Не удалось сохранить настройки")
+        try:
+            save_json(CONFIG_FILE, config)
+        except Exception as exc:
+            logging.error(
+                "retention: не удалось сохранить config.json: %s",
+                exc, exc_info=True,
+            )
+            raise HTTPException(500, "Не удалось сохранить настройки")
 
     logging.info(
         "⚙ retention: настройки сохранены "
@@ -6161,8 +6244,13 @@ async def delete_device(
     form = await request.form()
     remove_key = form.get("remove_key") == "true"
 
-    if not (0 <= index < len(routers)):
+    # Пока разбиралась форма, другие запросы могли удалить
+    # устройство из того же списка — номер берём заново по id.
+    with plugin_manager.routers_lock:
+        found = _locate_device(routers, device_id)
+    if found is None:
         raise HTTPException(404, "Устройство не найдено")
+    index, router = found
 
     # Нельзя удалять устройство, по которому идёт бэкап или
     # синхронизация: задача допишет файлы в удалённый каталог
@@ -6177,7 +6265,6 @@ async def delete_device(
             "Дождитесь окончания и повторите удаление.",
         )
 
-    router = routers[index]
     host = (
         router.get("host")
         or router.get("ip")
@@ -6255,13 +6342,14 @@ async def delete_device(
     # ---- 2. Удалить запись из devices.json ----
 
     with plugin_manager.routers_lock:
-        # Пока разбиралась форма, список мог измениться —
-        # не удаляем чужую запись.
-        if not (0 <= index < len(routers) and routers[index] is router):
+        # Номер — заново и по самой записи: удаляем ровно её.
+        found = _locate_device(routers, device_id)
+        if found is None or found[1] is not router:
             raise HTTPException(
                 409,
                 "Список устройств изменился. Обновите страницу.",
             )
+        index = found[0]
 
         routers.pop(index)
         try:
@@ -6399,6 +6487,7 @@ def settings_page(
         "scheduler_config": scheduler.config,
         "logs_size": format_size(get_dir_size(LOGS_DIR)),
         "is_backup_running": is_backup_running(),
+        "error": request.query_params.get("error", ""),
     }
 
     if tab == "general":
@@ -7145,12 +7234,54 @@ def settings_notifications_test(channel_id: str, user: str = Depends(require_aut
     return _notifications_redirect(f"«{channel['name']}»: {detail}", ok=False)
 
 
+def _check_listen_address(host: str, port: int, current: tuple[str, int]) -> str:
+    """
+    Текст ошибки или "". Неверный адрес или занятый порт
+    не дали бы веб-серверу запуститься после перезапуска —
+    программа стала бы недоступна до правки config.json.
+
+    Адрес должен принадлежать этому компьютеру (проверка —
+    bind на свободный порт). Новый порт должен быть свободен;
+    порт, на котором программа уже работает, не проверяется
+    (его занимает она сама).
+    """
+    import socket
+
+    if any(ch.isspace() for ch in host):
+        return f"адрес «{host}»: пробелы недопустимы"
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError) as exc:
+        return f"адрес «{host}» не найден: {exc}"
+
+    test_port = 0 if port == current[1] else port
+    family, _, _, _, sockaddr = infos[0]
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        sock.bind((sockaddr[0], test_port, *sockaddr[2:]))
+    except OSError as exc:
+        if test_port == 0:
+            return f"адрес «{host}» не принадлежит этому компьютеру ({exc.strerror or exc})"
+        return f"порт {port} на адресе «{host}» занят другой программой ({exc.strerror or exc})"
+    finally:
+        sock.close()
+    return ""
+
+
 @app.post("/settings/general/save")
 async def settings_general_save(
     request: Request,
     user: str = Depends(require_auth),
 ):
+    from core import settings as nbm_settings
+
     form = await request.form()
+
+    def _fail(text: str):
+        return RedirectResponse(
+            url="/settings?tab=general&error=" + urllib.parse.quote(text),
+            status_code=303,
+        )
 
     host = (form.get("host") or "").strip() or "127.0.0.1"
     try:
@@ -7158,7 +7289,13 @@ async def settings_general_save(
         if not (1 <= port <= 65535):
             raise ValueError()
     except (TypeError, ValueError):
-        port = 8080
+        return _fail(f"порт — число от 1 до 65535, а не «{form.get('port')}»")
+
+    current = nbm_settings.web_config()
+    if (host, port) != current:
+        error = await run_in_threadpool(_check_listen_address, host, port, current)
+        if error:
+            return _fail(error)
 
     open_browser = form.get("open_browser") == "true"
 
@@ -7178,21 +7315,22 @@ async def settings_general_save(
     update_check_on = form.get("update_check") == "true"
 
     # Загружаем существующий config, чтобы не потерять retention и пр.
-    config = load_json(CONFIG_FILE, {})
-    config["host"] = host
-    config["port"] = port
-    config["open_browser"] = open_browser
-    config["max_parallel_backups"] = max_parallel
-    config["backup_timeout_seconds"] = timeout
-    config["tag_rows"] = tag_rows
-    if update_check.env_override() is None:      # задано NBM_UPDATE_CHECK — не трогаем
-        config["update_check"] = update_check_on
+    with context_mod.CONFIG_LOCK:
+        config = load_json(CONFIG_FILE, {})
+        config["host"] = host
+        config["port"] = port
+        config["open_browser"] = open_browser
+        config["max_parallel_backups"] = max_parallel
+        config["backup_timeout_seconds"] = timeout
+        config["tag_rows"] = tag_rows
+        if update_check.env_override() is None:      # задано NBM_UPDATE_CHECK — не трогаем
+            config["update_check"] = update_check_on
 
-    try:
-        save_json(CONFIG_FILE, config)
-    except Exception as exc:
-        logging.error("settings: не удалось сохранить config.json: %s", exc, exc_info=True)
-        raise HTTPException(500, "Не удалось сохранить настройки")
+        try:
+            save_json(CONFIG_FILE, config)
+        except Exception as exc:
+            logging.error("settings: не удалось сохранить config.json: %s", exc, exc_info=True)
+            raise HTTPException(500, "Не удалось сохранить настройки")
 
     logging.info(
         "⚙ Общие настройки обновлены: host=%s, port=%d, "

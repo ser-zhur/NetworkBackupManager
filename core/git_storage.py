@@ -311,11 +311,36 @@ class GitStorage:
             return 0
 
         with self._lock:
+            shas = {str(s) for s in shas}
             current = self._load_deleted()
             before = len(current)
-            current.update(str(s) for s in shas)
+            current.update(shas)
+
+            # Хотя бы одна версия остаётся: если помечены все,
+            # текущая не помечается. Иначе устройство показывало
+            # бы «0 версий», а пересборка отказывалась бы удалять
+            # всё — и очистка падала бы при каждом прогоне.
+            # Удалить текущую версию, оставив более старые, можно.
+            if self.is_initialized():
+                repo = Repo(str(self.repo_path))
+                try:
+                    head = self._head_sha(repo)
+                    all_shas = (
+                        {c.id.decode() for c in self._walk_all(repo, head)}
+                        if head is not None else set()
+                    )
+                finally:
+                    repo.close()
+                if all_shas and all_shas <= current:
+                    current.discard(head.decode())
+                    logger.info(
+                        "git[%s]: помечены все версии — текущая %s "
+                        "оставлена",
+                        self.repo_path.name, head.decode()[:7],
+                    )
+
             self._save_deleted(current)
-            return len(current) - before
+            return max(0, len(current) - before)
 
     def unmark_deleted(
         self,

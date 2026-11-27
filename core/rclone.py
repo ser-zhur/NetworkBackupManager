@@ -30,6 +30,7 @@ from pathlib import Path
 
 from core.context import (
     CONFIG_FILE,
+    CONFIG_LOCK,
     load_json,
     save_json,
 )
@@ -67,13 +68,14 @@ def get_rclone_path() -> str:
 
 
 def set_rclone_path(path: str) -> None:
-    config = load_json(CONFIG_FILE, {})
-    if not isinstance(config, dict):
-        config = {}
-    if "rclone" not in config or not isinstance(config["rclone"], dict):
-        config["rclone"] = {}
-    config["rclone"]["binary_path"] = (path or "").strip()
-    save_json(CONFIG_FILE, config)
+    with CONFIG_LOCK:
+        config = load_json(CONFIG_FILE, {})
+        if not isinstance(config, dict):
+            config = {}
+        if "rclone" not in config or not isinstance(config["rclone"], dict):
+            config["rclone"] = {}
+        config["rclone"]["binary_path"] = (path or "").strip()
+        save_json(CONFIG_FILE, config)
 
 
 # =========================================================
