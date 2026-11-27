@@ -6,7 +6,7 @@ import logging
 
 import paramiko
 
-from core import host_keys
+from core import host_keys, ssh
 
 
 # ANSI escape sequences (приглашение, цвета и т.п.)
@@ -91,6 +91,9 @@ def backup_dlink_ssh(router):
             timeout=connect_timeout,
             allow_agent=False,
             look_for_keys=False,
+            # DGS-1510 предлагает только ssh-dss и ssh-rsa;
+            # paramiko 5 без этого не подключается.
+            transport_factory=ssh.LegacyRSATransport,
         )
 
         # Интерактивная сессия — D-Link требует именно shell,

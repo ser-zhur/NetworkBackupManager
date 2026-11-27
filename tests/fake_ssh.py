@@ -12,7 +12,9 @@
 #     чтение);
 #   • shell — CLI в стиле Cisco: приглашение, эхо ввода,
 #     enable с паролем, пагинатор «--More--» до
-#     «terminal length 0», ответы из словаря commands.
+#     «terminal length 0», ответы из словаря commands;
+#   • old_host_key=True — как старая прошивка: ключ хоста
+#     только ssh-rsa (подпись SHA-1).
 #
 # =========================================================
 
@@ -137,6 +139,7 @@ class FakeSSHServer:
         enable_password=None,
         page_lines=5,
         key_index=0,
+        old_host_key=False,
     ):
         self.username = username
         self.password = password
@@ -148,6 +151,15 @@ class FakeSSHServer:
         self.enable_password = enable_password
         self.page_lines = page_lines
         self.key = host_key(key_index)
+        self.transport_class = paramiko.Transport
+        if old_host_key:
+            from core import ssh
+            self.key = ssh._LegacyRSAKey(key=self.key.key)
+
+            class OldFirmware(ssh.LegacyRSATransport):
+                _preferred_keys = ("ssh-rsa",)
+
+            self.transport_class = OldFirmware
         self.received: list[str] = []
         self._sock = socket.socket()
         self._sock.bind(("127.0.0.1", 0))
@@ -183,7 +195,7 @@ class FakeSSHServer:
                 conn, _ = self._sock.accept()
             except OSError:
                 return
-            t = paramiko.Transport(conn)
+            t = self.transport_class(conn)
             t.add_server_key(self.key)
             if self.sftp_files is not None:
                 t.set_subsystem_handler("sftp", paramiko.SFTPServer, _MemSFTP)

@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 
 import paramiko
+from cryptography.hazmat.primitives import hashes
 
 from core import host_keys
 from core.plugin_api import PluginError
@@ -42,6 +43,27 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\x1b[()][0-
 # Пагинатор стирает свою надпись backspace'ами и пробелами
 _BACKSPACE_RE = re.compile(r" *\x08+ *")
 DEFAULT_PAGER = r"--\s*More\s*--|---- More ----|<--- More --->|Press any key to continue"
+
+
+class _LegacyRSAKey(paramiko.RSAKey):
+    HASHES = {**paramiko.RSAKey.HASHES, "ssh-rsa": hashes.SHA1}
+
+
+class LegacyRSATransport(paramiko.Transport):
+    """
+    Transport, который принимает и ключ хоста ssh-rsa (подпись SHA-1).
+
+    paramiko 5 его убрал, а старые прошивки (D-Link DGS-1510)
+    предлагают только ssh-rsa и ssh-dss. Новые типы ключей
+    по-прежнему в приоритете: ssh-rsa — последним.
+
+        client.connect(..., transport_factory=ssh.LegacyRSATransport)
+    """
+
+    _key_info = {**paramiko.Transport._key_info, "ssh-rsa": _LegacyRSAKey}
+    _preferred_keys = tuple(
+        k for k in paramiko.Transport._preferred_keys if k != "ssh-rsa"
+    ) + ("ssh-rsa",)
 
 
 def device_host(device: dict) -> str:

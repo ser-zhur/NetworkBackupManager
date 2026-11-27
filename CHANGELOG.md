@@ -2,6 +2,16 @@
 
 Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии — [semver](https://semver.org/lang/ru/): MAJOR — несовместимые изменения данных или поведения, MINOR — новые функции, PATCH — исправления.
 
+## [Не выпущено]
+
+### Исправлено
+
+- **D-Link DGS-1510 не подключался:** `Incompatible ssh peer (no acceptable host key)`. Коммутатор предлагает ключ хоста только `ssh-dss` и `ssh-rsa` (подпись SHA-1), а paramiko 5 их больше не принимает. Для D-Link `ssh-rsa` снова разрешён; более новые типы ключей по-прежнему в приоритете, проверка ключа хоста (TOFU) — как раньше.
+
+### Для разработчиков
+
+- `tools/debug/Test_DLink.py` — проверка всех D-Link из программы: что предлагает коммутатор и с какими настройками отдаёт конфигурацию (paramiko, paramiko + `ssh-rsa`, системный ssh). Запуск в Docker: `sudo docker compose exec -T nbm python - < Test_DLink.py`.
+
 ## [2.8.0] — 2026-11-26
 
 ### Новое
