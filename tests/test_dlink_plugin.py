@@ -91,7 +91,7 @@ def test_legacy_transport_prefers_modern_keys(tmp_path):
     """С обычным сервером LegacyRSATransport выбирает ключ rsa-sha2."""
     with FakeSSHServer() as srv:
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        host_keys.prepare_client(client, srv.port)
         client.connect("127.0.0.1", port=srv.port, username=srv.username,
                        password=srv.password, allow_agent=False, look_for_keys=False,
                        transport_factory=ssh.LegacyRSATransport)

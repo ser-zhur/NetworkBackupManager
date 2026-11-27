@@ -219,6 +219,22 @@ def legacy_transport_class():
     return LegacyTransport
 
 
+def _policy_base():
+    import paramiko
+    return paramiko.MissingHostKeyPolicy
+
+
+class _RememberInMemory(_policy_base()):
+    """
+    Незнакомый ключ — принять только на время проверки и
+    вывести отпечаток (в файл не пишется). Запомненный
+    программой ключ сверяется: несовпадение — отказ.
+    """
+
+    def missing_host_key(self, client, hostname, key):
+        client.get_host_keys().add(hostname, key.get_name(), key)
+
+
 def try_paramiko(dev: dict, known, legacy: bool) -> str:
     import paramiko
     client = paramiko.SSHClient()
@@ -227,7 +243,7 @@ def try_paramiko(dev: dict, known, legacy: bool) -> str:
         for name, entry in known.items():
             for ktype, key in entry.items():
                 client.get_host_keys().add(name, ktype, key)
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.set_missing_host_key_policy(_RememberInMemory())
     kwargs = {}
     if legacy:
         kwargs["transport_factory"] = legacy_transport_class()
