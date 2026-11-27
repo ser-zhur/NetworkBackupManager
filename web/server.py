@@ -12,12 +12,14 @@ import time
 import shutil
 import tempfile
 import urllib.parse
+from http import HTTPStatus
 
 from pathlib import Path
 from datetime import datetime
 from contextlib import asynccontextmanager
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from core import rclone as rclone_mod
 from core import rclone_oauth
 
@@ -37,6 +39,12 @@ from fastapi.responses import (
     JSONResponse,
     Response,
 )
+
+from fastapi.exception_handlers import (
+    http_exception_handler,
+    request_validation_exception_handler,
+)
+from fastapi.exceptions import RequestValidationError
 
 from fastapi.templating import (
     Jinja2Templates,
@@ -402,8 +410,11 @@ async def csrf_protect(request: Request, call_next):
             request.headers.get("referer"),
             request.headers.get("host"),
         )
+        message = "Запрос отклонён: отправлен с другого сайта."
+        if _wants_html(request):
+            return _error_page(request, 403, message)
         return Response(
-            "Запрос отклонён: отправлен с другого сайта.",
+            message,
             status_code=403,
             media_type="text/plain; charset=utf-8",
         )
@@ -430,6 +441,103 @@ if (WEB_DIR / "templates").exists():
             / "templates"
         )
     )
+
+
+# =========================================================
+# СТРАНИЦЫ ОШИБОК
+# =========================================================
+#
+# Браузер, открывший страницу или отправивший форму, вместо
+# голого JSON {"detail": ...} получает понятную страницу.
+# API (/api/*) и fetch-запросы (Accept: */*) — по-прежнему
+# JSON: его разбирает JS страниц, скрипты и мониторинг.
+
+# Статус → (значок, заголовок, что делать). Текст ошибки
+# (detail) показывается отдельно, если он не стандартная
+# английская фраза.
+_ERROR_INFO = {
+    400: ("⚠️", "Неверный запрос",
+          "Проверьте введённые данные и повторите."),
+    401: ("🔒", "Нужен вход",
+          "Войдите под учётной записью программы. Если окно входа не появилось, обновите страницу."),
+    403: ("⛔", "Доступ запрещён",
+          "Если вы открыли эту страницу со стороннего сайта или из закладки, "
+          "откройте программу с главной страницы и повторите действие."),
+    404: ("🔍", "Не найдено",
+          "Возможно, устройство или хранилище удалено, или адрес набран с ошибкой."),
+    405: ("↩️", "Адрес не открывается напрямую",
+          "К этому адресу обращаются кнопки программы. Вернитесь на страницу и повторите действие."),
+    409: ("⏳", "Действие сейчас невозможно",
+          "Возможно, оно уже выполняется или данные изменились. Обновите страницу и повторите."),
+    422: ("⚠️", "Неверные данные",
+          "Форма отправлена не полностью или с неверными значениями. Обновите страницу и повторите."),
+    500: ("💥", "Внутренняя ошибка",
+          "Подробности записаны в журнал программы. Если ошибка повторяется, приложите журнал к сообщению о проблеме."),
+    503: ("⏸", "Сервис временно недоступен",
+          "Повторите через несколько секунд."),
+}
+
+
+def _wants_html(request: Request) -> bool:
+    """Страницу ошибки получает только браузер, открывающий страницу."""
+    if request.url.path.startswith("/api/"):
+        return False
+    return "text/html" in (request.headers.get("accept") or "").lower()
+
+
+def _error_page(request: Request, status_code: int, detail=None,
+                headers: dict | None = None):
+    icon, title, hint = _ERROR_INFO.get(
+        status_code,
+        ("⚠️" if status_code < 500 else "💥", f"Ошибка {status_code}", ""),
+    )
+    try:
+        phrase = HTTPStatus(status_code).phrase
+    except ValueError:
+        phrase = ""
+    # Стандартные фразы Starlette («Not Found») — заголовок
+    # уже говорит то же самое по-русски
+    message = detail if isinstance(detail, str) and detail != phrase else ""
+    context = {
+        "status_code": status_code, "icon": icon, "title": title,
+        "message": message, "hint": hint,
+        "method": request.method, "path": request.url.path,
+        "show_log": status_code >= 500,
+    }
+    if templates is None:
+        return Response(f"{title}. {message}".strip(), status_code=status_code,
+                        headers=headers, media_type="text/plain; charset=utf-8")
+    return templates.TemplateResponse(request, "error.html", context,
+                                      status_code=status_code, headers=headers)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _http_error(request: Request, exc: StarletteHTTPException):
+    if not _wants_html(request):
+        return await http_exception_handler(request, exc)
+    return _error_page(request, exc.status_code, exc.detail,
+                       getattr(exc, "headers", None))
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(request: Request, exc: RequestValidationError):
+    if not _wants_html(request):
+        return await request_validation_exception_handler(request, exc)
+    fields = sorted({str(e.get("loc", ["", "?"])[-1]) for e in exc.errors()})
+    return _error_page(request, 422, "Неверные или пропущенные поля: " + ", ".join(fields))
+
+
+@app.exception_handler(Exception)
+async def _unhandled_error(request: Request, exc: Exception):
+    # uvicorn пишет такие ошибки только в консоль (core.logger
+    # отключил ему app.log) — без этой строки причины не найти.
+    logging.error("Необработанная ошибка: %s %s: %s", request.method,
+                  request.url.path, exc, exc_info=exc)
+    # Текст исключения наружу не отдаём: в нём бывают пути и данные
+    if _wants_html(request):
+        return _error_page(request, 500)
+    return JSONResponse({"detail": "Внутренняя ошибка сервера. Подробности — в журнале программы."},
+                        status_code=500)
 
 
 # =========================================================
@@ -2209,11 +2317,11 @@ def api_device_detail(
 ):
     device_type, index = _device_ref(device_id)
     if not plugin_manager or device_type not in plugin_manager._plugins:
-        raise HTTPException(status_code=404, detail="Plugin not found")
+        raise HTTPException(status_code=404, detail="Тип устройства не найден")
 
     routers = plugin_manager._plugins[device_type].get("routers", [])
     if not (0 <= index < len(routers)):
-        raise HTTPException(status_code=404, detail="Device not found")
+        raise HTTPException(status_code=404, detail="Устройство не найдено")
 
     try:
         payload = _build_device_payload(device_type, index, routers[index])

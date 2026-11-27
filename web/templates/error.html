@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    {% include "_base_head.html" %}
+    <title>{{ title }} — Network Backup Manager</title>
+</head>
+{#
+    Страница ошибки для браузера (web/server.py, _error_page).
+    Самостоятельная: без шапки — та требует данных программы,
+    а страница показывается и без входа (401), и когда что-то
+    сломалось (500). API и fetch-запросы получают JSON.
+#}
+<body class="bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-slate-100 min-h-screen
+             flex flex-col items-center justify-center py-16 px-4">
+
+<main class="w-full max-w-lg">
+    <div class="bg-white dark:bg-slate-900 rounded-2xl border border-gray-200 dark:border-slate-800 shadow-sm p-8 text-center">
+
+        <div class="w-16 h-16 mx-auto mb-5 rounded-full flex items-center justify-center text-3xl
+                    {{ 'bg-rose-100 dark:bg-rose-900/60' if status_code >= 500
+                       else 'bg-amber-100 dark:bg-amber-900/60' }}">
+            {{ icon }}
+        </div>
+
+        <p class="text-xs font-mono text-gray-400 dark:text-slate-500 mb-1">Ошибка {{ status_code }}</p>
+        <h1 class="text-xl font-bold mb-3
+                   {{ 'text-rose-700 dark:text-rose-400' if status_code >= 500 else 'text-gray-900 dark:text-slate-100' }}">
+            {{ title }}
+        </h1>
+
+        {% if message %}
+        <p class="text-sm text-gray-700 dark:text-slate-200 mb-2 break-words">{{ message }}</p>
+        {% endif %}
+        {% if hint %}
+        <p class="text-sm text-gray-500 dark:text-slate-400 mb-6">{{ hint }}</p>
+        {% endif %}
+
+        <p class="text-xs font-mono text-gray-400 dark:text-slate-500 mb-6 break-all">
+            {{ method }} {{ path }}
+        </p>
+
+        <div class="flex flex-wrap justify-center gap-2">
+            <button type="button" id="error-back" hidden
+                    class="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium
+                           bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                           border border-gray-200 dark:border-slate-700 transition">
+                ← Назад
+            </button>
+            <a href="/"
+               class="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium
+                      bg-brand-600 hover:bg-brand-700 text-white shadow-sm transition">
+                🏠 На главную
+            </a>
+            {% if show_log %}
+            <a href="/logs/main"
+               class="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium
+                      bg-white dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700
+                      border border-gray-200 dark:border-slate-700 transition">
+                📄 Журнал программы
+            </a>
+            {% endif %}
+        </div>
+    </div>
+
+    <p class="mt-6 text-center text-xs text-gray-400 dark:text-slate-500">
+        Network Backup Manager{% if status_code != 401 %} {{ app_version }}{% endif %}
+    </p>
+</main>
+
+<script>
+    // «Назад» — только если есть куда: страницу могли открыть
+    // по ссылке в новой вкладке.
+    (function () {
+        const back = document.getElementById('error-back');
+        if (history.length > 1) {
+            back.hidden = false;
+            back.addEventListener('click', () => history.back());
+        }
+    })();
+</script>
+</body>
+</html>
