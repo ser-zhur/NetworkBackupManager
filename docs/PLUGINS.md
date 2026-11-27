@@ -188,7 +188,7 @@ def normalize_for_compare(filename: str, data: bytes) -> bytes:   # необяз
 
 | Функция | Назначение |
 |---|---|
-| `ssh.connect(device, default_username=…, default_port=…)` | Подключение с ключом и/или паролем устройства. Ключ хоста запоминается при первом подключении; если он изменился, подключение отклоняется. Ошибки входа и связи превращаются в `PluginError` |
+| `ssh.connect(device, default_username=…, default_port=…)` | Подключение с ключом и/или паролем устройства. Ключ хоста запоминается при первом подключении; если он изменился, подключение отклоняется. Ошибки входа и связи превращаются в `PluginError`. Старые прошивки с SHA-1 (ключ хоста `ssh-rsa`, обмен `group1`/`group14`/`group-exchange-sha1`) тоже подключаются: эти алгоритмы идут последними. Свой `paramiko.SSHClient` в плагине — передайте `transport_factory=ssh.CompatTransport` |
 | `ssh.run(client, command, timeout)` | Выполнить одну команду (exec). Ненулевой код возврата — `PluginError` |
 | `ssh.Shell(client, timeout=…, pager=…)` | Интерактивная сессия: `with ssh.Shell(c) as sh: sh.send("cmd")`. Приглашение определяется само, постраничный вывод пролистывается. Есть также `sh.enable(команда, пароль)` |
 | `ssh.download(client, remote, local, timeout)` | Скачать файл: SFTP, при неудаче — SCP. Возвращает `"sftp"` или `"scp"`; не удалось обоими — `PluginError` с обеими причинами |

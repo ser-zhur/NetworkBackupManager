@@ -146,12 +146,12 @@ def test_ros7_remembers_and_rejects_changed_key(mikrotik, keys, monkeypatch):
     a, b = keys
     authed = []
 
-    monkeypatch.setattr(mikrotik.paramiko, "Transport", _fake_transport(a, authed))
+    monkeypatch.setattr(mikrotik, "CompatTransport", _fake_transport(a, authed))
     mikrotik._connect_ros7("10.0.0.9", 22, "admin", "k")
     assert authed == [True]
 
     authed.clear()
-    monkeypatch.setattr(mikrotik.paramiko, "Transport", _fake_transport(b, authed))
+    monkeypatch.setattr(mikrotik, "CompatTransport", _fake_transport(b, authed))
     with pytest.raises(paramiko.BadHostKeyException):
         mikrotik._connect_ros7("10.0.0.9", 22, "admin", "k")
     assert authed == []          # наш ключ подменённому серверу не предъявлен
@@ -160,7 +160,7 @@ def test_ros7_remembers_and_rejects_changed_key(mikrotik, keys, monkeypatch):
 def test_changed_key_does_not_fall_back_to_ros6(mikrotik, keys, monkeypatch):
     a, b = keys
     host_keys.check_and_remember("10.0.0.9", 22, a)
-    monkeypatch.setattr(mikrotik.paramiko, "Transport", _fake_transport(b, []))
+    monkeypatch.setattr(mikrotik, "CompatTransport", _fake_transport(b, []))
 
     ros6_called = []
     monkeypatch.setattr(

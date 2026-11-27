@@ -93,7 +93,7 @@ def backup_dlink_ssh(router):
             look_for_keys=False,
             # DGS-1510 предлагает только ssh-dss и ssh-rsa;
             # paramiko 5 без этого не подключается.
-            transport_factory=ssh.LegacyRSATransport,
+            transport_factory=ssh.CompatTransport,
         )
 
         # Интерактивная сессия — D-Link требует именно shell,

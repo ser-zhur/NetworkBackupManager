@@ -12,7 +12,7 @@ import importlib.util
 import paramiko
 import pytest
 
-from core import host_keys, ssh
+from core import host_keys
 from core.context import PLUGINS_DIR
 from tests.fake_ssh import FakeSSHServer
 
@@ -79,23 +79,3 @@ def test_old_firmware_changed_key_rejected(plugin, tmp_path):
         with pytest.raises(paramiko.BadHostKeyException):
             plugin.run_backup(device(srv2, tmp_path))
 
-
-def test_plain_paramiko_rejects_old_firmware(tmp_path):
-    """Почему нужен LegacyRSATransport: без него — ошибка из журнала."""
-    with FakeSSHServer(old_host_key=True) as srv:
-        with pytest.raises(Exception, match="no acceptable host key"):
-            ssh.connect(device(srv, tmp_path)).close()
-
-
-def test_legacy_transport_prefers_modern_keys(tmp_path):
-    """С обычным сервером LegacyRSATransport выбирает ключ rsa-sha2."""
-    with FakeSSHServer() as srv:
-        client = paramiko.SSHClient()
-        host_keys.prepare_client(client, srv.port)
-        client.connect("127.0.0.1", port=srv.port, username=srv.username,
-                       password=srv.password, allow_agent=False, look_for_keys=False,
-                       transport_factory=ssh.LegacyRSATransport)
-        try:
-            assert client.get_transport().host_key_type.startswith("rsa-sha2-")
-        finally:
-            client.close()

@@ -9,6 +9,7 @@ import paramiko
 from scp import SCPClient
 
 from core import host_keys
+from core.ssh import CompatTransport
 
 _debug_log = logging.getLogger("nbm.debug")
 
@@ -277,6 +278,9 @@ def backup_router_ros6(router, local_dir):
         "-oMACs=hmac-sha1,hmac-md5",
         "-oKexAlgorithms=+diffie-hellman-group1-sha1",
         "-oPubkeyAcceptedAlgorithms=+ssh-rsa",
+        # OpenSSH 8.8+ не берёт ключ хоста ssh-rsa по умолчанию,
+        # а RouterOS 6 часто другого не предлагает.
+        "-oHostKeyAlgorithms=+ssh-rsa",
         f"{user}@{host}",
     ]
 
@@ -288,6 +292,7 @@ def backup_router_ros6(router, local_dir):
         "-oMACs=hmac-sha1,hmac-md5",
         "-oKexAlgorithms=+diffie-hellman-group1-sha1",
         "-oPubkeyAcceptedAlgorithms=+ssh-rsa",
+        "-oHostKeyAlgorithms=+ssh-rsa",
     ]
 
     # 1. Очистка старых файлов
@@ -458,9 +463,10 @@ def _connect_ros7(
       • rsa-sha2-256  → OK
       • ssh-rsa       → OK (legacy, для очень старых ROS)
 
-    Стратегия двухфазная:
-      1) rsa-sha2-256 (современный, безопаснее)
-      2) ssh-rsa      (легаси-фолбэк для старых ROS)
+    Поэтому rsa-sha2-512 выключен. Подпись ssh-rsa (SHA-1)
+    paramiko 5 не умеет — для таких ROS есть путь ROS6
+    (системный ssh). Ключ хоста ssh-rsa и старый обмен
+    ключами принимает CompatTransport.
     """
     pkey = paramiko.RSAKey.from_private_key_file(key_path)
 
@@ -476,7 +482,7 @@ def _connect_ros7(
         )
 
     def _attempt(disabled_pubkeys):
-        transport = paramiko.Transport(
+        transport = CompatTransport(
             (host, port),
             disabled_algorithms={
                 "pubkeys": list(disabled_pubkeys),
@@ -550,16 +556,7 @@ def _connect_ros7(
                 pass
             raise
 
-    # Phase 1: rsa-sha2-256
-    try:
-        return _attempt(["rsa-sha2-512"])
-    except paramiko.AuthenticationException:
-        if debug:
-            _debug_log.debug(
-                "ros7: rsa-sha2-256 failed, retrying with ssh-rsa"
-            )
-        # Phase 2: ssh-rsa
-        return _attempt(["rsa-sha2-512", "rsa-sha2-256"])
+    return _attempt(["rsa-sha2-512"])
 
 
 def backup_router_ros7(router, local_dir, client=None):
@@ -736,8 +733,8 @@ def backup_router(router):
             #     Paramiko ACL не проверяет — путь ROS7 мог бы
             #     пройти.
             #
-            #   • ssh.exe умеет только ssh-rsa (SHA-1). Paramiko
-            #     двухфазный и умеет rsa-sha2-256. Устройство,
+            #   • ssh.exe и paramiko по-разному выбирают подпись
+            #     (paramiko — только rsa-sha2-256). Устройство,
             #     принимающее только rsa-sha2-256, провалит
             #     ROS6-путь с _AuthFailure, но ROS7-путь прошёл бы.
             #

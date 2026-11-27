@@ -2,6 +2,18 @@
 
 Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версии — [semver](https://semver.org/lang/ru/): MAJOR — несовместимые изменения данных или поведения, MINOR — новые функции, PATCH — исправления.
 
+## [Не выпущено]
+
+### Исправлено
+
+- **Старые прошивки во всех плагинах SSH.** paramiko 5 убрал не только ключ хоста `ssh-rsa`, но и обмен ключами на SHA-1 (`diffie-hellman-group1-sha1`, `group14-sha1`, `group-exchange-sha1`). Устройства, которые другого не умеют (старые прошивки коммутаторов и маршрутизаторов, например D-Link DGS-1510 или Cisco IOS 12.x), не подключались: `Incompatible ssh peer (no acceptable host key / kex algorithm)`. Теперь эти алгоритмы принимаются последними — в универсальном плагине SSH, Fortigate, pfSense, D-Link и MikroTik (путь через paramiko). Современные устройства по-прежнему договариваются о современных алгоритмах; проверка ключа хоста — как раньше.
+- **MikroTik RouterOS 6:** системный ssh (OpenSSH 8.8 и новее — в Docker и в Windows 11) не принимал ключ хоста `ssh-rsa`. Добавлено `-oHostKeyAlgorithms=+ssh-rsa`.
+- MikroTik: убрана вторая попытка входа по ключу с подписью `ssh-rsa` через paramiko — paramiko 5 её не умеет; такие RouterOS по-прежнему подключаются путём RouterOS 6.
+
+### Изменено
+
+- Нужен paramiko 5.0 или новее (в нём закрыта CVE-2026-44405).
+
 ## [2.8.1] — 2026-11-27
 
 ### Исправлено

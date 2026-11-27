@@ -14,7 +14,9 @@
 #     enable с паролем, пагинатор «--More--» до
 #     «terminal length 0», ответы из словаря commands;
 #   • old_host_key=True — как старая прошивка: ключ хоста
-#     только ssh-rsa (подпись SHA-1).
+#     только ssh-rsa (подпись SHA-1); kex=(...) — только эти
+#     алгоритмы обмена ключами (например, group1-sha1);
+#   • authorized_key=PKey — вход и по этому ключу.
 #
 # =========================================================
 
@@ -40,7 +42,11 @@ class _Iface(paramiko.ServerInterface):
         self.srv = srv
 
     def get_allowed_auths(self, username):
-        return "password"
+        return "password,publickey" if self.srv.authorized_key else "password"
+
+    def check_auth_publickey(self, username, key):
+        ok = username == self.srv.username and key == self.srv.authorized_key
+        return paramiko.AUTH_SUCCESSFUL if ok else paramiko.AUTH_FAILED
 
     def check_auth_password(self, username, password):
         if username == self.srv.username and password == self.srv.password:
@@ -140,7 +146,10 @@ class FakeSSHServer:
         page_lines=5,
         key_index=0,
         old_host_key=False,
+        kex=None,
+        authorized_key=None,
     ):
+        self.authorized_key = authorized_key
         self.username = username
         self.password = password
         self.commands = commands or {}
@@ -152,13 +161,24 @@ class FakeSSHServer:
         self.page_lines = page_lines
         self.key = host_key(key_index)
         self.transport_class = paramiko.Transport
-        if old_host_key:
+        if old_host_key or kex:
             from core import ssh
-            self.key = ssh._LegacyRSAKey(key=self.key.key)
 
-            class OldFirmware(ssh.LegacyRSATransport):
-                _preferred_keys = ("ssh-rsa",)
+            class OldFirmware(ssh.CompatTransport):
+                pass
 
+            if old_host_key:
+                self.key = ssh._LegacyRSAKey(key=self.key.key)
+                OldFirmware._preferred_keys = ("ssh-rsa",)
+            if kex:
+                OldFirmware._preferred_kex = tuple(kex)
+                # group-exchange: серверу нужны группы (как /etc/ssh/moduli)
+                from paramiko.primes import ModulusPack
+                pack = ModulusPack()
+                for k in (ssh._KexGroup1SHA1, ssh._KexGroup14SHA1):
+                    bits = k.P.bit_length()
+                    pack._parse_modulus(f"0 2 6 100 {bits - 1} 2 {k.P:X}")
+                OldFirmware._modulus_pack = pack
             self.transport_class = OldFirmware
         self.received: list[str] = []
         self._sock = socket.socket()

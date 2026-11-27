@@ -24,10 +24,13 @@ import os
 import re
 import socket
 import time
+from hashlib import sha1
 from pathlib import Path
 
 import paramiko
 from cryptography.hazmat.primitives import hashes
+from paramiko.kex_gex import KexGexSHA256
+from paramiko.kex_group14 import KexGroup14SHA256
 
 from core import host_keys
 from core.plugin_api import PluginError
@@ -45,25 +48,74 @@ _BACKSPACE_RE = re.compile(r" *\x08+ *")
 DEFAULT_PAGER = r"--\s*More\s*--|---- More ----|<--- More --->|Press any key to continue"
 
 
+# ---------------------------------------------------------
+# Старые прошивки: SHA-1 в SSH
+# ---------------------------------------------------------
+#
+# paramiko 5 убрал всё, что держится на SHA-1: ключ хоста
+# ssh-rsa и обмен ключами diffie-hellman-group1-sha1,
+# group14-sha1, group-exchange-sha1. Коммутаторы и
+# маршрутизаторы со старыми прошивками (D-Link DGS-1510,
+# Cisco IOS 12/15, ProCurve, Comware 5, RouterOS 6) другого
+# не умеют и без этого не подключаются: «Incompatible ssh
+# peer (no acceptable host key / kex algorithm)».
+#
+# CompatTransport возвращает их в конец списков: устройство,
+# которое умеет новое, договорится о новом. Подменить выбор
+# посредник не может — список алгоритмов входит в хеш
+# обмена, который подписан ключом хоста.
+#
+# ---------------------------------------------------------
+
 class _LegacyRSAKey(paramiko.RSAKey):
     HASHES = {**paramiko.RSAKey.HASHES, "ssh-rsa": hashes.SHA1}
 
 
-class LegacyRSATransport(paramiko.Transport):
+class _KexGroup14SHA1(KexGroup14SHA256):
+    name = "diffie-hellman-group14-sha1"
+    hash_algo = sha1
+
+
+class _KexGroup1SHA1(_KexGroup14SHA1):
+    # RFC 2409, 6.2 — Oakley Group 2, 1024 бит
+    P = int(
+        "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74"
+        "020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F1437"
+        "4FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7ED"
+        "EE386BFB5A899FA5AE9F24117C4B1FE649286651ECE65381FFFFFFFFFFFFFFFF",
+        16,
+    )
+    name = "diffie-hellman-group1-sha1"
+
+
+class _KexGexSHA1(KexGexSHA256):
+    name = "diffie-hellman-group-exchange-sha1"
+    hash_algo = sha1
+    min_bits = 1024   # старые серверы предлагают и 1024-битные группы
+
+
+# В порядке предпочтения: сильнее — раньше
+_LEGACY_KEX = (_KexGexSHA1, _KexGroup14SHA1, _KexGroup1SHA1)
+
+
+def _append(preferred, extra) -> tuple:
+    return tuple(k for k in preferred if k not in extra) + tuple(extra)
+
+
+class CompatTransport(paramiko.Transport):
     """
-    Transport, который принимает и ключ хоста ssh-rsa (подпись SHA-1).
+    Transport, который принимает и старые алгоритмы на SHA-1
+    (ключ хоста ssh-rsa, обмен group1/group14/gex-sha1) —
+    последними, после современных.
 
-    paramiko 5 его убрал, а старые прошивки (D-Link DGS-1510)
-    предлагают только ssh-rsa и ssh-dss. Новые типы ключей
-    по-прежнему в приоритете: ssh-rsa — последним.
-
-        client.connect(..., transport_factory=ssh.LegacyRSATransport)
+        client.connect(..., transport_factory=ssh.CompatTransport)
     """
 
     _key_info = {**paramiko.Transport._key_info, "ssh-rsa": _LegacyRSAKey}
-    _preferred_keys = tuple(
-        k for k in paramiko.Transport._preferred_keys if k != "ssh-rsa"
-    ) + ("ssh-rsa",)
+    _preferred_keys = _append(paramiko.Transport._preferred_keys, ("ssh-rsa",))
+
+    _kex_info = {**paramiko.Transport._kex_info, **{k.name: k for k in _LEGACY_KEX}}
+    _preferred_kex = _append(paramiko.Transport._preferred_kex, [k.name for k in _LEGACY_KEX])
 
 
 def device_host(device: dict) -> str:
@@ -122,6 +174,7 @@ def connect(
             auth_timeout=timeout,
             allow_agent=False,
             look_for_keys=False,
+            transport_factory=CompatTransport,
         )
     except paramiko.BadHostKeyException:
         client.close()

@@ -5,6 +5,7 @@ import paramiko
 import socket
 
 from core import host_keys
+from core.ssh import CompatTransport
 
 
 def backup_pfsense_ssh(router):
@@ -78,6 +79,7 @@ def backup_pfsense_ssh(router):
             username=username,
             pkey=key,
             timeout=10,
+            transport_factory=CompatTransport,
         )
 
         with ssh.open_sftp() as sftp:
