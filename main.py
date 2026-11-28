@@ -155,7 +155,7 @@ else:
 # config.json). Пароль — core/auth.py.
 
 from core import settings
-from core.auth import MIN_PASSWORD_LENGTH, hash_password, save_user, ensure_user_from_env
+from core.auth import MIN_PASS_CHARS, hash_password, save_user, ensure_user_from_env
 
 
 # =========================================================
@@ -187,8 +187,8 @@ def create_user_console() -> int:
         return 1
 
     password = getpass.getpass("Пароль: ")
-    if len(password) < MIN_PASSWORD_LENGTH:
-        print(f"Пароль слишком короткий (минимум {MIN_PASSWORD_LENGTH} символов).")
+    if len(password) < MIN_PASS_CHARS:
+        print(f"Пароль слишком короткий (минимум {MIN_PASS_CHARS} символов).")
         return 1
     if getpass.getpass("Повторите пароль: ") != password:
         print("Пароли не совпадают.")
@@ -217,7 +217,7 @@ def init_user_from_env() -> int:
 
     Существующего пользователя не меняет.
     Код выхода: 0 — создан или уже был; 2 — пароль не задан;
-    3 — пароль короче MIN_PASSWORD_LENGTH; 4 — неверный NBM_PORT;
+    3 — пароль короче MIN_PASS_CHARS; 4 — неверный NBM_PORT;
     1 — ошибка.
     """
     try:
@@ -233,8 +233,8 @@ def init_user_from_env() -> int:
     creds = settings.admin_from_env()
     if creds is None:
         return 2
-    if len(creds[1]) < MIN_PASSWORD_LENGTH:
-        logger.error("--init-user: пароль короче %s символов", MIN_PASSWORD_LENGTH)
+    if len(creds[1]) < MIN_PASS_CHARS:
+        logger.error("--init-user: пароль короче %s символов", MIN_PASS_CHARS)
         return 3
     try:
         ensure_user_from_env()
@@ -455,11 +455,11 @@ def create_user() -> int:
             password_entry.focus_set()
             return
 
-        if len(password) < MIN_PASSWORD_LENGTH:
+        if len(password) < MIN_PASS_CHARS:
             messagebox.showerror(
                 "Ошибка",
                 "Пароль должен содержать "
-                f"минимум {MIN_PASSWORD_LENGTH} символов.",
+                f"минимум {MIN_PASS_CHARS} символов.",
                 parent=root,
             )
             password_entry.focus_set()

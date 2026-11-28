@@ -33,7 +33,7 @@ UNIT_FILE=/etc/systemd/system/$UNIT
 USER_NAME=nbm
 RCLONE_VERSION_PIN=v1.72.0
 MIN_PY=(3 11)
-MIN_PASSWORD=8          # как MIN_PASSWORD_LENGTH в core/auth.py
+MIN_PASSWORD=8          # как MIN_PASS_CHARS в core/auth.py
 
 PORT=""
 HOST=""

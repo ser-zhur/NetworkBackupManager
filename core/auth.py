@@ -55,7 +55,7 @@ def verify_password(password: str, stored: str) -> bool:
 
 # Одно правило для всех способов создать пользователя: окно и
 # консоль --create-user, установщики, NBM_ADMIN_PASSWORD
-MIN_PASSWORD_LENGTH = 8
+MIN_PASS_CHARS = 8
 
 
 def user_exists() -> bool:
@@ -84,11 +84,11 @@ def ensure_user_from_env() -> bool:
     creds = settings.admin_from_env()
     if creds is None or user_exists():
         return False
-    if len(creds[1]) < MIN_PASSWORD_LENGTH:
+    if len(creds[1]) < MIN_PASS_CHARS:
         logger.error(
             "NBM_ADMIN_PASSWORD короче %s символов — пользователь не создан. "
             "Задайте пароль длиннее или создайте пользователя командой --create-user",
-            MIN_PASSWORD_LENGTH,
+            MIN_PASS_CHARS,
         )
         return False
     save_user(*creds)
