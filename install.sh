@@ -11,8 +11,8 @@
 # Запускать из папки с исходниками (git clone или архив релиза).
 #
 #   /opt/nbm/app        код (прежняя версия — /opt/nbm/app.prev)
-#   /opt/nbm/venv       Python-окружение
-#   /var/lib/nbm        данные: data/, backups/, logs/
+#   /opt/nbm/venv       Python-окружение (прежнее — /opt/nbm/venv.prev)
+#   /var/lib/nbm        данные: data/, backups/, logs/, plugins/ (свои)
 #   /etc/nbm/nbm.env    настройки (NBM_*)
 #   networkbackupmanager.service — служба, пользователь nbm
 #
@@ -33,6 +33,7 @@ UNIT_FILE=/etc/systemd/system/$UNIT
 USER_NAME=nbm
 RCLONE_VERSION_PIN=v1.72.0
 MIN_PY=(3 11)
+MIN_PASSWORD=8          # как MIN_PASSWORD_LENGTH в core/auth.py
 
 PORT=""
 HOST=""
@@ -108,6 +109,10 @@ if [ "$UNINSTALL" = 1 ]; then
 fi
 
 [ -f "$SRC/main.py" ] && [ -d "$SRC/core" ] || die "Запускайте install.sh из папки с исходниками программы"
+
+if [ -n "${NBM_ADMIN_PASSWORD:-}" ] && [ ! -f "$DATA/data/auth.json" ] && [ "${#NBM_ADMIN_PASSWORD}" -lt "$MIN_PASSWORD" ]; then
+    die "NBM_ADMIN_PASSWORD: не короче $MIN_PASSWORD символов"
+fi
 
 # =========================================================
 # Пакеты ОС
@@ -216,6 +221,9 @@ fi
 FIRST_INSTALL=0
 [ -f "$UNIT_FILE" ] || FIRST_INSTALL=1
 
+# data/ — ссылка: chmod ниже сменил бы права папки, на которую
+# она указывает (её мог подменить пользователь службы)
+[ ! -L "$DATA/data" ] || die "$DATA/data — символическая ссылка. Замените её обычной папкой"
 mkdir -p "$DATA/data" "$DATA/logs" "$DATA/backups" "$ETC" "$PREFIX"
 # Только чужие файлы (например, скопированные при переезде от root)
 find "$DATA" \( ! -user "$USER_NAME" -o ! -group "$USER_NAME" \) -exec chown -h "$USER_NAME:$USER_NAME" {} +
@@ -285,20 +293,25 @@ tar -C "$SRC" \
     -cf - main.py requirements.txt core web plugins storages \
     | tar -C "$PREFIX/app.new" -xf -
 
+# Новое окружение собирается рядом (venv.new) и подменяет рабочее
+# вместе с кодом. Работающая служба до этого не затрагивается: сбой
+# pip (нет сети) ничего не ломает, а откат возвращает прежний код
+# вместе с его библиотеками.
 VENV="$PREFIX/venv"
-if [ -x "$VENV/bin/python" ] && [ "$("$VENV/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)" != "$PY_VER" ]; then
-    warn "Python изменился — пересоздаю окружение"
-    rm -rf "$VENV"
-fi
-if [ ! -x "$VENV/bin/python" ]; then
-    say "Создаю Python-окружение $VENV"
-    "$PY" -m venv "$VENV"
+VENV_NEW="$PREFIX/venv.new"
+rm -rf "$VENV_NEW"
+if [ -x "$VENV/bin/python" ] && [ "$("$VENV/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null)" = "$PY_VER" ]; then
+    say "Копирую Python-окружение"
+    cp -a "$VENV" "$VENV_NEW"
+else
+    [ ! -d "$VENV" ] || warn "Python изменился — создаю окружение заново"
+    say "Создаю Python-окружение"
+    "$PY" -m venv "$VENV_NEW"
 fi
 say "Устанавливаю зависимости (pip)…"
-"$VENV/bin/python" -m pip install -q --disable-pip-version-check --upgrade pip
-"$VENV/bin/python" -m pip install -q --disable-pip-version-check -r "$PREFIX/app.new/requirements.txt"
-"$VENV/bin/python" -m compileall -q "$PREFIX/app.new" >/dev/null || true
-VERSION="$("$VENV/bin/python" "$PREFIX/app.new/main.py" --version 2>/dev/null | head -1 | awk '{print $NF}' || true)"
+"$VENV_NEW/bin/python" -m pip install -q --disable-pip-version-check --upgrade pip
+"$VENV_NEW/bin/python" -m pip install -q --disable-pip-version-check -r "$PREFIX/app.new/requirements.txt"
+VERSION="$(sed -n 's/^__version__ *= *"\([^"]*\)".*/\1/p' "$PREFIX/app.new/core/version.py" | head -1)"
 VERSION="${VERSION:-?}"
 ok "Версия: $VERSION"
 
@@ -388,6 +401,12 @@ if [ -d "$PREFIX/app" ]; then
     mv "$PREFIX/app" "$PREFIX/app.prev"
 fi
 mv "$PREFIX/app.new" "$PREFIX/app"
+rm -rf "$PREFIX/venv.prev"
+if [ -d "$VENV" ]; then
+    mv "$VENV" "$PREFIX/venv.prev"
+fi
+mv "$VENV_NEW" "$VENV"
+"$VENV/bin/python" -m compileall -q "$PREFIX/app" >/dev/null || true
 chown -R root:root "$PREFIX"
 chmod -R go-w "$PREFIX"
 systemctl enable "$UNIT" >/dev/null 2>&1
@@ -399,9 +418,13 @@ if ! wait_healthy; then
     if [ -d "$PREFIX/app.prev" ]; then
         warn "Новая версия не запустилась — возвращаю прежнюю"
         systemctl stop "$UNIT" || true
-        rm -rf "$PREFIX/app.failed"
+        rm -rf "$PREFIX/app.failed" "$PREFIX/venv.failed"
         mv "$PREFIX/app" "$PREFIX/app.failed"
         mv "$PREFIX/app.prev" "$PREFIX/app"
+        if [ -d "$PREFIX/venv.prev" ]; then
+            mv "$VENV" "$PREFIX/venv.failed"
+            mv "$PREFIX/venv.prev" "$VENV"
+        fi
         systemctl reset-failed "$UNIT" 2>/dev/null || true
         systemctl start "$UNIT"
         wait_healthy && die "Обновление не удалось (журнал выше); работает прежняя версия. Новая — в $PREFIX/app.failed" \
@@ -427,7 +450,7 @@ if [ -n "$NEW_PASSWORD" ]; then
     echo "  Вход:           ${NBM_ADMIN_USER:-admin} / $NEW_PASSWORD"
     echo "                  (сохраните; сменить — в программе или: sudo -u $USER_NAME env NBM_HOME=$DATA $VENV/bin/python $PREFIX/app/main.py --create-user)"
 fi
-echo "  Данные:         $DATA   (SSH-ключи устройств — $DATA/data/keys/<тип>/)"
+echo "  Данные:         $DATA   (SSH-ключи устройств — $DATA/data/keys/<тип>/, свои плагины — $DATA/plugins/)"
 echo "  Настройки:      $ENV_FILE"
 echo "  Журнал:         journalctl -u $UNIT -f   или   $DATA/logs/app.log"
 echo "  Обновление:     sudo ./install.sh  (из папки новой версии)"

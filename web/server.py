@@ -6095,6 +6095,7 @@ def _protected_dirs() -> list[Path]:
         DATA_DIR,
         LOGS_DIR,
         PLUGINS_DIR,
+        *([context_mod.USER_PLUGINS_DIR] if context_mod.USER_PLUGINS_DIR else []),
         WEB_DIR,
         BACKUPS_DIR,
         BASE_DIR / "storages",

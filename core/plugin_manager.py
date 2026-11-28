@@ -23,6 +23,7 @@ from core import plugin_api
 from core.secure_storage import get_secure_storage
 from core.context import (
     PLUGINS_DIR,
+    USER_PLUGINS_DIR,
     STATE_FILE,
     load_json,
     save_json,
@@ -73,6 +74,8 @@ _STATE_LOCK = threading.Lock()
 class PluginManager:
     def __init__(self, storage_manager=None):
         self.plugins_dir = PLUGINS_DIR
+        # Свои плагины в папке данных (Linux, Docker); None — нет
+        self.user_plugins_dir = USER_PLUGINS_DIR
         self._plugins = {}
         # Плагины, не прошедшие загрузку: {папка: причина}
         self.plugin_errors: dict[str, str] = {}
@@ -248,18 +251,29 @@ class PluginManager:
         plugin_errors (видна в настройках).
         """
         self.plugin_errors = {}
-        items = (
-            sorted(os.listdir(self.plugins_dir), key=str.lower)
-            if os.path.exists(self.plugins_dir) else []
-        )
+        seen = {}
+        items = []
+        for base in (self.plugins_dir, self.user_plugins_dir):
+            if base and os.path.isdir(base):
+                items += [
+                    (item, os.path.join(base, item))
+                    for item in sorted(os.listdir(base), key=str.lower)
+                ]
 
-        for item in items:
-            item_path = os.path.join(self.plugins_dir, item)
+        for item, item_path in items:
             plugin_file = os.path.join(item_path, "plugin.py")
             if not os.path.isfile(plugin_file):
                 continue
 
             device_type = item.lower()
+            if device_type in seen:
+                # Свой плагин с именем встроенного: встроенный
+                # обновляется вместе с программой — оставляем его
+                reason = f"тип {device_type} уже есть ({seen[device_type]}) — переименуйте папку"
+                self.plugin_errors[item_path] = reason
+                logging.error("❌ Плагин %s не загружен: %s", item_path, reason)
+                continue
+            seen[device_type] = item_path
             try:
                 spec = importlib.util.spec_from_file_location(
                     f"plugin_{item}", plugin_file,

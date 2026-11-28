@@ -50,6 +50,10 @@ DATA_DIR = HOME_DIR / "data"
 LOGS_DIR = HOME_DIR / "logs"
 BACKUPS_DIR = HOME_DIR / "backups"
 PLUGINS_DIR = BASE_DIR / "plugins"
+# Свои плагины пользователя — в папке данных: на Linux код при
+# обновлении заменяется целиком, в Docker он внутри образа.
+# На Windows данные и код в одной папке — это та же plugins\.
+USER_PLUGINS_DIR = HOME_DIR / "plugins" if HOME_DIR != BASE_DIR else None
 WEB_DIR = BASE_DIR / "web"
 
 
@@ -76,6 +80,10 @@ KEYS_DIR = DATA_DIR / "keys"
 # Ключ шифрования паролей и секретов (Fernet).
 # Раньше лежал в корне программы — см. secure_storage.
 SECRET_KEY_FILE = DATA_DIR / "secret.key"
+
+# Адрес веб-интерфейса, который служба Windows сообщает ярлыку
+# (см. settings.write_web_address). В папке программы, не в data\.
+WEB_ADDRESS_FILE = BASE_DIR / "web-address.txt"
 
 
 # =========================================================

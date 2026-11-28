@@ -184,22 +184,30 @@ def setup_logging(level: int = logging.INFO) -> logging.Logger:
     context_filter = DeviceContextFilter()
     debug_filter = ThreadDebugFilter()
 
-    file_handler = logging.handlers.RotatingFileHandler(
-        LOG_FILE,
-        maxBytes=5 * 1024 * 1024,
-        backupCount=5,
-        encoding="utf-8",
-    )
-    file_handler.setFormatter(formatter)
-    file_handler.addFilter(context_filter)
-    file_handler.addFilter(debug_filter)
+    # Нет прав на logs\ (ярлык на Windows запущен без прав
+    # администратора — папка закрыта установщиком): только
+    # консоль, а не падение при запуске
+    try:
+        file_handler = logging.handlers.RotatingFileHandler(
+            LOG_FILE,
+            maxBytes=5 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        )
+    except OSError:
+        file_handler = None
+    else:
+        file_handler.setFormatter(formatter)
+        file_handler.addFilter(context_filter)
+        file_handler.addFilter(debug_filter)
 
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
     console_handler.addFilter(context_filter)
     console_handler.addFilter(debug_filter)
 
-    root.addHandler(file_handler)
+    if file_handler is not None:
+        root.addHandler(file_handler)
     root.addHandler(console_handler)
 
     setattr(root, _INIT_FLAG, True)

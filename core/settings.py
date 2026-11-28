@@ -94,6 +94,50 @@ def web_config() -> tuple[str, int]:
     return host.strip(), port or DEFAULT_PORT
 
 
+def connect_host(host: str) -> str:
+    """
+    Адрес, по которому к своему веб-серверу подключается сама
+    программа и браузер. 0.0.0.0 и :: — «все интерфейсы»: к ним
+    не подключиться (Windows отказывает, браузеры блокируют),
+    вместо них — 127.0.0.1 и ::1.
+    """
+    h = (host or "").strip().strip("[]")
+    if h in ("", "0.0.0.0"):
+        return "127.0.0.1"
+    if h == "::":
+        return "::1"
+    return h
+
+
+def local_url(scheme: str, host: str, port: int) -> str:
+    """Ссылка на свой веб-интерфейс (IPv6 — в квадратных скобках)."""
+    h = connect_host(host)
+    if ":" in h:
+        h = f"[{h}]"
+    return f"{scheme}://{h}:{port}"
+
+
+def write_web_address(url: str) -> None:
+    """
+    Служба Windows записывает свой адрес в папку программы. Папка
+    данных закрыта от обычных пользователей, и ярлык, запущенный
+    без прав администратора, узнаёт адрес только отсюда. Секретов
+    в файле нет.
+    """
+    try:
+        context.WEB_ADDRESS_FILE.write_text(url + "\n", encoding="utf-8")
+    except OSError as exc:
+        logger.debug("Не удалось записать %s: %s", context.WEB_ADDRESS_FILE, exc)
+
+
+def read_web_address() -> str:
+    try:
+        url = context.WEB_ADDRESS_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    return url if url.startswith(("http://", "https://")) else ""
+
+
 def open_browser() -> bool:
     """Открывать ли браузер при запуске (не в контейнере и не если выключено)."""
     if in_container():

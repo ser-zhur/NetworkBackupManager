@@ -82,7 +82,7 @@ jobs:
       - name: Update keeps data and login
         run: |
           sudo ./install.sh
-          [ -d /opt/nbm/app.prev ]
+          [ -d /opt/nbm/app.prev ] && [ -d /opt/nbm/venv.prev ] && [ ! -e /opt/nbm/venv.new ]
           sudo grep -q '192.0.2.10' /var/lib/nbm/data/devices.json
           curl -fsS -u "admin:$PASS" "$URL/add" >/dev/null
           sudo grep -q '^NBM_PORT=8090' /etc/nbm/nbm.env
@@ -93,7 +93,7 @@ jobs:
           cp -a . "$broken/src"
           sed -i '1i raise SystemExit("broken build")' "$broken/src/main.py"
           if sudo "$broken/src/install.sh"; then echo "должно было упасть"; exit 1; fi
-          [ -d /opt/nbm/app.failed ]
+          [ -d /opt/nbm/app.failed ] && [ -d /opt/nbm/venv.failed ] && [ -x /opt/nbm/venv/bin/python ]
           ! grep -q "broken build" /opt/nbm/app/main.py || exit 1
           curl -fsS -u "admin:$PASS" "$URL/api/health"
 

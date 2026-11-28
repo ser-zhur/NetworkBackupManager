@@ -90,22 +90,25 @@ Source: "dist\NetworkBackupManager\storages\*";           DestDir: "{app}\storag
 Source: "dist\NetworkBackupManager\plugins\*";            DestDir: "{app}\plugins";   Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\{#MyAppName}";           Filename: "{app}\{#MyAppExeName}"; Comment: "Запустить Network Backup Manager"
-Name: "{group}\Открыть веб-панель";     Filename: "http://127.0.0.1:8080"
+; Ярлык запускает программу: без прав администратора она открывает
+; веб-интерфейс по адресу, который записала служба (порт и HTTPS —
+; как в настройках), а не по зашитому http://127.0.0.1:8080
+Name: "{group}\{#MyAppName}";           Filename: "{app}\{#MyAppExeName}"; Comment: "Открыть веб-интерфейс Network Backup Manager"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}";     Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-; Открыть веб-панель после установки (пользователь может снять галку).
-; Внимание: служба стартует в ssPostInstall секундой ранее, uvicorn
-; поднимается не мгновенно — при первом клике браузер может показать
-; «не удаётся получить доступ». Через 2–3 секунды обновление страницы
-; решает проблему.
-Filename: "http://127.0.0.1:8080"; Description: "Открыть веб-панель в браузере"; Flags: shellexec nowait postinstall skipifsilent
+; Открыть веб-интерфейс после установки (пользователь может снять
+; галку). Программа от имени вошедшего пользователя дожидается
+; запуска службы и открывает её настоящий адрес.
+Filename: "{app}\{#MyAppExeName}"; Description: "Открыть веб-интерфейс в браузере"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
-; Секции [UninstallDelete] нет намеренно: data\secret.key (ключ
-; шифрования паролей) удаляется только вместе с остальными
-; данными и только по согласию пользователя (usPostUninstall).
+[UninstallDelete]
+; Адрес веб-интерфейса для ярлыка (пишет служба). data\secret.key
+; (ключ шифрования паролей) здесь нет намеренно: он удаляется только
+; вместе с остальными данными и по согласию пользователя
+; (usPostUninstall).
+Type: files; Name: "{app}\web-address.txt"
 
 [Code]
 
@@ -121,6 +124,11 @@ Filename: "http://127.0.0.1:8080"; Description: "Открыть веб-пане�
 // Тихая установка: страница не показывается; если в окружении
 // установщика задан NBM_ADMIN_PASSWORD (и, по желанию,
 // NBM_ADMIN_USER), пользователь создаётся из него.
+//
+// На той же странице — порт веб-интерфейса (проверяется, не
+// занят ли): занятый порт — служба перезапускалась бы по кругу,
+// а сменить его в интерфейсе было бы нельзя. --init-user
+// записывает его из NBM_PORT в config.json.
 
 var
   UserPage: TInputQueryWizardPage;
@@ -146,7 +154,26 @@ begin
   UserPage.Add('Логин:', False);
   UserPage.Add('Пароль:', True);
   UserPage.Add('Повторите пароль:', True);
+  UserPage.Add('Порт веб-интерфейса:', False);
   UserPage.Values[0] := 'admin';
+  UserPage.Values[3] := '8080';
+end;
+
+// Порт слушает другая программа (не прежняя копия NBM).
+// Нет Get-NetTCPConnection или ошибка — считаем свободным.
+function PortBusy(Port: Integer): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := False;
+  if Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+          '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' +
+          '$c = Get-NetTCPConnection -State Listen -LocalPort ' + IntToStr(Port) +
+          ' -ErrorAction SilentlyContinue | Where-Object { ' +
+          '(Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName -ne ''NetworkBackupManager'' }; ' +
+          'if ($c) { exit 1 } else { exit 0 }"',
+          '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Result := (ResultCode = 1);
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
@@ -165,6 +192,7 @@ end;
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
   Login: String;
+  Port: Integer;
 begin
   Result := True;
   if (UserPage = nil) or (CurPageID <> UserPage.ID) or WizardSilent() then
@@ -184,56 +212,75 @@ begin
   begin
     MsgBox('Пароли не совпадают.', mbError, MB_OK);
     Result := False;
+  end
+  else
+  begin
+    Port := StrToIntDef(Trim(UserPage.Values[3]), 0);
+    if (Port < 1) or (Port > 65535) then
+    begin
+      MsgBox('Порт — число от 1 до 65535.', mbError, MB_OK);
+      Result := False;
+    end
+    else if PortBusy(Port) then
+    begin
+      MsgBox('Порт ' + IntToStr(Port) + ' занят другой программой. ' +
+             'Укажите другой, например 8090.', mbError, MB_OK);
+      Result := False;
+    end;
   end;
 end;
 
 procedure CreateWebUser();
 var
-  Login, Password: String;
+  Login, Password, Reason: String;
   ResultCode: Integer;
-  Created: Boolean;
+  FromPage: Boolean;
 begin
   if FileExists(AuthFile()) then
     Exit;
 
-  Password := '';
-  if UserPage <> nil then
+  // Со страницы мастера — пользователь и порт через окружение;
+  // в тихой установке они уже в окружении (NBM_ADMIN_USER,
+  // NBM_ADMIN_PASSWORD, NBM_PORT), --init-user возьмёт их сам
+  FromPage := (UserPage <> nil) and (UserPage.Values[1] <> '');
+  if FromPage then
   begin
     Login := Trim(UserPage.Values[0]);
     Password := UserPage.Values[1];
-  end;
-
-  if Password <> '' then
-  begin
     SetEnvironmentVariable('NBM_ADMIN_USER', Login);
     SetEnvironmentVariable('NBM_ADMIN_PASSWORD', Password);
-  end
-  else if GetEnv('NBM_ADMIN_PASSWORD') = '' then
-  begin
-    // Тихая установка без пароля: пользователя создадут позже
-    Log('Пользователь веб-интерфейса не задан — нужен --create-user');
-    Exit;
+    SetEnvironmentVariable('NBM_PORT', Trim(UserPage.Values[3]));
   end;
 
   ResultCode := -1;
-  Created := Exec(ExpandConstant('{app}\{#MyAppExeName}'), '--init-user',
-                  ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode)
-             and (ResultCode = 0);
+  if not Exec(ExpandConstant('{app}\{#MyAppExeName}'), '--init-user',
+              ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    ResultCode := -1;
 
-  if Password <> '' then
+  if FromPage then
   begin
     DeleteEnvironmentVariable('NBM_ADMIN_USER', 0);
     DeleteEnvironmentVariable('NBM_ADMIN_PASSWORD', 0);
+    DeleteEnvironmentVariable('NBM_PORT', 0);
   end;
 
-  if Created then
-    Log('Пользователь веб-интерфейса создан')
+  case ResultCode of
+    0: begin Log('Пользователь веб-интерфейса создан'); Exit; end;
+    2: begin
+         // Тихая установка без пароля: пользователя создадут позже
+         Log('Пользователь веб-интерфейса не задан — нужен --create-user');
+         Exit;
+       end;
+    3: Reason := 'пароль короче 8 символов';
+    4: Reason := 'неверный порт в NBM_PORT';
   else
-    SuppressibleMsgBox(
-      'Не удалось создать пользователя веб-интерфейса (код ' + IntToStr(ResultCode) + ').' + #13#10 + #13#10 +
-      'Создайте его после установки в командной строке от имени администратора:' + #13#10 +
-      '"' + ExpandConstant('{app}\{#MyAppExeName}') + '" --create-user',
-      mbError, MB_OK, IDOK);
+    Reason := 'код ' + IntToStr(ResultCode);
+  end;
+  SuppressibleMsgBox(
+    'Не удалось создать пользователя веб-интерфейса (' + Reason + ').' + #13#10 + #13#10 +
+    'Создайте его после установки в командной строке от имени администратора:' + #13#10 +
+    '"' + ExpandConstant('{app}\{#MyAppExeName}') + '" --create-user',
+    mbError, MB_OK, IDOK);
 end;
 
 function NssmPath(): String;

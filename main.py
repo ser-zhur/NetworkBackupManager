@@ -125,7 +125,6 @@ from core.service_installer import (
     stop_service,
     schedule_restart,
     relaunch_elevated,
-    wait_for_http,
 )
 
 
@@ -156,7 +155,7 @@ else:
 # config.json). Пароль — core/auth.py.
 
 from core import settings
-from core.auth import hash_password, save_user, ensure_user_from_env
+from core.auth import MIN_PASSWORD_LENGTH, hash_password, save_user, ensure_user_from_env
 
 
 # =========================================================
@@ -188,8 +187,8 @@ def create_user_console() -> int:
         return 1
 
     password = getpass.getpass("Пароль: ")
-    if len(password) < 4:
-        print("Пароль слишком короткий (минимум 4 символа).")
+    if len(password) < MIN_PASSWORD_LENGTH:
+        print(f"Пароль слишком короткий (минимум {MIN_PASSWORD_LENGTH} символов).")
         return 1
     if getpass.getpass("Повторите пароль: ") != password:
         print("Пароли не совпадают.")
@@ -212,21 +211,57 @@ def init_user_from_env() -> int:
     без окон и вопросов. Так его создаёт установщик Windows: служба
     запускается диспетчером служб и окружения установщика не видит.
 
+    NBM_PORT (страница установщика или тихая установка) — порт
+    записывается в config.json: служба окружения установщика не
+    видит.
+
     Существующего пользователя не меняет.
     Код выхода: 0 — создан или уже был; 2 — пароль не задан;
+    3 — пароль короче MIN_PASSWORD_LENGTH; 4 — неверный NBM_PORT;
     1 — ошибка.
     """
-    if AUTH_FILE.exists():
-        return 0
-    if settings.admin_from_env() is None:
-        return 2
     try:
         ensure_directories()
+        ensure_default_files()
+        if not _port_from_env():
+            return 4
+    except Exception as exc:
+        logger.error("--init-user: %s", exc)
+        return 1
+    if AUTH_FILE.exists():
+        return 0
+    creds = settings.admin_from_env()
+    if creds is None:
+        return 2
+    if len(creds[1]) < MIN_PASSWORD_LENGTH:
+        logger.error("--init-user: пароль короче %s символов", MIN_PASSWORD_LENGTH)
+        return 3
+    try:
         ensure_user_from_env()
     except Exception as exc:
         logger.error("--init-user: не удалось создать пользователя: %s", exc)
         return 1
     return 0 if AUTH_FILE.exists() else 1
+
+
+def _port_from_env() -> bool:
+    """NBM_PORT → config.json (для --init-user). False — неверный порт."""
+    from core import context as context_mod
+
+    raw = settings.env("NBM_PORT")
+    if not raw:
+        return True
+    port = settings._valid_port(raw)
+    if port is None:
+        logger.error("--init-user: неверный NBM_PORT: %r", raw)
+        return False
+    with context_mod.CONFIG_LOCK:
+        config = load_json(CONFIG_FILE, {})
+        if config.get("port") != port:
+            config["port"] = port
+            context_mod.save_json(CONFIG_FILE, config)
+    logger.info("--init-user: порт веб-интерфейса %s", port)
+    return True
 
 
 def _has_gui() -> bool:
@@ -420,11 +455,11 @@ def create_user() -> int:
             password_entry.focus_set()
             return
 
-        if len(password) < 6:
+        if len(password) < MIN_PASSWORD_LENGTH:
             messagebox.showerror(
                 "Ошибка",
                 "Пароль должен содержать "
-                "минимум 6 символов.",
+                f"минимум {MIN_PASSWORD_LENGTH} символов.",
                 parent=root,
             )
             password_entry.focus_set()
@@ -688,25 +723,63 @@ def get_web_config() -> tuple[str, int]:
 # OPEN BROWSER
 # =========================================================
 
-def open_browser_when_ready() -> None:
+def web_url() -> str:
+    """
+    Адрес веб-интерфейса: тот, что записала работающая служба
+    (Windows), иначе — из настроек. 0.0.0.0 → 127.0.0.1.
+    """
+    url = settings.read_web_address()
+    if url:
+        return url
+    host, port = get_web_config()
+    try:
+        scheme = "https" if settings.tls_files() else "http"
+    except settings.TlsConfigError:
+        scheme = "http"
+    return settings.local_url(scheme, host, port)
 
-    # В контейнере и при NBM_OPEN_BROWSER=0 / open_browser=false
-    if not settings.open_browser():
+
+def _url_reachable(url: str) -> bool:
+    import socket
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(url)
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+        with socket.create_connection((parts.hostname, port), timeout=1):
+            return True
+    except (OSError, ValueError):
+        return False
+
+
+def open_browser_when_ready(force: bool = False, timeout: float = 30) -> None:
+    """
+    Дождаться веб-сервера и открыть его в браузере. Адрес
+    перечитывается в ожидании: служба после перезапуска
+    записывает новый.
+
+    force — открыть, даже если в настройках open_browser=false
+    (пользователь сам нажал ярлык). В контейнере — никогда.
+    """
+    import time
+
+    if settings.in_container():
+        return
+    if not force and not settings.open_browser():
         return
 
     try:
-        if not wait_for_http(20):
-            logger.warning(
-                "Веб-сервер не ответил за 20 секунд — браузер не открыт."
-            )
-            return
-
-        host, port = get_web_config()
-        try:
-            scheme = "https" if settings.tls_files() else "http"
-        except settings.TlsConfigError:
-            return
-        url = f"{scheme}://{host}:{port}"
+        deadline = time.monotonic() + timeout
+        while True:
+            url = web_url()
+            if _url_reachable(url):
+                break
+            if time.monotonic() > deadline:
+                logger.warning(
+                    "Веб-сервер не ответил за %s секунд — браузер не открыт.", int(timeout)
+                )
+                return
+            time.sleep(0.5)
 
         logger.info("Открытие браузера: %s", url)
         webbrowser.open(url, new=2)
@@ -756,6 +829,10 @@ def run_web_server() -> None:
         logger.error("HTTPS: %s. Веб-сервер не запущен.", exc)
         raise SystemExit(2)
     settings.RUNNING_CERT = str(tls[0]) if tls else ""
+    if os.name == "nt" and is_service_process():
+        settings.write_web_address(
+            settings.local_url("https" if tls else "http", host, port)
+        )
     if tls:
         cert, key = tls
         extra["ssl_certfile"] = str(cert)
@@ -786,10 +863,44 @@ def run_web_server() -> None:
 # START NORMAL APPLICATION
 # =========================================================
 
+def run_launcher() -> int:
+    """
+    Запуск без прав администратора: ярлык, «Пуск», браузер после
+    установки. Папки data/ и logs/ таким пользователям закрыты,
+    поэтому ничего в них не пишем: служба работает — открываем
+    браузер по адресу, который она записала; иначе — повышение
+    прав для установки или запуска службы.
+    """
+    from core.service_installer import is_os_service_running
+
+    if not is_service_registered():
+        args = ["--install-service"]
+    elif not is_os_service_running():
+        args = ["--start-service"]
+    else:
+        open_browser_when_ready(force=True)
+        return 0
+
+    logger.info("Нужны права администратора: %s", args[0])
+    if not relaunch_elevated(args):
+        print("Не удалось получить права администратора.")
+        return 1
+    return 0
+
+
 def run_application(
     skip_service_install: bool = False,
     foreground: bool = False,
 ) -> int:
+
+    if (
+        not foreground
+        and not skip_service_install
+        and not settings.in_container()
+        and not is_service_process()
+        and not is_admin()
+    ):
+        return run_launcher()
 
     ensure_directories()
     ensure_web_files()
@@ -897,7 +1008,7 @@ def print_version() -> None:
     PowerShell). Новая консоль закрылась бы сразу вместе
     с выводом.
     """
-    # Первая строка — имя и версия (её разбирает install.sh)
+    # Первая строка — имя и версия
     text = (
         f"{APP_NAME} {__version__}\n"
         f"{COPYRIGHT}\n"

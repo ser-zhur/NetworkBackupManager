@@ -412,7 +412,10 @@ def get_web_config() -> tuple[str, int]:
 def wait_for_http(timeout: float = 20) -> bool:
     """Ждёт, пока HTTP-порт начнёт принимать соединения."""
 
+    from core import settings
+
     host, port = get_web_config()
+    host = settings.connect_host(host)      # 0.0.0.0 → 127.0.0.1
     deadline = time.time() + timeout
 
     while time.time() < deadline:

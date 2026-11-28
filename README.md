@@ -88,7 +88,7 @@ venv/Scripts/python main.py --foreground
 | `NBM_OPEN_BROWSER` | `0`/`1` — открывать ли браузер при запуске |
 | `NBM_TRUSTED_PROXIES` | Адреса обратных прокси через запятую или `*` |
 | `NBM_TLS_CERT`, `NBM_TLS_KEY` | Сертификат и ключ PEM — включают HTTPS, важнее настройки в интерфейсе; `NBM_TLS_CERT=off` — выключить HTTPS (см. [HTTPS](#https)) |
-| `NBM_ADMIN_USER`, `NBM_ADMIN_PASSWORD` | Первый пользователь, если `data/auth.json` ещё нет |
+| `NBM_ADMIN_USER`, `NBM_ADMIN_PASSWORD` | Первый пользователь, если `data/auth.json` ещё нет. Пароль — не короче 8 символов |
 | `NBM_RCLONE` | Путь к rclone |
 | `NBM_API_TOKEN` | Токен мониторинга для `/api/status` (дополнительно к созданному в интерфейсе) |
 | `NBM_CONTAINER` | `1` — запуск в контейнере: службой управляет не программа |

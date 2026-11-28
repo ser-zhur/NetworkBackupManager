@@ -159,6 +159,11 @@ jobs:
           }
           Write-Host "✅ data, backups, logs закрыты от обычных пользователей"
 
+          # Адрес для ярлыка: папка данных ярлыку без прав администратора закрыта
+          $addr = (Get-Content "$app\web-address.txt" -Raw -ErrorAction SilentlyContinue)
+          if (-not $addr -or $addr.Trim() -ne "http://127.0.0.1:8080") { throw "служба не записала адрес для ярлыка: '$addr'" }
+          Write-Host "✅ служба записала адрес веб-интерфейса для ярлыка"
+
           # --- Обновление поверх ---
           "keep me" | Set-Content "$app\data\marker.txt"
           "stale" | Set-Content "$app\_internal\stale-from-old-version.dll"
@@ -177,4 +182,5 @@ jobs:
           if (Test-Path "$app\NetworkBackupManager.exe") { throw "программа не удалилась" }
           if (Get-Service NetworkBackupManager -ErrorAction SilentlyContinue) { throw "служба осталась" }
           if (-not (Test-Path "$app\data\marker.txt")) { throw "тихое удаление стёрло данные" }
+          if (Test-Path "$app\web-address.txt") { throw "остался web-address.txt" }
           Write-Host "✅ удаление: служба и программа удалены, данные сохранены"

@@ -36,6 +36,12 @@ fi
 [ "$(id -g nbm)" = "$gid" ] || groupmod -o -g "$gid" nbm
 [ "$(id -u nbm)" = "$uid" ] || usermod -o -u "$uid" nbm
 
+# data/ — ссылка: chmod ниже сменил бы права папки, на которую
+# она указывает
+if [ -L "$NBM_HOME/data" ]; then
+    echo "$NBM_HOME/data — символическая ссылка. Замените её обычной папкой" >&2
+    exit 1
+fi
 mkdir -p "$NBM_HOME/data" "$NBM_HOME/logs" "$NBM_HOME/backups"
 # Только файлы с чужим владельцем: при большой истории бэкапов
 # полный chown -R на каждом старте был бы долгим.

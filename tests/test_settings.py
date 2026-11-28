@@ -106,7 +106,7 @@ def test_user_from_env_created_once(cfg, auth_file, monkeypatch):
 
 
 def test_default_admin_login(cfg, auth_file, monkeypatch):
-    monkeypatch.setenv("NBM_ADMIN_PASSWORD", "p")
+    monkeypatch.setenv("NBM_ADMIN_PASSWORD", "password-1")
     auth.ensure_user_from_env()
     assert json.loads(auth_file.read_text(encoding="utf-8"))["username"] == "admin"
 
